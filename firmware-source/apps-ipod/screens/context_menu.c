@@ -763,6 +763,8 @@ MAKE_ONPLAYMENU( wps_playlist_menu, ID2P(LANG_CURRENT_PLAYLIST),
 #define PL_NONE    0x00
 #define PL_QUEUE   0x01
 #define PL_REPLACE 0x02
+/* An explicit playback action starts its selection, even with Keep Current on. */
+#define PL_START_NEW 0x04
 struct add_to_pl_param
 {
     int8_t position;
@@ -781,6 +783,8 @@ static struct add_to_pl_param addtopl_queue_last       = {PLAYLIST_INSERT_LAST, 
 
 static struct add_to_pl_param addtopl_replace          = {PLAYLIST_INSERT, PL_REPLACE};
 static struct add_to_pl_param addtopl_replace_shuffled = {PLAYLIST_INSERT_LAST_SHUFFLED, PL_REPLACE};
+static struct add_to_pl_param addtopl_shuffle_songs =
+    {PLAYLIST_INSERT_LAST_SHUFFLED, PL_REPLACE | PL_START_NEW};
 
 static void op_playlist_insert_selected(int position, bool queue)
 {
@@ -832,7 +836,8 @@ static int add_to_playlist(void* arg)
 
     splash(0, ID2P(LANG_WAIT));
 
-    if (new_playlist && global_settings.keep_current_track_on_replace_playlist)
+    if (new_playlist && !(param->flags & PL_START_NEW)
+        && global_settings.keep_current_track_on_replace_playlist)
     {
         if (audio_status() & AUDIO_STATUS_PLAY)
         {
@@ -2830,7 +2835,10 @@ int context_menu_show(char* file, int attr, int from_context, bool hotkey, int c
     }
     if (customaction == ONPLAY_CUSTOMACTION_SHUFFLE_SONGS)
     {
-        int returnCode = add_to_playlist(&addtopl_replace_shuffled);
+        /* Shuffle Songs starts music now, rather than keeping an audiobook
+         * (or song) playing while its replacement waits in the Queue. The
+         * ordinary Replace actions above still honor Keep Current Track. */
+        int returnCode = add_to_playlist(&addtopl_shuffle_songs);
         if (returnCode == 1)
             /* User did not want to erase his current playlist, so let's show again the database main menu */
             return ONPLAY_RELOAD_DIR;
