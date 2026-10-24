@@ -1,0 +1,9 @@
+[shortcut]
+type: browse
+data: /Music/
+name: Music
+
+[shortcut]
+type: browse
+data: /Audiobooks/
+name: Audiobooks
