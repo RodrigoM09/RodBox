@@ -1,0 +1,16 @@
+# Scrim Classic — adapted from Scrim by Anthony Fletcher for PodBox.
+# Adaptation for this custom Rockbox build. CC BY-SA 3.0.
+# https://github.com/anthonyfletcher/podbox/tree/master/themes/scrim
+%wd
+%Fl(2,scrim-18-noto-sans-bold.fnt)
+%Fl(3,scrim-12-noto-sans.fnt)
+%Fl(4,scrim-24x24-icons.fnt)
+%V(0,0,320,240,1)%Vb(101014)%Vf(ffffff)
+%dr(0,0,320,35,ededed)
+%V(10,6,186,25,2)%Vf(101014)%Vb(ededed)
+%s%Lt
+%V(201,10,75,20,3)%Vf(101014)%Vb(ededed)
+%ar%?cf<%cH:%cM|%cl:%cM %cP>
+%V(285,5,26,24,4)%Vf(101014)%Vb(ededed)
+%?bc<%?bl<·|·|¸|¸|¸|¸|¹|º>|%?bl<1|1|2|3|4|5|6|7>>
+%Vi(-,10,44,300,188,1)%Vf(ffffff)%Vb(101014)

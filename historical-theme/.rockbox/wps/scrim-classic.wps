@@ -1,0 +1,29 @@
+# Scrim Classic — adapted from Scrim by Anthony Fletcher for PodBox.
+# Adaptation for this custom Rockbox build. CC BY-SA 3.0.
+# https://github.com/anthonyfletcher/podbox/tree/master/themes/scrim
+%wd
+%Fl(2,scrim-26-noto-sans-medium.fnt)
+%Fl(3,scrim-12-noto-sans.fnt)
+%Fl(4,scrim-24x24-icons.fnt)
+%V(0,0,320,240,1)%Vf(ffffff)%Vb(101014)
+%Cl(80,0,240,240,c,c)
+%?C<%Cd|%Vd(NoArt)>
+%?mv(3)<%Vd(Volume)|%Vd(Transport)>
+%Vl(NoArt,80,95,240,30,1)%Vf(777783)%Vb(101014)
+%acNo artwork
+%V(0,77,240,36,2)%Vf(ffffff)%Vb(101014)
+%s%it
+%V(5,113,230,25,1)%Vf(dddddf)%Vb(101014)
+%s%?ia<%ia|%id>
+%V(0,140,240,5,1)%Vf(ffffff)%Vb(33333d)
+%pb(0,0,240,5,noborder)
+%V(5,151,30,18,3)%Vf(dddddf)%Vb(101014)
+%pp
+%V(40,151,80,18,3)%Vf(dddddf)%Vb(101014)
+%pr
+%Vl(Transport,3,3,76,24,4)%Vf(ffffff)%Vb(101014)
+%?mp<C|A|B|G|F>%?ps<H>%?mm<|J|J|J|J>
+%Vl(Volume,3,3,75,24,3)%Vf(ffffff)%Vb(101014)
+%pv dB
+%V(5,209,70,26,3)%Vf(9999a8)%Vb(101014)
+%pc
