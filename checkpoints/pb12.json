@@ -9,7 +9,7 @@
     "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer",
     "scrim_skin_parser": "both files passed",
     "installation": "file hashes passed after remount; filesystem verified",
-    "device_analysis": "pending",
+    "device_analysis": "user confirms analysis is running; completion and cancel/resume acceptance pending",
     "device_display": "pending",
     "post_restart_usb": "pending"
   },

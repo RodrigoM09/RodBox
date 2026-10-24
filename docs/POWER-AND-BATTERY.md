@@ -17,8 +17,14 @@ provide it. Scrim shows battery percentage and power/charging state beside Now
 Playing's artwork, within the existing left margin. The menu shows connection
 state under the clock. "USB"/"USB power" means connected, while "Charging"/"CHG"
 means the monitored charging signal is active; a full connected battery need
-not display Charging. Analyze Music Now gets the same task glyph used for
-Update Now in Scrim's text-to-icon mapping.
+not display Charging. Initial PB12 used Update Now's task glyph for Analyze
+Music Now in Scrim's text-to-icon mapping.
+
+The PB12 theme follow-up gives Analyze Music Now its own waveform glyph (`P`,
+U+0050 in Scrim's bundled Material icon font), leaving Update Now unchanged.
+The glyph was checked visually in the actual bundled font. This is a one-token
+theme correction; it does not require a new firmware core or an analysis rescan.
+Deployment is deferred while the player's current analysis is running.
 
 The computer connection screen shows battery percentage and Charging or USB
 connected. Its small status viewport uses the built-in font, cached battery
