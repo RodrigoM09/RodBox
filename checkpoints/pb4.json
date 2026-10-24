@@ -1,0 +1,9 @@
+{
+  "checkpoint": "pb4",
+  "description": "Add bounded artist-art fallback and RodBox title",
+  "source_status": "verified-source-archive-export",
+  "note": "Exact preserved build-source content within the sanitized source allowlist. Private media cleanup/retagging and source artwork are not included.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}

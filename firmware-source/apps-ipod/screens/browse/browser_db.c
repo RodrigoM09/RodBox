@@ -5858,6 +5858,44 @@ static unsigned int table_art_hash(struct browser_context* c,
     return 0;
 }
 
+/* Artists without an Album Artist tag have no RAM artist-table row.
+ * Resolve their first matching track once per database generation, keeping
+ * repeated screen paints off the filename tag file. */
+static unsigned int artist_track_art_hash(struct browser_context *c, int item,
+                                          int tag, long seek)
+{
+    static struct { int tag; long seek; unsigned int hash; } cache[32];
+    static unsigned int generation;
+    static unsigned int count, next;
+    struct tagcache_marks marks;
+    char dir[MAX_PATH], artist_dir[MAX_PATH];
+    unsigned int hash;
+
+    tagcache_get_marks(&marks);
+    if (generation != marks.generation)
+    {
+        generation = marks.generation;
+        count = next = 0;
+    }
+    for (unsigned int i = 0; i < count; i++)
+        if (cache[i].tag == tag && cache[i].seek == seek)
+            return cache[i].hash;
+    if (!browser_db_get_track_dir(c, item, dir, sizeof(dir), 0))
+        return 0;
+    art_cache_artist_dir(dir, artist_dir, sizeof(artist_dir));
+    hash = art_cache_dir_hash(artist_dir);
+    if (hash)
+    {
+        cache[next].tag = tag;
+        cache[next].seek = seek;
+        cache[next].hash = hash;
+        next = (next + 1) % ARRAYLEN(cache);
+        if (count < ARRAYLEN(cache))
+            count++;
+    }
+    return hash;
+}
+
 unsigned int browser_db_get_art_hash(struct browser_context* c, int item)
 {
     char dir[MAX_PATH];
@@ -5870,13 +5908,18 @@ unsigned int browser_db_get_art_hash(struct browser_context* c, int item)
         || !(entry = browser_db_get_entry(c, item)))
         return 0;
     hash = table_art_hash(c, entry);
-    /* A track-artist row has no folder search: it would read the disk for
-     * every row in view, and its folder is a guess. */
-    if (hash == 0
-        && (album
-            || csi->tagorder[shown_level(c->currextra)] == tag_albumartist)
-        && browser_db_get_track_dir(c, item, dir, sizeof(dir), album ? 0 : 1))
-        hash = art_cache_dir_hash(dir);
+    if (hash == 0)
+    {
+        if (album)
+        {
+            if (browser_db_get_track_dir(c, item, dir, sizeof(dir), 0))
+                hash = art_cache_dir_hash(dir);
+        }
+        else
+            hash = artist_track_art_hash(c, item,
+                         csi->tagorder[shown_level(c->currextra)],
+                         entry->extraseek);
+    }
     return hash;
 }
 
