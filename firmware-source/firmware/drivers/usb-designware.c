@@ -794,31 +794,19 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
 #endif
 }
 
-static int usb_dw_transfer(int epnum, enum usb_dw_epdir epdir,
-                           void* buf, uint32_t size)
+static void usb_dw_transfer(int epnum, enum usb_dw_epdir epdir,
+                            void* buf, uint32_t size)
 {
     struct usb_dw_ep* dw_ep = usb_dw_get_ep(epnum, epdir);
 
     if (!dw_ep->active)
-    {
         logf("%s: %s%d inactive", __func__, dw_dir_str[epdir], epnum);
-        return -1;
-    }
-    /* Do not program a stale hardware endpoint. usb_dw_epstart() uses the
-     * packet size as a divisor, so zero cannot be allowed through even if
-     * the software endpoint still appears active. */
-    if (epnum && usb_dw_maxpktsize(epnum, epdir) == 0)
-    {
-        logf("%s: %s%d unconfigured", __func__, dw_dir_str[epdir], epnum);
-        return -1;
-    }
     if (dw_ep->busy)
         logf("%s: %s%d busy", __func__, dw_dir_str[epdir], epnum);
 
     dw_ep->req_addr = buf;
     dw_ep->req_size = size;
     usb_dw_epstart(epnum, epdir, buf, size);
-    return 0;
 }
 
 static void usb_dw_ep0_recv(void)
@@ -2387,22 +2375,18 @@ void usb_drv_ep_deinit(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
 
 int usb_drv_recv_nonblocking(int endpoint, void* ptr, int length)
 {
-    int rc;
-
     usb_dw_target_disable_irq();
-    rc = usb_dw_transfer(EP_NUM(endpoint), USB_DW_EPDIR_OUT, ptr, length);
+    usb_dw_transfer(EP_NUM(endpoint), USB_DW_EPDIR_OUT, ptr, length);
     usb_dw_target_enable_irq();
-    return rc;
+    return 0;
 }
 
 int usb_drv_send_nonblocking(int endpoint, void *ptr, int length)
 {
-    int rc;
-
     usb_dw_target_disable_irq();
-    rc = usb_dw_transfer(EP_NUM(endpoint), USB_DW_EPDIR_IN, ptr, length);
+    usb_dw_transfer(EP_NUM(endpoint), USB_DW_EPDIR_IN, ptr, length);
     usb_dw_target_enable_irq();
-    return rc;
+    return 0;
 }
 
 int usb_drv_send(int endpoint, void *ptr, int length)
@@ -2412,9 +2396,7 @@ int usb_drv_send(int endpoint, void *ptr, int length)
 
     semaphore_wait(&dw_ep->complete, 0);
 
-    int rc = usb_drv_send_nonblocking(endpoint, ptr, length);
-    if (rc < 0)
-        return rc;
+    usb_drv_send_nonblocking(endpoint, ptr, length);
 
     if (semaphore_wait(&dw_ep->complete, HZ) == OBJ_WAIT_TIMEDOUT)
     {
