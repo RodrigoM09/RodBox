@@ -1,0 +1,9 @@
+{
+  "checkpoint": "legacy-folders-shortcuts",
+  "description": "Record separate Music and Audiobooks browse shortcuts",
+  "source_status": "generic-configuration-example",
+  "note": "Folder browse shortcuts were the initial separation; later library menus superseded them. No original private shortcuts/config file is uploaded.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
