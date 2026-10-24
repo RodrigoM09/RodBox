@@ -23,6 +23,10 @@ Latest source checkpoint: **PB10**, `homepod-pb10-plmove-261024`. PB7–PB9 pass
 
 The small playlist optimization's Mac benchmark is not an iPod speed or battery measurement. Digital audio and accessory code inherited from PodBox is present in source but was not comprehensively exercised, and optional DAC/car modes were left off. Explicit iFlash-brand recognition remains staged pending actual ATA identification; existing generic flash detection may already cover the adapter. Legacy Rockbox games/plugins are not available through PodBox's replacement app layer.
 
+## Branches
+
+`main` is locked read-only as the stable reference. Work goes to `community`: approved collaborators can push there, and everyone else can fork and send a pull request targeting `community`. Anyone can clone or pull the public code. Direct pushes require GitHub collaborator access; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Explore and reuse
 
 **Please feel free to take the parts you find useful, adapt them, or build on this version of Rockbox, while following each component's license and preserving its credits.** You do not need to adopt the entire firmware to reuse an individual fix or idea.
