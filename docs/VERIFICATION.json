@@ -1,0 +1,20 @@
+{
+  "source_build": "Production PB10 ipod6g/apps-ipod/64MB passed before public export. A fresh sanitized-export build is checked separately.",
+  "host_checks": {
+    "usb_write_length_cases": 17,
+    "endpoint_cases": 11,
+    "playlist_guard_cases": 21,
+    "differential_cases": 50000,
+    "verified_copy_cases": 9,
+    "health_report_cases": 6
+  },
+  "hardware_acceptance": {
+    "pb7": "passed",
+    "pb8": "passed",
+    "pb9": "passed",
+    "pb10": "pending"
+  },
+  "host_benchmark_is_device_speed": false,
+  "private_backups_included": false,
+  "media_or_listening_history_included": false
+}

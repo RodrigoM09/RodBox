@@ -1,0 +1,38 @@
+--- a/firmware/target/arm/s5l8702/ipod6g/storage_ata-6g.c
++++ b/firmware/target/arm/s5l8702/ipod6g/storage_ata-6g.c
+@@ -1185,9 +1185,25 @@
+     ata_set_active();
+ }
+ 
++/* ATA model words store the first character in the high byte. Match the
++ * explicit adapter brand only; generic SD/CF labels retain existing rules. */
++static bool ata_identify_is_iflash(void)
++{
++    char model[41];
++    for (int i = 0; i < 20; i++)
++    {
++        unsigned short word = identify_info[27 + i];
++        model[2 * i] = word >> 8;
++        model[2 * i + 1] = word & 0xff;
++    }
++    model[40] = '\0';
++    return strstr(model, "iFlash") != NULL;
++}
++
+ void ata_set_storage_mode(int mode)
+ {
+-    bool ssd = (mode == 2) || (mode == 0 && ata_disk_isssd());
++    bool ssd = (mode == 2) ||
++               (mode == 0 && (ata_disk_isssd() || ata_identify_is_iflash()));
+     mutex_lock(&ata_mutex);
+     if (ssd != ata_ssd_mode && !ata_powered)
+     {
+@@ -1231,7 +1247,7 @@
+         return rc;
+ 
+     /* Auto-detect SSD before settings are loaded */
+-    ata_ssd_mode = ata_disk_isssd();
++    ata_ssd_mode = ata_disk_isssd() || ata_identify_is_iflash();
+ 
+     /* Logical sector size */
+     if (ceata)
