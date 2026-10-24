@@ -71,8 +71,12 @@ static struct semaphore ata_wakeup;
 static long ata_last_activity_value = -1;
 static long ata_sleep_timeout = 7 * HZ;
 static bool ata_powered;
+/* Latched by the storage thread before its USB acknowledgement. Exclusive
+ * ownership is not set until every thread has acknowledged, so testing that
+ * flag alone would leave the handover window unprotected. */
+static bool ata_usb_storage_active;
 /* "Storage mode = SSD". Both drivers power flash off only once the backlight
- * is off, ten or more seconds after it sleeps; this one also makes the step
+ * is off, thirty or more seconds after it sleeps; this one also makes the step
  * before that cheaper -- clock-gate rather than STANDBY IMMEDIATE (see
  * ssd_deep_asleep). Q_STORAGE_PRE_WAKE, which backlight.c posts when the
  * backlight comes on, powers the interface back up before the user has
@@ -939,7 +943,7 @@ static int ata_rw_chunk(uint64_t sector, uint32_t cnt, void* buffer, bool write)
 static int ata_transfer_sectors(uint64_t sector, int count, void* buffer, int write)
 {
     if (!ata_powered)
-        ata_power_up();
+        PASS_RC(ata_power_up(), 1, 0);
     if (sector + count > total_sectors)
         RET_ERR(0);
     ata_set_active();
@@ -1129,10 +1133,10 @@ int ata_flush(void)
     return 0;
 }
 
-void ata_sleepnow(void)
+/* Caller owns ata_mutex. Keep explicit shutdown sleeps separate from the
+ * idle policy: only the latter must recheck activity and USB ownership. */
+static void ata_sleepnow_locked(void)
 {
-    mutex_lock(&ata_mutex);
-
     ata_flush_cache();
 
     if (ceata) {
@@ -1169,7 +1173,12 @@ void ata_sleepnow(void)
     } else if (canflush) {
         ata_power_down();
     }
+}
 
+void ata_sleepnow(void)
+{
+    mutex_lock(&ata_mutex);
+    ata_sleepnow_locked();
     mutex_unlock(&ata_mutex);
 }
 
@@ -1219,6 +1228,7 @@ int ata_init(void)
     semaphore_init(&mmc_comp_wakeup, 1, 0);
     ceata = PDAT(11) & BIT(1);
     ata_powered = false;
+    ata_usb_storage_active = false;
     ssd_deep_asleep = false;
     ssd_sleep_tick = 0;
     total_sectors = 0;
@@ -1356,17 +1366,24 @@ int ata_event(long id, intptr_t data)
        the first case is frequently hit anyway. */
     if (LIKELY(id == Q_STORAGE_TICK))
     {
+        if (ata_usb_storage_active)
+        {
+            STG_EVENT_ASSERT_ACTIVE(STORAGE_ATA);
+            return 0;
+        }
         if (!ata_powered ||
             TIME_BEFORE(current_tick, ata_last_activity_value + ata_sleep_timeout))
         {
-            /* Phase 2: SSD deep sleep — cut AUTOLDO after 10s of
+            /* Phase 2: SSD deep sleep — cut AUTOLDO after 30s of
              * clock-gate sleep when backlight is off */
             if (ata_ssd_mode && !ata_powered && !ssd_deep_asleep
                 && !is_backlight_on(true)
                 && TIME_AFTER(current_tick, ssd_sleep_tick + 30 * HZ))
             {
                 mutex_lock(&ata_mutex);
-                if (!ata_powered && !ssd_deep_asleep)
+                if (!ata_usb_storage_active && !ata_powered &&
+                    !ssd_deep_asleep && !is_backlight_on(true) &&
+                    TIME_AFTER(current_tick, ssd_sleep_tick + 30 * HZ))
                 {
                     logf("ata SSD DEEP %ld", current_tick);
                     PCON(7) = 0;
@@ -1384,11 +1401,19 @@ int ata_event(long id, intptr_t data)
     }
     else if (id == Q_STORAGE_SLEEPNOW)
     {
-        ata_sleepnow();
+        /* The tick's decision can wait behind a transfer for this mutex.
+         * That transfer may have refreshed activity in the meantime. */
+        mutex_lock(&ata_mutex);
+        if (!ata_usb_storage_active && ata_powered &&
+            !TIME_BEFORE(current_tick,
+                         ata_last_activity_value + ata_sleep_timeout))
+            ata_sleepnow_locked();
+        mutex_unlock(&ata_mutex);
     }
     else if (id == Q_STORAGE_SLEEP)
     {
-        ata_last_activity_value = current_tick - ata_sleep_timeout + HZ / 5;
+        if (!ata_usb_storage_active)
+            ata_last_activity_value = current_tick - ata_sleep_timeout + HZ / 5;
     }
     else if (id == Q_STORAGE_PRE_WAKE)
     {
@@ -1403,7 +1428,18 @@ int ata_event(long id, intptr_t data)
     }
     else if (id == SYS_USB_CONNECTED)
     {
+        ata_usb_storage_active = true;
         STG_EVENT_ASSERT_ACTIVE(STORAGE_ATA);
+    }
+    else if (id == SYS_USB_DISCONNECTED)
+    {
+        /* Resume idle policy from now, not from before a long USB session.
+         * If already asleep on attachment, also restart the deep-sleep grace. */
+        mutex_lock(&ata_mutex);
+        ata_set_active();
+        ssd_sleep_tick = current_tick;
+        ata_usb_storage_active = false;
+        mutex_unlock(&ata_mutex);
     }
     else
     {

@@ -1,0 +1,21 @@
+{
+  "checkpoint": "pb16",
+  "version": "rodbox-pb16-usbawake-261024",
+  "target": "ipod6g",
+  "change": "Inhibit USB storage idle/deep sleep, recheck stale sleep decisions under the ATA mutex, and propagate transfer wake failures",
+  "status": "built and host-tested; installation and physical acceptance pending",
+  "validation": {
+    "native_build": "passed",
+    "actual_function_scenarios": 33,
+    "host_configurations": 4,
+    "scenario_executions": 132,
+    "sanitizers": "ASan and UBSan; pre-existing signed-shift error-code convention explicitly excepted",
+    "physical_transfer_playback_resume": "pending"
+  },
+  "limits": [
+    "No captured sleep/wake trace establishes the original error's cause",
+    "Host tests mock hardware and selected scheduling interleavings",
+    "New application core does not alter the currently running recovery bootloader",
+    "No bootloader, partition, charging-current or ATA timing changes"
+  ]
+}

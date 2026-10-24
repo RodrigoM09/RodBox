@@ -15,6 +15,7 @@ python3 tests/analysis/test_index.py
 python3 tests/analysis/test_power.py
 python3 tests/analysis/test_plug_wake.py
 python3 tests/analysis/test_usb_battery.py
+python3 tests/storage/test_usb_idle.py
 ```
 
 Host C harnesses require clang and use AddressSanitizer/UndefinedBehaviorSanitizer. External hardware services are mocked. They exercise the extracted active function bodies; they are not a USB bus, decoder or storage-device emulator. Never send deliberately malformed write traffic to a filesystem containing your music.
@@ -55,3 +56,10 @@ PB15's native build and 24 actual-renderer framebuffer cases pass. The USB
 header fix removes stale theme pixels while retaining the detailed footer and
 three battery modes. Physical visual and post-restart USB checks remain
 pending; see [USB-HEADER.md](USB-HEADER.md).
+
+PB16's native build and 33 actual-function scenarios in four host configurations
+pass. The storage harness mocks hardware/scheduling and explicitly excludes
+the existing error macros' signed-shift convention from UBSan. Runtime USB
+storage, playback and resume acceptance remain pending. The identified sleep
+weakness is not a proven explanation of the original corruption; see
+[USB-STORAGE-AWAKE.md](USB-STORAGE-AWAKE.md).
