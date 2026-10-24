@@ -1299,6 +1299,13 @@ static void audiobooks_row(bool on, bool unhide)
     if (on)
     {
         unsigned at = count;
+        /* Newly segregated books belong immediately after Music. */
+        for (unsigned j = 0; j < count; j++)
+            if (root_menu__[j] == &db_browser)
+            {
+                at = j + 1;
+                break;
+            }
 
         off = root_menu_off_find(item);
         if (i < count || count >= MAX_MENU_ITEMS || (off >= 0 && !unhide))
@@ -1313,7 +1320,7 @@ static void audiobooks_row(bool on, bool unhide)
             memmove(&root_menu_off[off], &root_menu_off[off + 1],
                     (root_menu_off_count - off) * sizeof(root_menu_off[0]));
         }
-        else
+        else if (at == count)
         {
             /* After the last tagnavi row, else before Settings, else last. */
             for (i = count; i-- > 0; )

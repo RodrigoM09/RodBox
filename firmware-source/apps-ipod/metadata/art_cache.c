@@ -34,6 +34,7 @@
 #include "metadata.h"
 #include "albumart.h"
 #include "art_cache.h"
+#include "database/path_key.h"
 #include "art_sizes.h"
 #include "settings/settings.h"  /* global_settings.art_cache_* */
 #include "system/debug_log.h"
@@ -239,6 +240,8 @@ static unsigned int aa_hash(const char *str)
 
     if (!str)
         return 0;
+
+    str = path_key_strip(str);
 
     while (*str)
         hash = (hash ^ (unsigned char)*str++) * p;

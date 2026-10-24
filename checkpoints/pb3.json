@@ -1,0 +1,9 @@
+{
+  "checkpoint": "pb3",
+  "description": "Normalize art-cache volume keys and refine the library menu",
+  "source_status": "artifact-based-reconstruction",
+  "note": "Reconstructed from pinned upstream plus saved patch/scripts and backed-up theme files. Not an independently preserved original full snapshot; not every intermediate binary was rebuilt.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
