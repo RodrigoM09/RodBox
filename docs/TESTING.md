@@ -43,7 +43,9 @@ checks pass; font metrics fit the percentage and clock in separate viewports.
 Installed mode/layout, persistence and post-restart USB checks remain pending;
 see [BATTERY-DISPLAY.md](BATTERY-DISPLAY.md).
 
-PB14 is prepared but not installed while analysis runs. Fifteen actual-helper
+PB14 is installed with verified before/after backups after analysis completed.
+Only the core, matching information, Now Playing skin and menu order changed;
+the completed sound index and audiobook progress were preserved. Fifteen actual-helper
 input-transition cases pass ASan/UBSan and the native build passes. Physical
 charger/computer wake, normal timeout, reconnection and USB checks are pending;
 see [PLUG-IN-WAKE.md](PLUG-IN-WAKE.md).

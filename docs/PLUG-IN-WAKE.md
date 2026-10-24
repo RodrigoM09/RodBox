@@ -1,12 +1,13 @@
 # PB14: wake the screen when power is connected
 
-Status: prepared and host-tested; not installed. Deployment is deferred while
-the player finishes its sound-analysis scan.
+Status: installed after the sound-analysis scan finished. Verified before/after
+firmware, settings and progress backups were retained privately. Physical
+charger/computer wake and post-restart acceptance remain pending.
 
 The accompanying theme follow-up moves Now Playing's battery display to the
-same top-right position as the menu. Apply that WPS file with the next backed-up
-installation; it has not been deployed while the scan runs. The battery setting
-and the detailed USB footer remain unchanged.
+same top-right position as the menu. That WPS file is installed with PB14.
+The battery setting and the detailed USB footer remain unchanged. The requested
+main-menu order places Now Playing before Update Now and Analyze Music Now.
 
 When the running firmware sees its external power input change from absent to
 present, it requests a normal backlight wake. This covers a USB charger or a
@@ -32,8 +33,10 @@ unchanged input, full-battery/charging-qualification flags, removal/reconnection
 and updating cached state before posting the wake. These are host state-machine
 checks, not a charger, PMU or USB bus simulation.
 
-After analysis finishes and the player is mounted, save fresh verified
-before/after backups around installation. Then test a dark screen connected to
+Fresh verified before/after backups surround installation; only the core,
+matching build information, Now Playing skin and menu-order setting changed.
+The completed analysis index and audiobook progress remain intact.
+Next, test a dark screen connected to
 a charger, let its normal timeout expire without repeated waking, unplug and
 reconnect, and repeat with the computer. Verify ordinary USB transfers after
 restart. These hardware checks remain pending.
