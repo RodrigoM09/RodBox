@@ -216,12 +216,21 @@ static void usb_battery_draw(bool force)
         {
             viewport_set_defaults(&vp, screen->screen_type);
             vp.font = FONT_SYSFIXED;
-            vp.x = screen->lcdwidth - 72;
+            /* The originating WPS/SBS can leave a 35-pixel header behind.
+             * A 72x20 panel covers only part of its battery and none of its
+             * clock. Paint an opaque header, rather than clear_viewport(),
+             * which can restore that stale backdrop. All work stays after
+             * the storage ACK and uses only the built-in font. */
+            vp.x = 0;
             vp.y = 0;
-            vp.width = 72;
-            vp.height = 20;
+            vp.width = screen->lcdwidth;
+            vp.height = 35;
             old = screen->set_viewport(&vp);
-            screen->clear_viewport();
+            screen->set_drawmode(DRMODE_FG);
+            screen->set_foreground(LCD_BLACK);
+            screen->fillrect(0, 0, vp.width, vp.height);
+            screen->set_foreground(LCD_WHITE);
+            int indicator_x = vp.width - 72;
             int mode = global_settings.battery_display;
             if (mode != BATTERY_DISPLAY_ICON)
             {
@@ -232,17 +241,19 @@ static void usb_battery_draw(bool force)
                     snprintf(percentage, sizeof(percentage), "?%%");
                 font_getstringsize(percentage, &width, NULL, FONT_SYSFIXED);
                 screen->putsxy(mode == BATTERY_DISPLAY_PERCENT
-                               ? vp.width - width - 7 : 4, 6, percentage);
+                               ? vp.width - width - 7 : indicator_x + 4,
+                               6, percentage);
             }
             if (mode != BATTERY_DISPLAY_PERCENT)
             {
                 int fill = level < 0 ? 0 : MIN(level, 100) * 18 / 100;
-                screen->drawrect(43, 5, 21, 11);
-                screen->fillrect(64, 8, 2, 5);
+                screen->drawrect(indicator_x + 43, 5, 21, 11);
+                screen->fillrect(indicator_x + 64, 8, 2, 5);
                 if (fill > 0)
-                    screen->fillrect(45, 7, fill, 7);
+                    screen->fillrect(indicator_x + 45, 7, fill, 7);
             }
             screen->update_viewport();
+            screen->set_drawmode(DRMODE_SOLID);
             screen->set_viewport(old);
         }
     }
