@@ -16,4 +16,6 @@ This record includes unsuccessful assumptions and rollback. AI helped inspect co
 - **A larger playlist redesign was unsuitable.** Upstream gap batching assumes a lock stays held, while PodBox can release it during context_yield. The small paired block move avoids exposing a temporary gap and adds no extra allocation.
 - **Hardware identification is still a gate.** The Mac's attempted ATA/SAT query was unsupported. An iFlash label alone does not prove the existing generic SSD detector failed. Explicit brand detection remains research; no forced storage mode or new sleep delay was silently enabled.
 
+- **Fresh-export tests exposed old staging paths.** USB harnesses attempted to save output in directories that were not part of the portable export; the playlist comparison interpreted a relative source argument from the wrong directory. Result output now stays on stdout and source arguments resolve correctly. The corrected scripts were rerun successfully; firmware source was unchanged.
+
 Remaining uncertainty includes PB10 post-restart acceptance, long-term battery/wake behavior, actual adapter identity/classification and accessory/audio-output performance. These are not hidden behind passing host tests.

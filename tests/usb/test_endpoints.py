@@ -97,4 +97,4 @@ with tempfile.TemporaryDirectory(prefix='rodbox-usb-test-') as directory:
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(p/'test.c'),'-o',str(p/'test')],check=True)
     result = subprocess.run([str(p/'test')],check=True,capture_output=True,text=True)
     print(result.stdout,end='')
-    (base / '02-endpoint/test-output.txt').write_text(result.stdout)
+    # Results are printed; callers may capture them outside the source tree.

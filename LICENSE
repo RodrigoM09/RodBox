@@ -4,6 +4,6 @@ Firmware: retain and follow the original file licenses. Rockbox's GPLv2 text is 
 
 Scrim: CC BY-SA 3.0, as described in firmware-source/themes/scrim/README.md. Bundled fonts/icons retain their own OFL, Apache, CC and other notices.
 
-New companion utilities and regression harness adaptations in this repository are offered under GPL-2.0-or-later. New project documentation is offered under CC BY-SA 4.0. Quoted or inherited upstream documentation retains its existing terms.
+New companion utilities and regression harness adaptations in this repository are offered under GPL-2.0-or-later. New project documentation is offered under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/). Quoted or inherited upstream documentation retains its existing terms.
 
 No music, audiobooks, personal album art or artist photographs are licensed or distributed by this repository. Preserve attribution and satisfy applicable source/share-alike requirements when redistributing modified components.

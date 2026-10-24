@@ -115,5 +115,4 @@ with tempfile.TemporaryDirectory() as d:
     d=Path(d);c=d/'test.c';c.write_text(header+function('account_data_transfer')+function('receive_block_data')+function('send_csw')+runner)
     subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(c),'-o',str(d/'test')],check=True)
     result=subprocess.run([str(d/'test')],capture_output=True,text=True,check=True)
-    print(result.stdout,end='');(base/'01-write-length/test-output.txt').write_text(result.stdout)
-    (base/'01-write-length/extracted-test.c').write_text(c.read_text())
+    print(result.stdout,end='')

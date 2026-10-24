@@ -1,5 +1,5 @@
 {
-  "source_build": "Production PB10 ipod6g/apps-ipod/64MB passed before public export. A fresh sanitized-export build is checked separately.",
+  "source_build": "Fresh sanitized-export ipod6g/apps-ipod/64MB build passed with Arm GNU Toolchain 13.2.Rel1; image target/checksum passed. Generated binaries/logs remain outside the published Git history.",
   "host_checks": {
     "usb_write_length_cases": 17,
     "endpoint_cases": 11,
@@ -16,5 +16,7 @@
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
-  "media_or_listening_history_included": false
+  "media_or_listening_history_included": false,
+  "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
+  "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged."
 }

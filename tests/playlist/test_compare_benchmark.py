@@ -59,7 +59,7 @@ int main(int argc,char **argv) {
  puts("PASS: 50000 actual-function differential cases (indices, references, state, control-record command/position/chain, errors)");
 }
 '''
-c=out/'compare_benchmark.c';c.write_text(pre+function('baseline-guard.c','add_loop')+function(sys.argv[1] if len(sys.argv)>1 else '../../firmware-source/apps-ipod/playlist/playlist.c','add_block')+body)
+c=out/'compare_benchmark.c';c.write_text(pre+function('baseline-guard.c','add_loop')+function(str(Path(sys.argv[1]).resolve()) if len(sys.argv)>1 else '../../firmware-source/apps-ipod/playlist/playlist.c','add_block')+body)
 common=['clang','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(c),'-o',str(out/'compare_benchmark')]
 subprocess.run(common+['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'],check=True)
 subprocess.run([str(out/'compare_benchmark')],check=True,env={**os.environ,'UBSAN_OPTIONS':'halt_on_error=1'})

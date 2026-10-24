@@ -4,7 +4,7 @@ RodBox is a personal integration of existing open-source iPod firmware, selected
 
 ## Incorporated foundations
 
-- **Rockbox and its contributors** — https://github.com/Rockbox/rockbox and https://www.rockbox.org/. Firmware, codecs, drivers, DSP, storage, playback, build system and documentation underpin the whole project. Earlier local work used Rockbox revision `bad21c5f52`. Retain `docs/CREDITS`, `docs/COPYING`, `docs/LICENSES`, individual file notices and component licence files.
+- **Rockbox and its contributors** — https://github.com/Rockbox/rockbox and https://www.rockbox.org/. Firmware, codecs, drivers, DSP, storage, playback, build system and documentation underpin the whole project. Earlier local work used Rockbox revision `bad21c5f52`. Retain `firmware-source/docs/CREDITS`, `firmware-source/docs/COPYING`, `firmware-source/docs/LICENSES`, individual file notices and component licence files.
 - **PodBox by Anthony Fletcher** — https://github.com/anthonyfletcher/podbox, pinned base `0fe9c63355c4fc63e892237d019666fff4932a13`. The active application layer is `apps-ipod`. Native artwork lists/cache, in-memory music browsing, audiobook progress/chapters, viewers, settings organisation/search/explanations and rich theme rendering come from this foundation. These are upstream features, not new RodBox inventions.
 - **RockPod by Nux Li / nuxcodes** — https://github.com/nuxcodes/rockpod. Earlier local work adapted selected flash sleep/wake and Cover Flow behaviour from inspected tree `951d17c0575fbb61f3c585b5f0c3a0a941dcb10f`; the Cover Flow interface was subsequently removed at the user's request. The current PodBox foundation itself credits RockPod as its starting point for the app layer, hardware and much serial accessory support. Local storage safeguards were adapted to PodBox. This is not an installation of all RockPod features.
 - **Spun / Stats_for_iPod by Siebe Majoor / majorsiebe** — https://github.com/majorsiebe/Stats_for_iPod, credited by PodBox as inherited work. Retain PodBox's full credits and component-specific documentation for the complete inherited dependency chain.
@@ -22,7 +22,7 @@ The original firmware file notices govern the adapted code: the touched USB stor
 
 ## Scrim and bundled fonts
 
-**Scrim / Scrim_p**, created by Anthony Fletcher for PodBox: CC BY-SA 3.0. RodBox modifies volume presentation and selected icon mappings/title presentation; attribution and share-alike terms remain. See `themes/scrim/README.md` and its adjacent font licence files.
+**Scrim / Scrim_p**, created by Anthony Fletcher for PodBox: CC BY-SA 3.0. RodBox modifies volume presentation and selected icon mappings/title presentation; attribution and share-alike terms remain. See `firmware-source/themes/scrim/README.md` and its adjacent font licence files.
 
 - Google Material Design Icons — Apache 2.0.
 - Noto Project Authors — Noto Sans/Serif, SIL Open Font License 1.1.
@@ -48,4 +48,4 @@ The headphone preset is a conservative listening adjustment, not a calibrated co
 - Broader playlist batching/resume/unshuffle patches were reviewed, not included wholesale.
 - UglyEgg/rockbox-music, bahusoid/rockbox, Nokikuji/NokiPod, tsirysndr/equalizer, stevenla/rockbox-ipod, Wuverul/SongDock, Pates2004/rockbox-accessible, dest92/Better-Rockpod, morgenman/RockBoxPersonalMods, deandromi/Rockbox-Rockpod-HFSPlus and brnomt/rockbox were research leads. They must not be described as installed firmware contributions without a specific later imported patch.
 
-PodBox's inherited accessory and speech credits include Paul Sauro's Rockbox changes, mojyack/libiap, oandrew/ipod-gadget and ipod, iAP2 protocol research, NV Access's NVSpeechPlayer, Carnegie Mellon's CMU Pronouncing Dictionary and the credited NRL letter-to-sound rules. The full upstream README and `docs/podbox/iap-sources.md`, `iap2-sources.md` and `docs/LICENSES` remain authoritative for that inherited material. Presence of source does not establish that every optional feature was enabled or tested on the target player.
+PodBox's inherited accessory and speech credits include Paul Sauro's Rockbox changes, mojyack/libiap, oandrew/ipod-gadget and ipod, iAP2 protocol research, NV Access's NVSpeechPlayer, Carnegie Mellon's CMU Pronouncing Dictionary and the credited NRL letter-to-sound rules. The full upstream README and `firmware-source/docs/podbox/iap-sources.md`, `firmware-source/docs/podbox/iap2-sources.md` and `firmware-source/docs/LICENSES` remain authoritative for that inherited material. Presence of source does not establish that every optional feature was enabled or tested on the target player.

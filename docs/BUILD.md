@@ -18,3 +18,5 @@ The recorded image header is `ip6g`; the target checksum is the payload-byte sum
 Check out `checkpoint/pbN` to inspect a historical version. PB1–PB3 are reconstructed from retained artifacts and have not all been independently rebuilt as published. Earlier legacy checkpoints use Rockbox's old apps layer and must not use the apps-ipod build argument; consult their checkpoint notes. Evidence-only tags may not contain a complete firmware source tree.
 
 Original firmware binaries are intentionally absent because they can embed absolute host paths and are not complete clean redistributable packages. Build the source in your own environment and perform the checks in TESTING.md.
+
+Portable test scripts and companion tools were added in the final publication commits. Historical source tags may predate those files; use the latest test scripts against a separate checkout of the chosen source tag.

@@ -1,0 +1,28 @@
+{
+  "scope": "Independent full-history audit before publication, plus final verification of the publication-only fixes.",
+  "initial_audit": {
+    "commits": 26,
+    "objects": {
+      "commit": 26,
+      "tree": 989,
+      "blob": 12213
+    },
+    "unique_historical_paths": 12295,
+    "findings": []
+  },
+  "upstream_binary_verification": {
+    "binary_count": 2750,
+    "not_exact_known_upstream_blobs": []
+  },
+  "neutral_commit_metadata": true,
+  "original_private_git_database_imported": false,
+  "known_owner_device_identifiers_found": false,
+  "credential_private_key_shapes_found": false,
+  "raw_media_or_device_backups_published": false,
+  "retained_upstream_exceptions": [
+    "apps/plugins/puzzles/fonts.zip is an upstream source/build asset",
+    "packaging/rgnano/config.cfg is an upstream packaging fixture, not personal device configuration"
+  ],
+  "source_build_and_portable_tests": "passed; see VERIFICATION.json",
+  "privacy_boundary": "Known private identifiers are checked privately; the identifier list itself is never published. Original binary build products, media, device configs, database/progress and raw logs remain private."
+}
