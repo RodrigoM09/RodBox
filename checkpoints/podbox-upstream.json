@@ -1,0 +1,9 @@
+{
+  "checkpoint": "podbox-upstream",
+  "description": "Import pinned PodBox foundation with inherited credits",
+  "source_status": "pinned-upstream-source-export",
+  "note": "anthonyfletcher/podbox 0fe9c63355c4fc63e892237d019666fff4932a13. The active app layer is apps-ipod. Documentation screenshots/videos and unrelated prebuilt host executables are omitted from this sanitized export.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}

@@ -29,6 +29,7 @@
 #include "usb_ch9.h"
 #include "usb_core.h"
 #include "usb_class_driver.h"
+#include "usb_log.h"
 
 #if defined(USB_ENABLE_STORAGE)
 #include "usb_storage.h"
@@ -88,6 +89,14 @@
 #define NUM_CONFIGS 1
 #endif
 
+/* How many configurations the host is told of: Drive Only offers the one, as
+ * Apple's own disk mode does -- a car that sees a second takes the player for
+ * a phone. */
+static int offered_configs(void)
+{
+    return usb_drive_only() ? 1 : NUM_CONFIGS;
+}
+
 /*-------------------------------------------------------------------------*/
 /* USB protocol descriptors: */
 
@@ -127,7 +136,7 @@ static struct usb_config_descriptor __attribute__((aligned(2)))
     .bMaxPower           = (USB_MAX_CURRENT + 1) / 2, /* In 2mA units */
 };
 
-static const struct usb_qualifier_descriptor __attribute__((aligned(2)))
+static struct usb_qualifier_descriptor __attribute__((aligned(2)))
                                              qualifier_descriptor =
 {
     .bLength            = sizeof(struct usb_qualifier_descriptor),
@@ -141,10 +150,18 @@ static const struct usb_qualifier_descriptor __attribute__((aligned(2)))
 };
 
 static const struct usb_string_descriptor usb_string_iManufacturer =
-USB_STRING_INITIALIZER(u"Rockbox.org");
+USB_STRING_INITIALIZER(u"PodBox");
 
 static const struct usb_string_descriptor usb_string_iProduct =
-USB_STRING_INITIALIZER(u"Rockbox media player");
+USB_STRING_INITIALIZER(u"PodBox media player");
+
+#ifdef USB_ENABLE_IAP
+/* An iPhone's name for its iAP configuration, given to the player's while
+ * answering iAP2. */
+static const struct usb_string_descriptor usb_string_iap_config =
+USB_STRING_INITIALIZER(u"iPod USB Interface");
+#define USB_STRING_INDEX_IAP_CONFIG USB_STRING_INDEX_MAX
+#endif
 
 static struct usb_string_descriptor usb_string_iSerial =
 USB_STRING_INITIALIZER(u"00000000000000000000000000000000000000000");
@@ -290,6 +307,33 @@ static struct usb_class_driver* drivers[USB_NUM_DRIVERS] =
 };
 
 static int usb_core_do_set_config(uint8_t new_config);
+
+#ifdef USB_ENABLE_IAP
+/* The disk handover held for a second while iAP2 is Auto (usb_iap.h): a
+ * car picks configuration 1, sends 0x53 and moves to the iAP one within
+ * half a second; a computer stays. The timer posts the configuration
+ * notification with STORAGE_HELD, out of a configuration's range, to make
+ * the handover on the USB thread if the host is still there. */
+#define STORAGE_HELD 0x100
+static struct timeout storage_tmo;
+static bool storage_held;
+
+static int storage_tmo_cb(struct timeout *tmo)
+{
+    (void)tmo;
+    usb_signal_notify(USB_NOTIFY_SET_CONFIG, STORAGE_HELD);
+    return 0;
+}
+
+static void storage_hold(bool on)
+{
+    storage_held = on;
+    if (on)
+        timeout_register(&storage_tmo, storage_tmo_cb, HZ, 0);
+    else
+        timeout_cancel(&storage_tmo);
+}
+#endif
 static void usb_core_control_request_handler(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size);
 
 #define is_active(driver) ((driver)->enabled && !(driver)->error && (driver)->config == usb_config)
@@ -473,6 +517,27 @@ void usb_core_init(void)
     logf("usb_core_init() finished");
 }
 
+/* Exposed here because usb_storage.h is private to the stack; the app layer
+ * uses this to skip the post-USB database and dircache rebuild when the host
+ * only ever read from us. */
+bool usb_core_host_wrote_storage(void)
+{
+#ifdef USB_ENABLE_STORAGE
+    return usb_storage_host_wrote();
+#else
+    return false;
+#endif
+}
+
+bool usb_core_storage_pending(void)
+{
+#ifdef USB_ENABLE_IAP
+    if(storage_held)
+        return true;
+#endif
+    return usb_config == 0;
+}
+
 void usb_core_exit(void)
 {
     usb_core_do_set_config(0);
@@ -533,6 +598,7 @@ void usb_core_hotswap_event(int volume, bool inserted)
 static uint8_t batch_ep = 0;
 static bool batch_stopped;
 static usb_drv_batch_get_more batch_get_more;
+static volatile uint32_t batch_failed;
 
 int usb_drv_batch_init(int ep, usb_drv_batch_get_more get_more)
 {
@@ -583,6 +649,15 @@ static void batch_xfer_complete(void) {
         return;
     }
     batch_get_and_send();
+}
+
+void usb_drv_batch_take_counts(uint32_t *ran_empty, uint32_t *failed)
+{
+    const int irq = disable_irq_save();
+    *ran_empty = 0;
+    *failed = batch_failed;
+    batch_failed = 0;
+    restore_irq(irq);
 }
 #endif
 
@@ -656,8 +731,49 @@ static bool usb_drv_ep_allocate(struct usb_drv_ep_alloc_ctx* ctx, int ep, int ty
 }
 #endif
 
+/* When a configuration cannot hold every enabled driver's endpoints, the
+ * lowest ranked driver holding endpoints there is left out: HID before the
+ * sound card before the disk. Unranked drivers rank lowest, and a tie leaves
+ * out the driver that did not fit. */
+static int driver_rank(int i)
+{
+    switch(i) {
+#ifdef USB_ENABLE_STORAGE
+    case USB_DRIVER_MASS_STORAGE: return 3;
+#endif
+#ifdef USB_ENABLE_AUDIO
+    case USB_DRIVER_AUDIO: return 2;
+#endif
+#ifdef USB_ENABLE_HID
+    case USB_DRIVER_HID: return 1;
+#endif
+    default: return 0;
+    }
+}
+
+static int driver_to_leave_out(int config, int failed)
+{
+    int out = failed;
+    for(int i = 0; i < USB_NUM_DRIVERS; i++) {
+        struct usb_class_driver* d = drivers[i];
+        if(!d->enabled || d->error || d->config != config || d->ep_allocs_size == 0) {
+            continue;
+        }
+        if(driver_rank(i) < driver_rank(out)) {
+            out = i;
+        }
+    }
+    return out;
+}
+
 static void allocate_interfaces_and_endpoints(void)
 {
+    int enabled = 0;
+    for(int i = 0; i < USB_NUM_DRIVERS; i++)
+        if(drivers[i]->enabled)
+            enabled |= 1 << i;
+    usb_log(USB_LOG_ALLOC, enabled, usb_state, 0, 0);
+
     if(usb_config != 0) {
         /* deinit currently used endpoints */
         init_deinit_endpoints(usb_config, false);
@@ -703,10 +819,15 @@ retry:
                 alloc->type[req->dir] = req->type;
                 break;
             }
+            usb_log(USB_LOG_EP_ALLOC, i, req->ep ? req->ep : (req->dir == DIR_IN ? USB_DIR_IN : 0),
+                    req->type, req->optional);
             if(req->ep == 0 && !req->optional) {
-                /* no matching ep found, retry allocation excluding this driver */
-                logf("usb_core: no endpoint allocated for driver %d", i);
-                driver->enabled = false;
+                /* no matching ep found, retry allocation without the lowest
+                 * ranked driver, which may be this one */
+                int out = driver_to_leave_out(driver->config, i);
+                logf("usb_core: no endpoint allocated for driver %d, leaving out %d", i, out);
+                usb_log(USB_LOG_DRV_DROPPED, out, 0, 0, 0);
+                drivers[out]->enabled = false;
                 goto retry;
             }
         }
@@ -715,6 +836,8 @@ retry:
         driver->first_interface = cstate->num_interfaces;
         cstate->num_interfaces = driver->set_first_interface(cstate->num_interfaces);
         driver->last_interface = cstate->num_interfaces;
+        usb_log(USB_LOG_INTERFACES, i, driver->first_interface,
+                driver->last_interface, 0);
     }
 }
 
@@ -776,13 +899,25 @@ static void request_handler_device_get_descriptor(struct usb_ctrlrequest* req, u
 
     switch(type) {
         case USB_DT_DEVICE:
+            device_descriptor.idProduct = USB_PRODUCT_ID;
+#ifdef USB_ENABLE_IAP
+            /* Identify As, only with Accessory Protocol on; the sound
+             * card's own ID below still wins */
+            if(drivers[USB_DRIVER_IAP]->enabled && usb_identity()->product_id)
+                device_descriptor.idProduct = usb_identity()->product_id;
+#endif
+#if defined(USB_ENABLE_AUDIO) && defined(USB_PRODUCT_ID_AUDIO)
+            if(drivers[USB_DRIVER_AUDIO]->enabled)
+                device_descriptor.idProduct = USB_PRODUCT_ID_AUDIO;
+#endif
+            device_descriptor.bNumConfigurations = offered_configs();
             ptr = &device_descriptor;
             size = sizeof(struct usb_device_descriptor);
             break;
 
         case USB_DT_OTHER_SPEED_CONFIG:
         case USB_DT_CONFIG: {
-            if(index >= NUM_CONFIGS) {
+            if(index >= offered_configs()) {
                 logf("invalid config dt index %u", index);
                 break;
             }
@@ -817,6 +952,12 @@ static void request_handler_device_get_descriptor(struct usb_ctrlrequest* req, u
             config_descriptor.bNumInterfaces = config_states[index].num_interfaces;
             config_descriptor.bConfigurationValue = index + 1;
             config_descriptor.wTotalLength = (uint16_t)size;
+#ifdef USB_ENABLE_IAP
+            config_descriptor.iConfiguration =
+                usb_iap2_offered() &&
+                drivers[USB_DRIVER_IAP]->config == index + 1 ?
+                USB_STRING_INDEX_IAP_CONFIG : 0;
+#endif
             memcpy(reqdata, &config_descriptor, sizeof(struct usb_config_descriptor));
 
             ptr = reqdata;
@@ -827,6 +968,12 @@ static void request_handler_device_get_descriptor(struct usb_ctrlrequest* req, u
                 size = usb_strings[index]->bLength;
                 ptr = usb_strings[index];
             }
+#ifdef USB_ENABLE_IAP
+            else if(index == USB_STRING_INDEX_IAP_CONFIG) {
+                size = usb_string_iap_config.bLength;
+                ptr = &usb_string_iap_config;
+            }
+#endif
             else if(index == 0xee) {
                 /* We don't have a real OS descriptor, and we don't handle
                  * STALL correctly on some devices, so we return any valid
@@ -842,6 +989,7 @@ static void request_handler_device_get_descriptor(struct usb_ctrlrequest* req, u
             break;
 
         case USB_DT_DEVICE_QUALIFIER:
+            qualifier_descriptor.bNumConfigurations = offered_configs();
             ptr = &qualifier_descriptor;
             size = sizeof(struct usb_qualifier_descriptor);
             break;
@@ -876,7 +1024,13 @@ static void usb_core_init_interfaces(void)
 
 static void usb_core_set_address(uint8_t address)
 {
+#ifndef BOOTLOADER
+    /* The controller drivers answer SET_ADDRESS themselves, so the request
+     * never reaches the core's setup log; this is where it is seen. */
+    usb_record_waypoint(USB_WP_SET_ADDR, address, 0);
+#endif
     logf("usb_core: SET_ADR %d", address);
+    usb_log(USB_LOG_SET_ADDR, address, usb_state, 0, 0);
     /* A host may address the device before making any other request;
       * the driver answers SET_ADDRESS itself, so nothing has been
       * allocated yet. */
@@ -892,9 +1046,13 @@ static void usb_core_set_address(uint8_t address)
 
 static int usb_core_do_set_config(uint8_t new_config)
 {
+#ifndef BOOTLOADER
+    usb_record_waypoint(USB_WP_SET_CONFIG, new_config, 0);
+#endif
     logf("usb_core: SET_CONFIG %d to %d", usb_config, new_config);
+    usb_log(USB_LOG_SET_CONFIG, new_config, usb_drv_port_speed(), 0, 0);
 
-    if(new_config > NUM_CONFIGS) {
+    if(new_config > offered_configs()) {
         logf("usb_core: invalid config number");
         return -1;
     }
@@ -920,16 +1078,26 @@ static int usb_core_do_set_config(uint8_t new_config)
 
     bool require_exclusive = false;
     bool require_cpu_boost = false;
+#ifndef BOOTLOADER
+    int dbg_active = 0, dbg_error = 0;
+#endif
 
     /* activate new config */
     if(usb_config != 0) {
+        usb_log_sync();
         init_deinit_endpoints(usb_config, true);
         for(int i = 0; i < USB_NUM_DRIVERS; i++) {
             if(!is_active(drivers[i])) {
                 continue;
             }
+#ifndef BOOTLOADER
+            dbg_active |= 1 << i;
+#endif
             if(drivers[i]->init_connection != NULL && drivers[i]->init_connection() < 0) {
                 drivers[i]->error = true;
+#ifndef BOOTLOADER
+                dbg_error |= 1 << i;
+#endif
                 continue;
             }
             require_exclusive |= drivers[i]->needs_exclusive_storage;
@@ -937,12 +1105,29 @@ static int usb_core_do_set_config(uint8_t new_config)
         }
     }
 
+#ifndef BOOTLOADER
+    usb_record_waypoint(USB_WP_DRIVERS, dbg_active, dbg_error);
+    usb_log(USB_LOG_DRIVERS, dbg_active, dbg_error, 0, 0);
+    usb_record_waypoint(USB_WP_EXCLUSIVE, require_exclusive, 0);
+#endif
+
+#ifdef USB_ENABLE_IAP
+    if(require_exclusive && usb_iap2_offered()) {
+        /* Held while the host may yet prove a car; a car, never */
+        if(!usb_iap_answer_iap2() && !storage_held)
+            storage_hold(true);
+    } else
+#endif
     if(require_exclusive) {
         /* Also preserve a pending handover across repeated SET_CONFIG.
          * Restarting it discards acknowledgements and races the USB UI. */
         usb_request_exclusive_storage();
-    } else if(!bus_reset_pending) {
-        usb_release_exclusive_storage();
+    } else {
+#ifdef USB_ENABLE_IAP
+        storage_hold(false);
+#endif
+        if(!bus_reset_pending)
+            usb_release_exclusive_storage();
     }
     /* A bus reset is not a physical disconnect. Keep the storage handover
      * (and its acknowledgement epoch) until the host selects a new config
@@ -950,6 +1135,10 @@ static int usb_core_do_set_config(uint8_t new_config)
      * If the host never sends SET_CONFIGURATION again, local storage stays
      * unavailable until unplug. We expect reconfiguration promptly after a
      * reset, but deliberately do not remount on a timer. */
+#ifdef USB_ENABLE_IAP
+    if(usb_config != 0 && usb_config != usb_cdrv_iap.config)
+        usb_iap_end_reset_hold(true);
+#endif
     if(require_cpu_boost) {
         trigger_cpu_boost();
         thread_set_priority(thread_self(), PRIORITY_REALTIME);
@@ -1013,6 +1202,19 @@ static void request_handler_device(struct usb_ctrlrequest* req, uint8_t* reqdata
         #ifdef USB_ENABLE_IAP
         case USB_REQ_APPLE_SET_AVAIL_CURRENT:
             usb_core_control_response(USB_CONTROL_ACK, NULL, 0);
+            break;
+        case USB_REQ_APPLE_0x53:
+            /* An iPhone answers four zero bytes; an iPod refuses it. */
+            if(usb_iap2_offered() &&
+               (req->bRequestType & USB_DIR_IN) && req->wLength <= 4) {
+                usb_iap2_host_is_car();
+                usb_car_found();
+                memset(reqdata, 0, req->wLength);
+                usb_core_control_response(USB_CONTROL_ACK, reqdata,
+                                          req->wLength);
+            } else {
+                usb_core_control_response(USB_CONTROL_STALL, NULL, 0);
+            }
             break;
         #endif
         default:
@@ -1168,6 +1370,11 @@ static void usb_core_control_request_handler(struct usb_ctrlrequest* req, uint8_
     }
 }
 
+bool usb_core_bus_resetting(void)
+{
+    return bus_reset_pending;
+}
+
 static void do_bus_reset(void) {
     usb_address = 0;
     usb_state = DEFAULT;
@@ -1179,6 +1386,13 @@ static void do_bus_reset(void) {
 /* called by usb_drv_int() */
 void usb_core_bus_reset(void)
 {
+#ifndef BOOTLOADER
+    /* Counted here, not at the notify below: that one is only posted once a
+     * configuration is set, so before then resets are handled inline and never
+     * reach usb_core_handle_notify() at all. */
+    usb_record_waypoint(USB_WP_BUS_RESET, 0, 0);
+#endif
+    usb_log(USB_LOG_BUS_RESET, usb_drv_port_speed(), 0, 0, 0);
     logf("usb_core: bus reset");
     if(bus_reset_pending) {
         return;
@@ -1215,6 +1429,8 @@ static void process_setup_request(struct usb_ctrlrequest* req) {
     /* start control out data phase without usb thread interaction */
     if(req->wLength > sizeof(usb_control_data)) {
         logf("usb_core: control write too large %u > %u", req->wLength, sizeof(usb_control_data));
+        usb_log(USB_LOG_RESPONSE, USB_LOG_RESP_TOO_LONG, req->bRequest,
+                req->wLength, 0);
         usb_drv_stall(EP_CONTROL, true, false);
         set_ep0_state(EP0_READY);
         return;
@@ -1242,6 +1458,8 @@ void usb_core_transfer_complete(int ep, int dir, int status, int length) {
 #ifdef USB_BATCH_NON_NATIVE
     /* batch api */
     if(batch_ep != 0 && (ep | dir) == batch_ep) {
+        if(status != 0)
+            batch_failed++;
         batch_xfer_complete();
         return;
     }
@@ -1305,9 +1523,21 @@ void usb_core_handle_notify(long id, intptr_t data)
             usb_core_set_address(data);
             break;
         case USB_NOTIFY_SET_CONFIG:
+#ifdef USB_ENABLE_IAP
+            if(data == STORAGE_HELD) {
+                /* still on a configuration that needs the disk */
+                if(storage_held) {
+                    storage_held = false;
+                    if(!usb_iap_answer_iap2())
+                        usb_request_exclusive_storage();
+                }
+                break;
+            }
+#endif
             usb_core_do_set_config(data);
             break;
         case USB_NOTIFY_BUS_RESET:
+            /* counted in usb_core_bus_reset(), which posted this */
             usb_core_do_set_config(0);
             do_bus_reset();
 #ifdef HAVE_USB_CHARGING_ENABLE
@@ -1346,6 +1576,16 @@ void usb_core_control_cancelled(void)
 }
 
 void usb_core_setup_received(struct usb_ctrlrequest* req) {
+#ifndef BOOTLOADER
+    /* Every control request but SET_ADDRESS, which the controller driver
+     * takes first, lands here, so this answers "did the host talk to us at
+     * all" independently of what we did next. */
+    usb_record_waypoint(USB_WP_SETUP, req->bRequest, 0);
+#endif
+    usb_log(USB_LOG_SETUP, req->bRequestType, req->bRequest,
+            req->wValue | (uint32_t)req->wIndex << 16,
+            req->wLength | (uint32_t)(bus_reset_pending ? USB_LOG_SETUP_DROPPED :
+                            ep0_state != EP0_READY ? USB_LOG_SETUP_QUEUED : 0) << 16);
     if(bus_reset_pending) {
         logf("usb_core: bus resetting tick=%lu", current_tick);
         return;
@@ -1365,6 +1605,15 @@ void usb_core_setup_received(struct usb_ctrlrequest* req) {
 
 void usb_core_control_response(enum usb_control_response response, const void* data, size_t size) {
     logf("usb_core: response ack=%d size=%u ep0_state=%d tick=%lu", response, size, ep0_state, current_tick);
+    /* d: which product a device descriptor named. Identify As and the sound
+     * card change it, and a host may judge the player by it. */
+    usb_log(USB_LOG_RESPONSE, response == USB_CONTROL_STALL ? USB_LOG_RESP_STALL : USB_LOG_RESP_ACK,
+            handling_request.bRequest, size,
+            (response != USB_CONTROL_STALL
+             && (handling_request.bRequestType & USB_TYPE_MASK) == USB_TYPE_STANDARD
+             && handling_request.bRequest == USB_REQ_GET_DESCRIPTOR
+             && (handling_request.wValue >> 8) == USB_DT_DEVICE)
+                ? device_descriptor.idProduct : 0);
 
     int oldlevel = disable_irq_save();
     if(bus_reset_pending) {
@@ -1447,7 +1696,15 @@ void usb_charging_enable(int state)
 
 int usb_charging_maxcurrent(void)
 {
-    if (!initialized || usb_charging_mode == USB_CHARGING_DISABLE)
+    if (usb_charging_mode == USB_CHARGING_DISABLE)
+        return 100;
+#ifndef BOOTLOADER
+    /* The player never powers the port, so 5V on it in host mode is a
+     * charger's */
+    if (usb_host_probe_active())
+        return usb_detect() != USB_EXTRACTED ? 500 : 100;
+#endif
+    if (!initialized)
         return 100;
     if (usb_state == CONFIGURED)
         return usb_charging_current_requested;

@@ -1,0 +1,366 @@
+/***************************************************************************
+ * Original code from RockBox
+ * was: apps/tagcache.h
+ * Copyright (C) 2005 by Miika Pekkarinen
+ * GNU General Public License (version 2+)
+ *
+ * Interface to tagcache.c: the search context, the tag enum and the query
+ * API.
+ ****************************************************************************/
+#ifndef _TAGCACHE_H
+#define _TAGCACHE_H
+
+#include "config.h"
+#include "system.h"
+#include "metadata.h"
+#include "settings/settings.h"
+
+/**
+ Note: When adding new tags, make sure to update index_entry_ec and tags_str in 
+ tagcache.c and bump up the header version too.
+ */
+enum tag_type { tag_artist = 0, tag_album, tag_genre, tag_title,
+    tag_filename, tag_composer, tag_comment, tag_albumartist, tag_grouping, tag_year,
+    tag_discnumber, tag_tracknumber, tag_virt_canonicalartist, tag_bitrate, tag_length,
+    tag_playcount, tag_rating, tag_playtime, tag_lastplayed, tag_commitid, tag_mtime,
+    tag_lastelapsed, tag_lastoffset,
+    /* Real tags end here, count them. */
+    TAG_COUNT,
+    /* Virtual tags */
+    tag_virt_basename=TAG_COUNT,
+    tag_virt_length_min, tag_virt_length_sec,
+    tag_virt_playtime_min, tag_virt_playtime_sec,
+    tag_virt_entryage, tag_virt_autoscore,
+    /* Whether the track's genre names spoken word (db_spoken.c). */
+    tag_virt_spoken,
+    TAG_COUNT_ALL};
+
+/* How many entries to fetch to the seek table at once while searching. */
+#define SEEK_LIST_SIZE 32
+
+#define TAGCACHE_MAX_FILTERS 4
+#define TAGCACHE_MAX_CLAUSES 32
+
+/* Tag to be used on untagged files. */
+#define UNTAGGED "<Untagged>"
+/* Maximum length of a single tag. */
+#define TAG_MAXLEN (MAX_PATH*2)
+/* buffer size for all the (stack allocated & static) buffers handling tc data */
+#define TAGCACHE_BUFSZ (TAG_MAXLEN+32)
+
+/* Numeric tags (we can use these tags with conditional clauses).
+ *
+ * A 32-bit mask over tag indices, so it holds tags 0..31 and no more.
+ * tag_virt_spoken is 30; one index is left before a new numeric tag needs
+ * this widened and every BIT_N() against it checked. */
+#define TAGCACHE_NUMERIC_TAGS ((1LU << tag_year) | (1LU << tag_discnumber) | \
+    (1LU << tag_tracknumber) | (1LU << tag_length) | (1LU << tag_bitrate) | \
+    (1LU << tag_playcount) | (1LU << tag_rating) | (1LU << tag_playtime) | \
+    (1LU << tag_lastplayed) | (1LU << tag_commitid) | (1LU << tag_mtime) | \
+    (1LU << tag_lastelapsed) | (1LU << tag_lastoffset) | \
+    (1LU << tag_virt_length_min) | (1LU << tag_virt_length_sec) | \
+    (1LU << tag_virt_playtime_min) | (1LU << tag_virt_playtime_sec) | \
+    (1LU << tag_virt_entryage) | (1LU << tag_virt_autoscore) | \
+    (1LU << tag_virt_spoken))
+
+#define TAGCACHE_IS_NUMERIC(tag) (BIT_N(tag) & TAGCACHE_NUMERIC_TAGS)
+
+enum clause { clause_none, clause_is, clause_is_not, clause_gt, clause_gteq,
+    clause_lt, clause_lteq, clause_contains, clause_not_contains, 
+    clause_begins_with, clause_not_begins_with, clause_ends_with, clause_not_ends_with, 
+	clause_oneof, clause_begins_oneof, clause_ends_oneof, clause_contains_oneof, 
+	clause_not_oneof, clause_not_begins_oneof, clause_not_ends_oneof, clause_not_contains_oneof,
+    clause_logical_or };
+
+/* Or'd into a clause's type: the tag's text is matched as it sorts, past a
+ * leading "The ", "A " or "An " while that setting is on. The by-first-letter
+ * menus set it, so their letters agree with the order of the lists. */
+#define CLAUSE_SORT_NAME 0x100
+
+struct tagcache_stat {
+    char db_path[MAX_PATHNAME+1];  /* Path to DB root directory */
+
+    bool initialized;        /* Is tagcache currently busy? */
+    bool readyvalid;         /* Has tagcache ready status been ascertained */
+    bool ready;              /* Is tagcache ready to be used? */
+    bool ramcache;           /* Is tagcache loaded in ram? */
+    bool commit_delayed;     /* Has commit been delayed until next reboot? */
+    bool econ;               /* Is endianess correction enabled? */
+    volatile bool syncscreen;/* Synchronous operation with debug screen? */
+    volatile bool scanning;  /* Is a build/update scan currently running? */
+    volatile const char 
+        *curentry;           /* Path of the current entry being scanned. */
+
+    int  commit_step;        /* Commit progress */
+    int  ramcache_allocated; /* Has ram been allocated for ramcache? */
+    int  ramcache_used;      /* How much ram has been really used */
+    int  progress;           /* Current progress of disk scan */
+    int  processed_entries;  /* Scanned disk entries so far */
+    int  total_entries;      /* Total entries in tagcache */
+    int  queue_length;       /* Command queue length */
+
+    /* What scans have found since start-up, in tracks */
+    int  scan_added;         /* new files */
+    int  scan_changed;       /* files changed since they were read */
+    int  scan_unreadable;    /* music files whose tags could not be read */
+    int  scan_removed;       /* files gone */
+
+    /* const char *uimessage;   Pending error message. Implement soon. */
+};
+
+/* The counters that say what has changed in the database since a caller last
+ * looked. Read together because anything watching one wants the others, and
+ * because the deleted count wants the ramcache pinned once.
+ *
+ * commitid and serial live in the master header and cost nothing to read.
+ * deleted_ct is counted over the master index, so it needs the database in
+ * RAM; off the ramcache it is -1 and a caller watching it simply never sees a
+ * deletion. */
+struct tagcache_marks {
+    int32_t commitid;   /* commits so far; tag_commitid stamps each entry */
+    int32_t serial;     /* one per logged play, and the lastplayed value */
+    int32_t deleted_ct; /* entries flagged deleted, or -1 if not countable */
+    uint32_t generation; /* as tagcache_generation() */
+};
+
+enum source_type {source_constant, 
+                  source_runtime, 
+                  source_current_path /* dont add items after this.
+                                       it is used as an index 
+                                       into id3_to_search_mapping */
+                 };
+
+struct tagcache_search_clause
+{
+    int tag;
+    int type;
+    bool numeric;
+    int source;
+    long numeric_data;
+    char *str;
+};
+
+struct tagcache_seeklist_entry {
+    int32_t seek;
+    int32_t flag;
+    int32_t idx_id;
+};
+
+struct tagcache_search {
+    /* For internal use only. */
+    int fd, masterfd;
+    int idxfd[TAG_COUNT];
+    struct tagcache_seeklist_entry seeklist[SEEK_LIST_SIZE];
+    int seek_list_count;
+    int32_t filter_tag[TAGCACHE_MAX_FILTERS];
+    int32_t filter_seek[TAGCACHE_MAX_FILTERS];
+    int filter_count;
+    struct tagcache_search_clause *clause[TAGCACHE_MAX_CLAUSES];
+    int clause_count;
+    int list_position;
+    int seek_pos;
+    int seek_end;        /* The master entry the walk stops before */
+    const int *id_list;  /* Set: the only master entries walked */
+    int id_count;
+    long position;
+    int entry_count;
+    int master_entry_count; /* Index entries the master header claims */
+    bool valid;
+    bool initialized;
+    bool failed;         /* A read failed: results so far are incomplete */
+    uint32_t *unique_list;
+    int unique_list_capacity;
+    int unique_list_count;
+
+    /* Exported variables. */
+    bool ramsearch;      /* Is ram copy of the tagcache being used. */
+    bool ramresult;      /* False if result is not static, and must be copied.
+                            Currently always false since ramresult buffer is
+                            movable */
+    int type;            /* The tag type to be searched. Only nonvirtual tags */
+    char *result;        /* The result data for all tags. */
+    int result_len;      /* Length of the result including \0 */
+    int32_t result_seek; /* Current position in the tag data. */
+    int32_t idx_id;      /* Entry number in the master index. */
+};
+
+
+const char* tagcache_tag_to_str(int tag);
+
+/* The text an artist or album sorts by: past a leading "The ", "A " or "An "
+ * while Sort Ignoring The/A/An is on, otherwise the name itself. Only
+ * the order changes; a list still shows the whole name. */
+const char *tagcache_sort_name(const char *name);
+/* The same, whatever Sort Ignoring The/A/An says. */
+const char *tagcache_skip_article(const char *name);
+/* Whether lists of this tag sort by tagcache_sort_name(): artists and albums. */
+bool tagcache_tag_skips_articles(int tag);
+
+bool tagcache_find_index(struct tagcache_search *tcs, const char *filename);
+bool tagcache_check_clauses(struct tagcache_search *tcs,
+                            struct tagcache_search_clause **clause, int count);
+bool tagcache_search(struct tagcache_search *tcs, int tag);
+void tagcache_search_set_uniqbuf(struct tagcache_search *tcs,
+                                 void *buffer, long length);
+bool tagcache_search_add_filter(struct tagcache_search *tcs,
+                                int tag, int seek);
+/* Walks only master entries first to last, for a caller that knows every
+ * match lies there -- an album's, from its row. */
+void tagcache_search_set_range(struct tagcache_search *tcs, int first, int last);
+/* Walks only the listed master entries, for a caller that already knows
+ * which can match. Refused, leaving the search whole, unless it is over the
+ * RAM copy. The list must outlive the search. */
+bool tagcache_search_set_ids(struct tagcache_search *tcs,
+                             const int *ids, int count);
+bool tagcache_search_add_clause(struct tagcache_search *tcs,
+                                struct tagcache_search_clause *clause);
+bool tagcache_get_next(struct tagcache_search *tcs, char *buf, long size);
+bool tagcache_retrieve(struct tagcache_search *tcs, int idxid, 
+                       int tag, char *buf, long size);
+void tagcache_search_finish(struct tagcache_search *tcs);
+long tagcache_get_numeric(const struct tagcache_search *tcs, int tag);
+bool tagcache_get_values(const struct tagcache_search *tcs,
+                         const int *tags, long *out, int count);
+long tagcache_increase_serial(void);
+bool tagcache_import_changelog(void);
+bool tagcache_create_changelog(struct tagcache_search *tcs);
+void tagcache_update_numeric(int idx_id, int tag, long data);
+/* Moves whenever a Rebuild renumbers the entries, or a host changes the
+ * database files over USB. An idx_id is good only under the generation it
+ * was read in: keep the two together, and drop an update whose generation
+ * has moved on. */
+uint32_t tagcache_generation(void);
+
+struct tagcache_stat* tagcache_get_stat(void);
+/* Fill in the change counters above. Cheap enough to ask on a timer; the
+ * deleted count is the only part that walks anything, and it walks RAM. */
+void tagcache_get_marks(struct tagcache_marks *m);
+/* True while a database build/update scan or commit is in progress. Used to
+ * drive the status-bar activity indicator (%ld) instead of a modal splash. */
+bool tagcache_is_busy(void);
+/* Whether a search would start now or wait. tagcache_search() opens by polling
+ * read_lock, which a commit or a rebuild holds for as long as it runs -- so on
+ * a thread that must not stall, ask this first and do without the answer.
+ *
+ * Reliable rather than advisory, because threads here are cooperative: nothing
+ * else runs between this returning true and the search that follows it, so the
+ * lock cannot be taken in the gap. That holds only if the caller does not
+ * yield in between. */
+bool tagcache_search_ready(void);
+int tagcache_get_commit_step(void);
+bool tagcache_prepare_shutdown(void);
+void tagcache_shutdown(void);
+
+void tagcache_screensync_event(void);
+void tagcache_screensync_enable(bool state);
+
+bool tagcache_is_in_ram(void);
+bool tagcache_fill_tags(struct mp3entry *id3, const char *filename);
+
+/* The path index: a database entry by its file, from RAM. Every call misses
+ * unless the database is loaded into RAM, and none
+ * of them touch the disk.
+ *
+ * The finds return an idx_id, or -1 for a file the database does not hold.
+ * tagcache_find_key() takes path_key() of the path (database/path_key.h). */
+int  tagcache_find_path(const char *path);
+
+/* The album and artist tables, built with the RAM copy and gone with it.
+ * An album is one album name with one album artist; an artist is one album
+ * artist. Seeks are for this commit only, and first and last bound an
+ * album's tracks in the master index. Play figures follow every counted play.
+ * Rows are copied out, the tables living in a buffer that can move. */
+struct tagcache_album {
+    int32_t  album_seek;
+    int32_t  artist_seek;        /* tag_albumartist */
+    int32_t  first, last;
+    int32_t  playcount;
+    int32_t  lastplayed;
+    uint32_t art_hash;           /* art_cache_dir_hash() of its first track's
+                                    folder, 0 for none */
+    uint32_t artist_art_hash;    /* and of the folder above that */
+    int16_t  year;               /* the latest of its tracks' */
+    uint16_t tracks;
+    uint16_t spoken;             /* of them, in a spoken genre */
+    uint16_t pad;
+};
+
+struct tagcache_artist {
+    int32_t  seek;               /* tag_albumartist */
+    int32_t  playcount;
+    int32_t  lastplayed;
+    uint32_t art_hash;           /* its first album's artist_art_hash */
+    uint16_t albums;
+    uint16_t spoken_albums;      /* albums all of whose tracks are spoken */
+};
+
+/* Albums in album-seek order then artist-seek order; artists in seek order.
+ * Counts are 0 while the RAM copy is not in use. */
+int  tagcache_album_count(void);
+bool tagcache_album_get(int n, struct tagcache_album *out);
+int  tagcache_album_find(long album_seek, long artist_seek);
+/* The first row with this album name; any others follow it */
+int  tagcache_album_find_name(long album_seek);
+int  tagcache_album_of(int idx_id);
+int  tagcache_artist_count(void);
+bool tagcache_artist_get(int n, struct tagcache_artist *out);
+int  tagcache_artist_find(long seek);
+
+/* A counted play of idx_id, at the play serial 'serial' */
+void tagcache_album_played(int idx_id, long serial);
+int  tagcache_find_key(uint64_t key);
+/* The whole database by its keys, slot by slot in key order: n from 0 to
+ * tagcache_path_slots(). An entry deleted since the load gives an idx_id of
+ * -1. False past the end, and whenever the RAM copy is not in use. */
+bool tagcache_path_slot(int n, uint64_t *key, int *idx_id);
+int  tagcache_path_slots(void);
+/* path_key() of entry idx_id, which a Rebuild renumbers. 0 when the RAM copy
+ * is not in use or idx_id has no slot. */
+uint64_t tagcache_entry_key(int idx_id);
+/* Commits so far: it changes whenever the database does. */
+int32_t tagcache_commit_id(void);
+/* A string tag of a found entry. False for <Untagged>, and for tag_filename:
+ * under Quick there are no paths in RAM, so a caller needing the path reads
+ * it with tagcache_retrieve(), one seek. */
+bool tagcache_entry_string(int idx_id, int tag, char *buf, size_t size);
+bool tagcache_entry_numeric(int idx_id, int tag, long *value);
+/* A string tag's value by the seek a search gave for it (result_seek). The
+ * search's idx_id names a song only for title and filename, so for an artist,
+ * album or genre this is the way to its name. RAM only; false for
+ * <Untagged>. */
+bool tagcache_seek_string(int tag, long seek, char *buf, size_t size);
+/* For the database info screen: false when the index is not loaded. The
+ * counts are lookups since boot. */
+bool tagcache_path_index_info(int *slots, int *found, int *missed);
+void tagcache_unload_ramcache(void);
+void tagcache_reload_ramcache(void);
+bool tagcache_reinstate_ramcache(void);
+/* Once the disk is back from the host: whether it changed any database file.
+ * True stays true, and the database is closed to this run until a restart.
+ * Cheap when no cable session is pending. */
+bool tagcache_changed_over_usb(void);
+/* True when the RAM copy was refused for want of room: it will not load this
+ * session unless a later reload finds room. False while it may still load,
+ * and while it is loaded. */
+bool tagcache_ram_refused(void);
+void tagcache_commit_finalize(void);
+void tagcache_init(void) INIT_ATTR;
+#ifdef DBTOOL
+/* tools/database_pb: one Update, or Rebuild, of the database under the
+ * filesystem root, with no thread. True when it ends ready. */
+bool tagcache_tool_run(bool rebuild);
+/* tools/artcache_pb: the database read as it stands and loaded into RAM.
+ * True when it is ready and loaded. */
+bool tagcache_tool_open(void);
+#endif
+bool tagcache_is_initialized(void);
+/* Boot has loaded the skins: the boot scan may build or update. */
+void tagcache_boot_finished(void);
+bool tagcache_is_fully_initialized(void);
+bool tagcache_is_usable(void);
+void tagcache_start_scan(void);
+void tagcache_stop_scan(void);
+bool tagcache_update(void);
+bool tagcache_rebuild(void);
+int tagcache_get_max_commit_step(void);
+#endif

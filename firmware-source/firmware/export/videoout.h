@@ -31,6 +31,9 @@ enum videoout_accessory
 
 bool videoout_disable(void);
 bool videoout_active(void);
+/* True while the mode is not Off, whether or not a picture is showing: On
+ * can be waiting for a dock. */
+bool videoout_requested(void);
 bool videoout_lcd_clock_required(void);
 bool videoout_mirror_yuv420(const unsigned char *luma,
                             const unsigned char *cb,
@@ -42,6 +45,10 @@ void videoout_mirror_rgb565(const void *source, int x, int y,
                             int width, int height, int stride);
 void videoout_set_mode(enum videoout_mode mode, const void *framebuffer,
                        int width, int height);
+/* The picture's size on the TV: the LCD pixel for pixel, or doubled. pal
+ * picks the TV standard where HAVE_VIDEOOUT_STANDARD says there is a choice,
+ * and is ignored elsewhere. A running output changes at once. */
+void videoout_set_format(bool double_size, bool pal);
 
 /* IRQ-safe: requests, but does not perform, the sleeping ADC transaction. */
 void videoout_request_accessory_identification(void);

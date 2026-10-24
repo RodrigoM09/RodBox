@@ -1,0 +1,385 @@
+/* Source list for the core build, grouped to match the apps/ layout.
+ * See apps/README for what each directory is for.
+ *
+ * This file is preprocessed, so #ifdef works but the conditions must be
+ * defines visible from config.h. Entry ORDER determines link order; the
+ * grouping below changed it once, deliberately, when the tree was
+ * reorganised. */
+
+main.c
+root_menu.c
+
+/* -- the device ------------------------------------------------------- */
+
+audio/ab_repeat.c
+audio/audio_thread.c
+audio/buffering.c
+audio/codec_thread.c
+audio/codecs.c
+audio/pcmbuf.c
+audio/play_status.c
+audio/playback.c
+audio/remote_seek.c
+audio/rbcodec_helpers.c
+audio/voice_thread.c
+#ifndef HAVE_HARDWARE_BEEP
+audio/beep.c
+#endif
+#if INPUT_SRC_CAPS != 0
+audio/audio_path.c
+#endif
+
+#ifdef HAVE_TAGCACHE
+database/tagcache.c
+database/path_key.c
+database/libfile.c
+database/db_summary.c
+database/sound_index.c
+database/sound_mix.c
+database/sound_mood.c
+database/sound_cal.c
+playlist/mood_screen.c
+database/db_featured.c
+database/db_featured_parse.c
+database/db_spoken.c
+database/unreadable.c
+metadata/book_resume.c
+screens/browse/browser_db.c
+screens/browse/album_charts.c
+screens/browse/featured_artists.c
+screens/browse/listen_progress.c
+screens/browse/book_shelf.c
+#endif
+
+playlist/catalog.c
+playlist/playlist.c
+playlist/viewer.c
+
+metadata/chapters.c
+metadata/cuesheet.c
+metadata/id3_chapters.c
+metadata/mp4_chapters.c
+metadata/mul_id3.c
+metadata/tag_trim.c
+#ifdef HAVE_ALBUMART
+metadata/albumart.c
+metadata/art_cache.c
+#endif
+
+/* -- the interface, by altitude --------------------------------------- */
+
+draw/bmp.c
+draw/card_paint.c
+draw/card_row.c
+draw/card_text.c
+draw/icon.c
+draw/icon_bitmaps.c
+draw/img_filter.c
+draw/line.c
+draw/progress_bar.c
+draw/round_rect.c
+draw/screen_access.c
+draw/scrollbar.c
+draw/text_shadow.c
+draw/text_wrap.c
+draw/viewport.c
+#if defined(HAVE_ALBUMART) || defined(HAVE_JPEG)
+draw/resize.c
+#endif
+#ifdef HAVE_JPEG
+draw/jpeg_load.c
+draw/jpeg_enc.c
+#ifdef CPU_ARM
+draw/jpeg_idct_arm.S
+#endif
+#endif
+
+widgets/dialog.c
+widgets/dialog_prose.c
+widgets/edit_line.c
+widgets/keyboard.c
+widgets/list.c
+widgets/list_render.c
+widgets/list_skinned.c
+widgets/menu.c
+widgets/option_select.c
+widgets/rating_dialog.c
+audio/peak_meter.c
+audio/spectrum_meter.c
+audio/beat_analyse.c
+audio/beat_hops.c
+audio/beat_probe.c
+audio/chroma.c
+audio/beat_track.c
+audio/track_decode.c
+widgets/search_dialog.c
+widgets/splash.c
+widgets/text_box.c
+widgets/yesno.c
+#ifdef HAVE_TAGCACHE
+widgets/folder_select.c
+#endif
+#ifdef HAVE_LCD_COLOR
+widgets/color_picker.c
+#endif
+#if defined(HAVE_BACKLIGHT) || !defined(HAS_BUTTON_HOLD)
+widgets/mask_select.c
+#endif
+
+screens/bookmark.c
+screens/browse/browser.c
+screens/browse/browser_disk.c
+screens/browse/browser_flat.c
+screens/context_menu.c
+screens/system/about.c
+screens/system/art_health.c
+screens/system/bg_task_info.c
+screens/system/db_search.c
+screens/system/file_search.c
+screens/system/playlist_search.c
+screens/system/beat_debug.c
+screens/system/probe_debug.c
+screens/system/sound_scan.c
+screens/system/sound_library.c
+screens/system/debug_menu.c
+files/file_ops.c
+files/file_index.c
+files/filetypes.c
+files/path_list.c
+screens/shortcuts.c
+screens/system/time_set.c
+screens/playback/sound_props.c
+screens/playback/track_info.c
+screens/playback/wps.c
+
+#ifdef ROCKBOX_HAS_LOGF
+screens/system/log_viewer.c
+#endif
+#ifdef HAVE_QUICKSCREEN
+screens/playback/quick_screen.c
+#endif
+#ifndef USB_NONE
+screens/system/usb_screen.c
+#endif
+
+/* Core-linked "Album covers" screen, ported from the pictureflow plugin.
+ * Gated on HAVE_TAGCACHE like the rest of the tag-database UI -- it browses
+ * the database index; see root_menu.c's GO_TO_ALBUM_COVERS. */
+#ifdef HAVE_TAGCACHE
+screens/covers/album_covers.c
+screens/covers/artist_portraits.c
+screens/covers/carousel.c
+#endif
+
+games/spike/spike.c
+games/spike/spike_bar.c
+games/spike/spike_clock.c
+games/spike/spike_draw.c
+games/spike/spike_gen.c
+games/spike/spike_menu.c
+games/spike/spike_music.c
+games/spike/spike_pose.c
+games/spike/spike_score.c
+games/spike/spike_tap.c
+games/spike/spike_text.c
+games/spike/spike_world.c
+games/quiz/quiz.c
+games/quiz/quiz_pick.c
+
+screens/settings/display_settings.c
+screens/settings/eq_settings.c
+screens/settings/eq_editor.c
+screens/settings/eq_curve.c
+screens/main_menu.c
+screens/main_menu_config.c
+screens/context_menu_config.c
+screens/music_menu_config.c
+screens/settings/common_settings.c
+screens/settings/settings_walk.c
+screens/settings/settings_search.c
+screens/settings/settings_changed.c
+screens/settings/spun_settings.c
+screens/settings/settings_help.c
+screens/settings/playback_settings.c
+screens/settings/playlist_settings.c
+screens/settings/general_settings.c
+screens/settings/sound_settings.c
+screens/settings/text_viewer_settings.c
+screens/settings/lyric_viewer_settings.c
+screens/settings/theme_settings.c
+#ifdef HAVE_TAGCACHE
+screens/settings/album_covers_settings.c
+#endif
+#if CONFIG_RTC
+screens/settings/time_settings.c
+#endif
+
+viewers/credits.c
+viewers/playing_time.c
+viewers/properties.c
+viewers/text_reel.c
+
+/* Synchronised lyrics for the playing track. lyrics.c finds, loads and indexes
+ * .lrc/.lrc8/.snc files and ID3 SYLT frames (ported from the lrcplayer
+ * plugin); lyric_viewer.c is the screen that draws them. */
+viewers/lyric_viewer/lyrics.c
+viewers/lyric_viewer/lyric_viewer.c
+
+/* Streaming text-extraction engine behind the core-linked text viewer. Turns
+ * plain/markdown/html/rtf/fb2/epub/docx/pdf into a stream of UTF-8. Platform
+ * coupling is confined to ts_io_core.c; the rest of the engine is portable. */
+viewers/text_viewer/text_viewer.c
+viewers/text_viewer/ts_charset.c
+viewers/text_viewer/ts_core.c
+viewers/text_viewer/ts_inflate.c
+viewers/text_viewer/ts_io_core.c
+viewers/text_viewer/ts_lyrics.c
+viewers/text_viewer/ts_markup.c
+viewers/text_viewer/ts_pdf.c
+viewers/text_viewer/ts_pdffont.c
+viewers/text_viewer/ts_tags.c
+viewers/text_viewer/ts_text.c
+viewers/text_viewer/ts_zip.c
+viewers/text_viewer/ts_zipdoc.c
+
+/* Playback-log viewer -- listening statistics, shown in the UI as the
+ * "Playback Report". pv_log.c reads the rotated log family the core writes,
+ * pv_names.c turns each logged path into an artist, album and title, and
+ * pv_stats.c folds the result into the aggregates the cards are drawn from.
+ * pv_tiles.c decides which cards a section holds and pv_row.c is the screen.
+ *
+ * A card is drawn by draw/card_paint.c. */
+viewers/playback_viewer/pv_badges.c
+viewers/playback_viewer/pv_index.c
+viewers/playback_viewer/pv_log.c
+viewers/playback_viewer/pv_moves.c
+viewers/playback_viewer/pv_names.c
+viewers/playback_viewer/pv_play.c
+viewers/playback_viewer/pv_row.c
+viewers/playback_viewer/pv_stats.c
+viewers/playback_viewer/pv_tiles.c
+
+/* Core-linked image viewer, ported from the imageviewer plugin. Colour
+ * targets only -- the greylib paths of the original are gone. Reuses the core
+ * read_bmp_fd (draw/bmp.c) and format_native/recalc_dimension (draw/resize.c);
+ * ships its own scaler, panning, decoders, and a vendored TLSF pool for
+ * giflib. */
+#ifdef HAVE_LCD_COLOR
+viewers/image_viewer/image_decoder.c
+viewers/image_viewer/image_viewer.c
+viewers/image_viewer/resize.c
+viewers/image_viewer/tlsf.c
+viewers/image_viewer/xlcd.c
+viewers/image_viewer/decoders/BUFFILEGETC.c
+viewers/image_viewer/decoders/bmp.c
+viewers/image_viewer/decoders/crc32.c
+viewers/image_viewer/decoders/dgif_lib.c
+viewers/image_viewer/decoders/gif.c
+viewers/image_viewer/decoders/gif_decoder.c
+viewers/image_viewer/decoders/gif_err.c
+viewers/image_viewer/decoders/gifalloc.c
+viewers/image_viewer/decoders/idct.c
+viewers/image_viewer/decoders/jpeg.c
+viewers/image_viewer/decoders/jpeg81.c
+viewers/image_viewer/decoders/jpeg_decoder.c
+viewers/image_viewer/decoders/jpegp.c
+viewers/image_viewer/decoders/mempool.c
+viewers/image_viewer/decoders/png.c
+viewers/image_viewer/decoders/png_decoder.c
+viewers/image_viewer/decoders/ppm.c
+viewers/image_viewer/decoders/ppm_decoder.c
+viewers/image_viewer/decoders/tinflate.c
+viewers/image_viewer/decoders/tinfzlib.c
+viewers/image_viewer/decoders/yuv2rgb.c
+#endif
+
+skin/custom_tags.c
+skin/skin_backdrops.c
+skin/skin_display.c
+skin/skin_engine.c
+skin/skin_parser.c
+skin/skin_render.c
+skin/skin_tokens.c
+skin/statusbar.c
+skin/statusbar_skinned.c
+#if (LCD_DEPTH > 1)
+skin/backdrop.c
+#endif
+#if defined(HAVE_LCD_COLOR) && defined(HAVE_ALBUMART)
+skin/skin_albumart_color.c
+#endif
+
+/* -- services --------------------------------------------------------- */
+
+settings/settings.c
+settings/settings_list.c
+settings/settings_tags.c
+
+input/action.c
+input/core_keymap.c
+#ifdef USB_ENABLE_HID
+input/usb_keymaps.c
+#endif
+#if (CONFIG_KEYPAD == IPOD_4G_PAD)
+input/keymap_ipod.c
+#else
+#error "Unsupported CONFIG_KEYPAD for this fork (expected IPOD_4G_PAD)"
+#endif
+
+speech/announce.c
+speech/lang_override.c
+speech/language.c
+speech/lexicon.c
+speech/normalise.c
+speech/speech.c
+speech/synth.c
+#ifdef CPU_ARM
+speech/synth_arm.S
+#endif
+speech/synth_frames.c
+speech/synth_phonemes.c
+speech/talk.c
+
+system/activity.c
+system/app_buffer.c
+system/app_util.c
+system/bg_task.c
+system/library_files.c
+system/debug_log.c
+system/battery_log.c
+#ifdef HAVE_USBSTACK
+system/usb_log_file.c
+#endif
+draw/color.c
+audio/sound_feedback.c
+system/format_time.c
+system/shutdown.c
+system/output_pause.c
+system/strutil.c
+system/volume.c
+
+/* -- boundaries ------------------------------------------------------- */
+
+#ifdef IPOD_ACCESSORY_PROTOCOL
+iap/iap-core.c
+iap/iap-artwork.c
+iap/iap-lingo0.c
+iap/iap-lingo2.c
+iap/iap-lingo3.c
+iap/iap-lingo4.c
+#endif
+
+#if defined(USB_ENABLE_IAP) || defined(IPOD_ACCESSORY_PROTOCOL)
+iap/iap-chapters.c
+iap/iap-library.c
+#endif
+
+/* Simulator shims -- symbols a sim build has no hardware or firmware for.
+ * See sim/README.md. Nothing here reaches a hardware build. */
+#ifdef SIMULATOR
+sim/shim-board.c
+sim/shim-buffer.c
+sim/shim-dircache.c
+sim/shim-fs.c
+sim/shim-usb.c
+#endif

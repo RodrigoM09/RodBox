@@ -25,7 +25,9 @@
 #include "panic.h"
 #include "pmu-target.h"
 #include "usb_core.h"   /* for usb_charging_maxcurrent_change */
-#ifndef BOOTLOADER
+#include "backlight.h"
+#include "timeout.h"
+#if defined(HAVE_COMPOSITE_VIDEO_OUT) && !defined(BOOTLOADER)
 #include "videoout.h"
 #endif
 
@@ -33,7 +35,7 @@ static int idepowered;
 
 void power_off(void)
 {
-#ifndef BOOTLOADER
+#if defined(HAVE_COMPOSITE_VIDEO_OUT) && !defined(BOOTLOADER)
     videoout_disable();
 #endif
 
@@ -106,11 +108,25 @@ bool ide_powered()
 
 #if CONFIG_CHARGING
 
+/* The current the USB side has committed to: 500 from a computer that
+ * configured the player, from USB Charging = Force with no computer, or from
+ * a charger feeding a USB DAC. power_input_status() trusts such a source
+ * without probing it. */
+static int usb_committed_ma;
+
+/* A charger proven by power_input_status() while it probes. It keeps
+ * C1 low whatever the USB side commits to: the stack's no-host timeout drops
+ * the commitment to 100 mA, and blocking charging then would leave a wall
+ * charger unused until the screen next comes on. */
+static bool usb_charger_detected;
+
 #ifdef HAVE_USB_CHARGING_ENABLE
 void usb_charging_maxcurrent_change(int maxcurrent)
 {
     bool suspend_charging = (maxcurrent < 100);
     bool fast_charging = (maxcurrent >= 500);
+
+    usb_committed_ma = maxcurrent;
 
     /* This GPIO is connected to the LTC4066's SUSP pin */
     /* Setting it high prevents any power being drawn over USB */
@@ -120,14 +136,130 @@ void usb_charging_maxcurrent_change(int maxcurrent)
     /* This GPIO is connected to the LTC4066's HPWR pin */
     /* Setting it low limits current to 100mA, setting it high allows 500mA */
     GPIOCMD = 0xb060e | (fast_charging ? 1 : 0);
+
+    /* GPIO C1: disable battery charging when USB current commitment
+     * is insufficient (< 500mA).  This prevents charge oscillation
+     * when connected to MFi DACs without power bank, where the
+     * source can't deliver enough for device + charge current.
+     * Device still draws operating power from USB; battery only
+     * supplements if USB is insufficient. */
+    GPIOCMD = 0xc010e | ((fast_charging || usb_charger_detected) ? 0 : 1);
 }
 #endif
 
+static struct timeout chrg_monitor_tmo;
+static volatile bool chrg_saw_discharge;
+
+/* Runs from tick ISR every 10ms.  Catches brief !CHRG HIGH
+ * pulses that the 500ms power thread polling misses.  At high
+ * battery (>80%), the LTC4066 sustains low charge current from
+ * weak USB sources but briefly drops out every 5-10s for <500ms. */
+static int chrg_monitor_cb(struct timeout *tmo)
+{
+    (void)tmo;
+    if (PDAT(11) & 0x10)   /* !CHRG HIGH = not charging */
+        chrg_saw_discharge = true;
+    return 1;  /* re-run next tick (10ms) */
+}
+
+/* How long a cable just plugged in is probed for with the screen dark. A wall
+ * charger is only reported as one once proven, and only a reported charger
+ * turns the backlight on, so without this a player plugged in dark is never
+ * charged. Eight samples plus room for the charger's own start-up. */
+#define CHRG_PROBE_ON_INSERT (10*HZ)
+
 unsigned int power_input_status(void)
 {
+    static bool was_probing;
+    static bool monitoring;
+    static bool inserted;
+    static long probe_until;
+    static int debounce;
     unsigned int status = POWER_INPUT_NONE;
     if (usb_detect() == USB_INSERTED)
-        status |= POWER_INPUT_USB_CHARGER;
+    {
+        status |= POWER_INPUT_USB;
+        if (!inserted)
+        {
+            inserted = true;
+            probe_until = current_tick + CHRG_PROBE_ON_INSERT;
+        }
+        /* Probe while the screen is on, or a cable has just gone in */
+        bool probing = is_backlight_on(true) ||
+                       TIME_BEFORE(current_tick, probe_until);
+        if (probing && !was_probing)
+        {
+            /* Probing starts: C1 low, start monitor */
+            GPIOCMD = 0xc010e | 0;  /* C1 LOW */
+            chrg_saw_discharge = false;
+            debounce = 0;
+            if (!monitoring)
+            {
+                timeout_register(&chrg_monitor_tmo, chrg_monitor_cb,
+                                 1, 0);
+                monitoring = true;
+            }
+        }
+        else if (probing)
+        {
+            /* Check high-frequency monitor flag */
+            if (chrg_saw_discharge)
+            {
+                chrg_saw_discharge = false;
+                usb_charger_detected = false;
+                debounce = 0;
+            }
+            else if (!usb_charger_detected)
+            {
+                if (++debounce >= 8)
+                {
+                    usb_charger_detected = true;
+                    debounce = 0;
+                }
+            }
+            /* For charger removal (PB toggled off): only count
+             * false readings.  Don't reset on true — oscillation
+             * (~50/50) must accumulate false readings to clear. */
+            else if (!charging_state())
+            {
+                if (++debounce >= 8)
+                {
+                    usb_charger_detected = false;
+                    debounce = 0;
+                }
+            }
+            /* true readings: don't reset — oscillation must
+             * be able to clear via accumulated false readings. */
+        }
+        else
+        {
+            /* Not probing: stop monitor, control C1 */
+            if (monitoring)
+            {
+                timeout_cancel(&chrg_monitor_tmo);
+                monitoring = false;
+            }
+            if (!usb_charger_detected && usb_committed_ma < 500)
+                GPIOCMD = 0xc010e | 1;  /* C1 HIGH: block */
+        }
+        /* Not probing + charger detected: C1 stays LOW, charging
+         * continues from the real charger source. */
+        if (usb_charger_detected)
+            status |= POWER_INPUT_USB_CHARGER;
+        was_probing = probing;
+    }
+    else
+    {
+        if (monitoring)
+        {
+            timeout_cancel(&chrg_monitor_tmo);
+            monitoring = false;
+        }
+        usb_charger_detected = false;
+        was_probing = false;
+        inserted = false;
+        debounce = 0;
+    }
     if (pmu_firewire_present())
         status |= POWER_INPUT_MAIN_CHARGER;
     return status;

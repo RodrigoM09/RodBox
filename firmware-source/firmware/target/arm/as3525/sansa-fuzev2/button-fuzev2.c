@@ -23,9 +23,6 @@
 #include "kernel.h"
 #include "button.h"
 #include "backlight.h"
-#ifdef HAVE_LINEOUT_DETECTION
-#include "dock-target.h"
-#endif
 
 #ifdef HAS_BUTTON_HOLD
 static bool hold_button = false;
@@ -204,9 +201,6 @@ void button_init_device(void)
     GPIOA_IBE |= SCROLLWHEEL_BITS;
     /* lastly, enable the interrupt */
     GPIOA_IE |= SCROLLWHEEL_BITS;
-#endif
-#ifdef HAVE_LINEOUT_DETECTION
-    dock_init();
 #endif
 }
 

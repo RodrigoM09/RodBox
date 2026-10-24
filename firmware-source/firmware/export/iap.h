@@ -37,6 +37,9 @@
 extern bool iap_getc(IF_IAP_MP(int port,) unsigned char x);
 extern void iap_setup(int ratenum);
 extern void iap_bitrate_set(int ratenum);
+extern void iap_enable(bool enable);
+/* An accessory is talking on the dock connector serial line */
+extern bool iap_accessory_present(void);
 extern void iap_periodic(void);
 extern void iap_handlepkt(void);
 extern void iap_send_pkt(const unsigned char * data, int len);
@@ -45,5 +48,18 @@ const unsigned char *iap_get_serbuf(void);
 extern bool iap_record(bool onoff);
 #endif
 void iap_reset_state(IF_IAP_MP_NONVOID(int port) ); /* 0 is dock, 1 is headphone */
+/* USB power went: the session resets, as for an accessory that has gone,
+ * but playback carries on */
+void iap_power_reset(void);
+/* The player set the codec's volume, which ends an accessory's mute */
+void iap_volume_set(void);
+#ifdef HAVE_IAP_ACCESSORY_POLL
+/* Ten times a second from the iAP thread, on a target whose accessory
+ * detect can only be read from a thread: resets the session when the
+ * accessory goes. */
+void iap_accessory_poll(void);
+/* What the last poll saw: an accessory is in, or has not been out a second */
+bool iap_accessory_plugged(void);
+#endif
 bool dbg_iap(void);
 #endif

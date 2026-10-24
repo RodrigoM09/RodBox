@@ -1,0 +1,2115 @@
+/***************************************************************************
+ * Original code from RockBox
+ * was: apps/iap/iap-core.c
+ * Copyright (C) 2002 by Alan Korr & Nick Robinson
+ *
+ * All files in this archive are subject to the GNU General Public License.
+ * See the file COPYING in the source tree root for full license agreement.
+ * GNU General Public License (version 2+)
+ *
+ * The Apple accessory protocol core: framing, checksums, authentication
+ * and the device state shared by the lingo handlers.
+ *
+ * iAP is the serial protocol Apple dock accessories speak. A packet is
+ * {0x55 start-of-frame, length, lingo id, command, payload, checksum}; the
+ * "lingo" is which command vocabulary the packet belongs to, and each has its
+ * own file here (iap-lingo0.c through iap-lingo4.c). This file does the parts
+ * common to all of them: recognising a packet in the byte stream, verifying
+ * and generating checksums, the authentication handshake an accessory must
+ * pass, and the shared state the lingo handlers read.
+ *
+ * Framing is a byte-at-a-time state machine (ST_SOF -> ... -> ST_CHECK), so a
+ * packet is recognised as bytes arrive rather than by buffering and scanning.
+ *
+ * Incoming bytes arrive from the serial interrupt, so iap_handlepkt() runs on
+ * the main thread against a buffer the ISR fills -- the two are kept apart by
+ * only handing over complete packets.
+ *
+ * Parts, in order:
+ *   - packet buffers and the shared accessory/device state
+ *   - receiving: framing bytes into packets and checking them
+ *   - sending: building, checksumming and transmitting a response
+ *   - authentication and identification
+ *   - the dispatch that hands a packet to its lingo handler
+ ****************************************************************************/
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+
+#include "string-extra.h"
+#include "panic.h"
+#include "iap-core.h"
+#include "iap-lingo.h"
+#include "button.h"
+#include "config.h"
+#include "cpu.h"
+#include "system.h"
+#include "kernel.h"
+#include "thread.h"
+#include "serial.h"
+#include "system/appevents.h"
+#include "core_alloc.h"
+
+#include "playlist/playlist.h"
+#include "audio/playback.h"
+#include "audio.h"
+#include "settings.h"
+#include "metadata.h"
+#include "database/tagcache.h"
+#include "iap-library.h"
+#include "iap-artwork.h"
+#include "sound.h"
+#include "action.h"
+#include "powermgmt.h"
+#include "power.h"
+#include "usb.h"
+#include "system/volume.h"
+#include "audio/remote_seek.h"
+#ifdef USB_ENABLE_IAP
+#include "usb_log.h"
+#include "system/usb_log_file.h"
+#endif
+
+#include "tuner.h"
+#if CONFIG_TUNER
+#include "ipod_remote_tuner.h"
+#endif
+
+
+/* MS_TO_TICKS converts a milisecond time period into the
+ * corresponding amount of ticks. If the time period cannot
+ * be accurately measured in ticks it will round up.
+ */
+#if (HZ>1000)
+#error "HZ is >1000, please fix MS_TO_TICKS"
+#endif
+#define MS_PER_HZ (1000/HZ)
+#define MS_TO_TICKS(x) (((x)+MS_PER_HZ-1)/MS_PER_HZ)
+/* IAP specifies a timeout of 25ms for traffic from a device to the iPod.
+ * Depending on HZ this cannot be accurately measured. Find out the next
+ * best thing.
+ */
+#define IAP_PKT_TIMEOUT (MS_TO_TICKS(25))
+
+/* Events in the iap_queue */
+#define IAP_EV_TICK         (1)     /* The regular task timeout */
+#define IAP_EV_MSG_RCVD     (2)     /* A complete message has been received from the device */
+#define IAP_EV_MALLOC       (3)     /* Allocate memory for the RX/TX buffers */
+#define IAP_EV_RESET        (4)     /* The accessory has gone, see iap_reset_state() */
+#define IAP_EV_ARTWORK      (5)     /* The next packet of album art */
+
+static bool iap_started = false;
+static bool iap_setupflag = false, iap_running = false;
+static bool iap_enabled = true;
+static volatile bool reset_pending;
+static volatile bool reset_departed;    /* the reset pauses, see below */
+static long departure_deadline;         /* see iap_do_reset(); 0 none */
+static long last_frame_tick;     /* 0 until a frame passes its checksum */
+/* The data of the one IAP_EV_ARTWORK that is live, and whether a packet
+ * went since the last tick; a tick that finds none sent posts a new one,
+ * so an event lost to a full queue does not end the transfer */
+static intptr_t art_seq;
+static bool art_sent;
+/* This is set to true if a SYS_POWEROFF message is received,
+ * signalling impending power off
+ */
+static bool iap_shutdown = false;
+static struct timeout iap_task_tmo;
+static volatile bool iap_tick_stop;  /* asked of iap_task() */
+static volatile bool iap_tick_idle;  /* iap_task() posts no ticks */
+
+unsigned long iap_remotebtn = 0;
+/* Used to make sure a button press is delivered to the processing
+ * backend. While this is !0, no new incoming messasges are processed.
+ * Counted down by remote_control_rx()
+ */
+int iap_repeatbtn = 0;
+/* Used to time out button down events in case we miss the button up event
+ * from the device somehow.
+ * If a device sends a button down event it's required to repeat that event
+ * every 30 to 100ms as long as the button is pressed, and send an explicit
+ * button up event if the button is released.
+ * In case the button up event is lost any down events will time out after
+ * ~200ms.
+ * iap_periodic() will count down this variable and reset all buttons if
+ * it reaches 0
+ */
+unsigned int iap_timeoutbtn = 0;
+bool iap_btnrepeat = false, iap_btnshuffle = false, iap_btnstop = false;
+bool iap_btnchapter = false;
+
+/* The lingo 3 and 4 handlers each place a struct mp3entry (2760 bytes) on
+ * the stack unconditionally, even for the commands that never look at
+ * metadata, and a track title query on a WAV file adds a parse on top of
+ * that -- around 6.5KB in the worst case. Only stack[0] is canary-checked,
+ * and only at a thread switch, so an overflow that misses word 0 corrupts
+ * the RX buffer sitting below rather than panicking with "Stkov iap".
+ */
+static long thread_stack[(DEFAULT_STACK_SIZE*12)/sizeof(long)];
+static struct event_queue iap_queue;
+
+/* These are pointer used to manage a dynamically allocated buffer which
+ * will hold both the RX and TX side of things.
+ *
+ * iap_buffer_handle is the handle returned from core_alloc()
+ * iap_buffers points to the start of the complete buffer
+ *
+ * The buffer is partitioned as follows:
+ * - TX_AREA bytes for the TX buffer
+ *   The 8 extra bytes are for the sync byte, the SOP byte, the length indicators
+ *   (3 bytes), a transaction ID (2 bytes) and the checksum byte.
+ *   iap_txstart points to the beginning of the TX buffer
+ *   iap_txpayload points to the beginning of the payload portion of the TX buffer
+ *   iap_txnext points to the position where the next byte will be placed
+ *
+ * - RX_BUFLEN+2 bytes for the RX buffer
+ *   The RX buffer can hold multiple packets at once, up to it's
+ *   maximum capacity. Every packet consists of a two byte length
+ *   indicator followed by the actual payload. The length indicator
+ *   is two bytes for every length, even for packets with a length <256
+ *   bytes.
+ *
+ *   Once a packet has been processed from the RX buffer the rest
+ *   of the buffer (and the pointers below) are shifted to the front
+ *   so that the next packet again starts at the beginning of the
+ *   buffer. This happens with interrupts disabled, to prevent
+ *   writing into the buffer during the move.
+ *
+ *   iap_rxstart points to the beginning of the RX buffer
+ *   iap_rxpayload starts to the beginning of the currently recieved
+ *   packet
+ *   iap_rxnext points to the position where the next incoming byte
+ *   will be placed
+ *   iap_rxlen is not a pointer, but an indicator of the free
+ *   space left in the RX buffer.
+ *
+ * The RX buffer is placed behind the TX buffer so that an eventual TX
+ * buffer overflow has some place to spill into where it will not cause
+ * immediate damage. See the comments for IAP_TX_* and iap_send_tx()
+ */
+#define TX_AREA (TX_BUFLEN+8)
+#define IAP_MALLOC_SIZE (TX_AREA+RX_BUFLEN+2)
+#ifdef IAP_MALLOC_DYNAMIC
+static int iap_buffer_handle;
+#endif
+static unsigned char* iap_buffers;
+static unsigned char* iap_rxstart;
+static unsigned char* iap_rxpayload;
+static unsigned char* iap_rxnext;
+static uint32_t iap_rxlen;
+static unsigned char* iap_txstart;
+unsigned char* iap_txpayload;
+unsigned char* iap_txnext;
+
+/* The versions of the various Lingoes we support. A major version
+ * of 0 means unsupported
+ */
+unsigned char lingo_versions[32][2] = {
+    {1, 9},     /* General lingo, 0x00 */
+#ifdef HAVE_LINE_REC
+    {1, 1},     /* Microphone lingo, 0x01 */
+#else
+    {0, 0},     /* Microphone lingo, 0x01, disabled */
+#endif
+    {1, 2},     /* Simple remote lingo, 0x02 */
+    {1, 5},     /* Display remote lingo, 0x03 */
+    {1, 12},    /* Extended Interface lingo, 0x04 */
+    {1, 1},     /* RF/BT Transmitter lingo, 0x05 */
+    {0, 0},     /* USB Host lingo, 0x06, disabled */
+#if CONFIG_TUNER
+    {1, 0},     /* RF Receiver lingo, 0x07 */
+#else
+    {0, 0},     /* RF Receiver lingo, 0x07 disabled */
+#endif
+    {}          /* every other lingo, disabled */
+};
+
+/* states of the iap de-framing state machine */
+enum fsm_state {
+    ST_SYNC = 0,    /* wait for 0xFF sync byte */
+    ST_SOF,     /* wait for 0x55 start-of-frame byte */
+    ST_LEN,     /* receive length byte (small packet) */
+    ST_LENH,    /* receive length high byte (large packet) */
+    ST_LENL,    /* receive length low byte (large packet) */
+    ST_DATA,    /* receive data */
+    ST_CHECK    /* verify checksum */
+};
+
+static struct state_t {
+    enum fsm_state state;   /* current fsm state */
+    unsigned int len;       /* payload data length */
+    unsigned int check;     /* running checksum over [len,payload,check] */
+    unsigned int count;     /* playload bytes counter */
+} frame_state = {
+    .state = ST_SYNC
+};
+
+/* What the framer has seen, for Debug > Serial iAP. Written from the serial
+ * ISR. */
+#define RX_HISTORY 8
+static struct {
+    unsigned long good;         /* frames that passed their checksum */
+    unsigned long bad_check;    /* frames that failed it */
+    unsigned long bad_len;      /* frames dropped for their length */
+    unsigned long timeouts;     /* frames abandoned mid-way by the gap timer */
+    unsigned int last_bad_len;
+    /* First bytes of the last RX_HISTORY distinct frames, newest at
+     * [next - 1]. A button release and a held button's repeats are left out,
+     * so a press stays on screen after it is let go. */
+    unsigned char last[RX_HISTORY][8];
+    unsigned int last_len[RX_HISTORY];
+    unsigned int next;
+} rx_stats;
+
+static void rx_stats_keep(const unsigned char *frame, unsigned int len)
+{
+    unsigned int n = MIN(len, sizeof(rx_stats.last[0]));
+    unsigned int prev = (rx_stats.next + RX_HISTORY - 1) % RX_HISTORY;
+    unsigned int i;
+
+    /* Simple Remote ContextButtonStatus with no bit set is a release */
+    if (len >= 2 && frame[0] == 0x02 && frame[1] == 0x00) {
+        for (i = 2; i < len && frame[i] == 0; i++);
+        if (i == len)
+            return;
+    }
+    if (rx_stats.last_len[prev] == n && !memcmp(rx_stats.last[prev], frame, n))
+        return;
+
+    memcpy(rx_stats.last[rx_stats.next], frame, n);
+    rx_stats.last_len[rx_stats.next] = n;
+    rx_stats.next = (rx_stats.next + 1) % RX_HISTORY;
+}
+
+enum interface_state interface_state = IST_STANDARD;
+
+struct device_t device;
+
+#ifdef IAP_MALLOC_DYNAMIC
+static int iap_move_callback(int handle, void* current, void* new);
+
+static struct buflib_callbacks iap_buflib_callbacks = {
+    iap_move_callback,
+    NULL
+};
+#endif
+
+static void iap_malloc(void);
+
+static void iap_reset_buffers(void)
+{
+    iap_txstart = iap_buffers;
+    iap_txpayload = iap_txstart+5;
+    iap_txnext = iap_txpayload;
+    iap_rxstart = iap_buffers+TX_AREA;
+    iap_rxpayload = iap_rxstart;
+    iap_rxnext = iap_rxpayload;
+    iap_rxlen = RX_BUFLEN+2;
+}
+
+void put_u16(unsigned char *buf, const uint16_t data)
+{
+    buf[0] = (data >>  8) & 0xFF;
+    buf[1] = (data >>  0) & 0xFF;
+}
+
+void put_u32(unsigned char *buf, const uint32_t data)
+{
+    buf[0] = (data >> 24) & 0xFF;
+    buf[1] = (data >> 16) & 0xFF;
+    buf[2] = (data >>  8) & 0xFF;
+    buf[3] = (data >>  0) & 0xFF;
+}
+
+uint32_t get_u32(const unsigned char *buf)
+{
+    return (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
+}
+
+uint16_t get_u16(const unsigned char *buf)
+{
+    return (buf[0] << 8) | buf[1];
+}
+
+#if defined(LOGF_ENABLE) && defined(ROCKBOX_HAS_LOGF)
+/* Convert a buffer into a printable string, perl style
+ * buf contains the data to be converted, len is the length
+ * of the buffer.
+ *
+ * This will convert at most 1024 bytes from buf
+ */
+static char* hexstring(const unsigned char *buf, unsigned int len) {
+    static char hexbuf[4097];
+    unsigned int l;
+    const unsigned char* p;
+    unsigned char* out;
+    unsigned char h[] = {'0', '1', '2', '3', '4', '5', '6', '7',
+                         '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+
+    if (len > 1024) {
+        l = 1024;
+    } else {
+        l = len;
+    }
+    p = buf;
+    out = hexbuf;
+    do {
+            *out++ = h[(*p)>>4];
+            *out++ = h[*p & 0x0F];
+    } while(--l && p++);
+
+    *out = 0x00;
+
+    return hexbuf;
+}
+#endif
+
+
+void iap_tx_strlcpy(const unsigned char *str)
+{
+    ptrdiff_t txfree;
+    int r;
+
+    /* A tag the track does not carry arrives as NULL */
+    if (str == NULL)
+        str = (const unsigned char *)"";
+
+    txfree = TX_BUFLEN - (iap_txnext - iap_txstart);
+    r = strlcpy(iap_txnext, str, txfree);
+
+    if (r < txfree)
+    {
+        /* No truncation occured
+         * Account for the terminating \0
+         */
+        iap_txnext += (r+1);
+    } else {
+        /* Truncation occured, the TX buffer is now full. */
+        iap_txnext = iap_txstart + TX_BUFLEN;
+    }
+}
+
+void iap_reset_auth(struct auth_t* auth)
+{
+    auth->state = AUST_NONE;
+    auth->max_section = 0;
+    auth->next_section = 0;
+    auth->deadline = 0;
+}
+
+/* Any context: the 6G's accessory tick calls this from the timer interrupt.
+ * The session is reset on the iAP thread, and iap_handlepkt() does that
+ * before it reads another packet, so nothing the departed accessory left in
+ * the buffer reaches the next one. */
+static void post_reset(bool departed)
+{
+    int level;
+
+    if (!iap_running)
+        return;
+
+    level = disable_irq_save();
+    frame_state.state = ST_SYNC;
+    reset_pending = true;
+    reset_departed |= departed;
+    restore_irq(level);
+    queue_post(&iap_queue, IAP_EV_RESET, 0);
+}
+
+void iap_reset_state(IF_IAP_MP_NONVOID(int port))
+{
+    /* 0 is dock, 1 is headphone.  This is for
+       when we eventually maintain independent state */
+    IF_IAP_MP((void)port);
+    post_reset(true);
+}
+
+void iap_power_reset(void)
+{
+    post_reset(false);
+}
+
+/* iAP thread. An accessory that identified itself was the output -- a dock's
+ * line out, a car's transmitter, a remote with the headphones in it -- so
+ * its leaving is an output going, for Pause on Unplug; a reset for lost USB
+ * power is not, as the accessory may still be there. */
+static void iap_do_reset(void)
+{
+    static bool identified;
+    int level = disable_irq_save();
+    bool departed = reset_departed;
+    reset_pending = false;
+    reset_departed = false;
+    frame_state.state = ST_SYNC;
+    iap_reset_buffers();
+    restore_irq(level);
+    last_frame_tick = 0;
+    usb_log(USB_LOG_OUTPUT, USB_LOG_OUTPUT_SERIAL, departed, device.lingoes,
+            interface_state);
+    /* A dock's USB power going resets the session a moment before the line
+     * says it has left, so who was there outlives a reset that is not a
+     * departure */
+    identified |= device.lingoes || interface_state == IST_EXTENDED;
+    departed = departed && identified;
+    if (departed)
+        identified = false;
+#ifdef HAVE_IAP_ACCESSORY_POLL
+    /* The line does not always say: on the 5G a dock can read as present
+     * long after it has gone. One that does not identify again within
+     * three seconds of its power going has left, or is off, and nothing
+     * plays its line out either way. The 6G's line does say, and an
+     * accessory still on it after its power goes is still there. */
+    departure_deadline = identified ? current_tick + 3*HZ : 0;
+#endif
+
+    iap_reset_device(&device);
+    remote_seek_stop();
+    iap_remotebtn = BUTTON_NONE;
+    iap_timeoutbtn = 0;
+    iap_repeatbtn = 0;
+    iap_btnshuffle = false;
+    iap_btnrepeat = false;
+    iap_btnstop = false;
+    iap_btnchapter = false;
+    if (departed)
+        send_event(SYS_EVENT_OUTPUT_GONE, (void *)OUTPUT_ACCESSORY);
+    interface_state = IST_STANDARD;
+    iap_bitrate_set(global_settings.serial_bitrate);
+}
+
+void iap_reset_device(struct device_t* device)
+{
+    iap_reset_auth(&(device->auth));
+    device->lingoes = 0;
+    device->notifications = 0;
+    device->changed_notifications = 0;
+    device->do_notify = false;
+    /* An accessory that muted the player does not leave it silent. Every
+     * caller is on the iAP thread but iap_start(), before any could mute. */
+    if (device->mute)
+        iap_set_mute(false);
+    device->pb_notifications = 0;
+    device->pb_track_changed = false;
+    device->pb_play_status = 0;
+    device->pb_ext_state = 0xff;
+    device->pb_trackpos_ms = UINT32_MAX;
+    device->pb_trackpos_s = UINT32_MAX;
+    device->pb_numtracks = UINT32_MAX;
+    device->pb_chapter_index = UINT32_MAX - 1;
+    device->do_power_notify = false;
+    device->accinfo = ACCST_NONE;
+    device->capabilities = 0;
+    device->capabilities_queried = 0;
+    device->max_payload = 0;
+    iap_artwork_stop();
+    device->transid = false;
+    device->idps = false;
+    device->identified_by_idps = false;
+    device->idps_lingoes = 0;
+    device->idps_options = 0;
+    device->idps_deviceid = 0;
+}
+
+static int iap_task(struct timeout *tmo)
+{
+    (void) tmo;
+
+    /* Idle, the timeout stays registered but posts nothing, so waking it
+     * from the receive interrupt never depends on a free slot */
+    if (iap_tick_stop)
+    {
+        iap_tick_idle = true;
+        return 60 * HZ;
+    }
+    queue_post(&iap_queue, IAP_EV_TICK, 0);
+    return MS_TO_TICKS(100);
+}
+
+/* Interrupt context: every byte received. Registering it again only moves
+ * the timeout's expiry. */
+static void iap_tick_start(void)
+{
+    iap_tick_stop = false;
+    if (iap_tick_idle)
+    {
+        iap_tick_idle = false;
+        timeout_register(&iap_task_tmo, iap_task, MS_TO_TICKS(100),
+                         (intptr_t)NULL);
+    }
+}
+
+/* iAP thread. Once the accessory has gone and been reset, and has been
+ * silent for a minute, nothing the tick drives has work left: it goes idle
+ * until the next byte arrives. A target that polls for the accessory keeps
+ * the tick while the poll still sees one. */
+static void iap_tick_stop_if_idle(void)
+{
+    int level = disable_irq_save();
+    if ((!last_frame_tick
+         || TIME_AFTER(current_tick, last_frame_tick + 60 * HZ))
+        && !reset_pending && !iap_shutdown && departure_deadline == 0
+        && device.lingoes == 0 && device.auth.state == AUST_NONE
+        && !device.do_notify && device.notifications == 0
+        && device.pb_notifications == 0
+        && interface_state == IST_STANDARD && iap_timeoutbtn == 0
+        && remote_seek_direction() == 0 && !iap_artwork_active()
+#ifdef HAVE_IAP_ACCESSORY_POLL
+        && !iap_accessory_plugged()
+#endif
+        )
+        iap_tick_stop = true;
+    restore_irq(level);
+}
+
+
+void iap_set_remote_volume(void)
+{
+    IAP_TX_INIT(0x03, 0x0D);
+    IAP_TX_PUT(0x04);
+    IAP_TX_PUT(0x00);
+    IAP_TX_PUT(iap_volume_to_byte(global_status.volume));
+    iap_send_tx();
+}
+
+unsigned char iap_volume_to_byte(int volume)
+{
+    const int min = sound_min(SOUND_VOLUME);
+    const int max = sound_max(SOUND_VOLUME);
+
+    if (volume <= min)
+        return 0;
+    if (volume >= max)
+        return 255;
+    return (volume - min) * 255 / (max - min);
+}
+
+int iap_byte_to_volume(unsigned char level)
+{
+    const int min = sound_min(SOUND_VOLUME);
+    const int max = sound_max(SOUND_VOLUME);
+
+    return min + (level * (max - min) + 127) / 255;
+}
+
+void iap_volume_set(void)
+{
+    device.mute = false;
+}
+
+void iap_set_mute(bool mute)
+{
+    device.mute = mute;
+    if (mute)
+        sound_set_volume(sound_min(SOUND_VOLUME));
+    else
+        setvol();
+}
+
+/* This thread is waiting for events posted to iap_queue and calls
+ * the appropriate subroutines in response
+ */
+static void iap_thread(void)
+{
+    struct queue_event ev;
+    while(1) {
+        queue_wait(&iap_queue, &ev);
+        switch (ev.id)
+        {
+            /* Handle the regular 100ms tick used for driving the
+             * authentication state machine and notifications
+             */
+            case IAP_EV_TICK:
+            {
+                /* the queue drops its oldest event when full, which can be
+                 * an IAP_EV_RESET posted while this thread was blocked */
+                if (reset_pending)
+                    iap_do_reset();
+                iap_periodic();
+                if (iap_artwork_active() && !art_sent)
+                    iap_artwork_post();
+                art_sent = false;
+                /* pick up packets whose IAP_EV_MSG_RCVD event was lost
+                   to a queue overflow, they would otherwise sit in the
+                   RX buffer until the next packet arrives */
+                iap_handlepkt();
+                iap_tick_stop_if_idle();
+                break;
+            }
+
+            /* Handle a newly received message from the device */
+            case IAP_EV_MSG_RCVD:
+            {
+                iap_handlepkt();
+                break;
+            }
+
+            /* queue_wait() does not block while the next one is queued,
+             * so the yield lets the other threads run between packets */
+            case IAP_EV_ARTWORK:
+            {
+                if (ev.data != art_seq)
+                    break;
+                art_sent = true;
+                if (iap_artwork_send_next())
+                {
+                    yield();
+                    iap_artwork_post();
+                }
+                break;
+            }
+
+            case IAP_EV_RESET:
+            {
+                if (reset_pending)
+                    iap_do_reset();
+                break;
+            }
+
+            /* Handle memory allocation. This is used only once, during
+             * startup
+             */
+            case IAP_EV_MALLOC:
+            {
+                iap_malloc();
+                break;
+            }
+
+            /* Handle poweroff message */
+            case SYS_POWEROFF:
+            case SYS_REBOOT:
+            {
+                iap_shutdown = true;
+                break;
+            }
+
+            /* Ack USB thread */
+            case SYS_USB_CONNECTED:
+            {
+                usb_acknowledge(SYS_USB_CONNECTED_ACK, ev.data);
+                break;
+            }
+        }
+    }
+}
+
+/* called by playback when the next track starts. On the audio thread, so
+ * only flagged: the iAP thread owns the TX buffer. */
+static void iap_track_changed(unsigned short id, void *ignored)
+{
+    (void)id;
+    (void)ignored;
+    device.pb_track_changed = true;
+}
+
+/* Do general setup of the needed infrastructure.
+ *
+ * Please note that a lot of additional work is done by iap_start()
+ */
+void iap_setup(const int ratenum)
+{
+    iap_bitrate_set(ratenum);
+    iap_remotebtn = BUTTON_NONE;
+    iap_setupflag = true;
+    iap_started = false;
+    iap_running = false;
+}
+
+/* Actually bring up the message queue, message handler thread and
+ * notification timer
+ *
+ * NOTE: This is running in interrupt context
+ */
+static void iap_start(void)
+{
+    unsigned int tid;
+
+    if (iap_started)
+        return;
+
+    iap_reset_device(&device);
+    queue_init(&iap_queue, true);
+    tid = create_thread(iap_thread, thread_stack, sizeof(thread_stack),
+            0, "iap"
+            IF_PRIO(, PRIORITY_SYSTEM)
+            IF_COP(, CPU));
+    if (!tid)
+        panicf("Could not create iap thread");
+    timeout_register(&iap_task_tmo, iap_task, MS_TO_TICKS(100), (intptr_t)NULL);
+    add_event(PLAYBACK_EVENT_TRACK_CHANGE, iap_track_changed);
+
+    /* Since we cannot allocate memory while in interrupt context
+     * post a message to our own queue to get that done
+     */
+    queue_post(&iap_queue, IAP_EV_MALLOC, 0);
+    iap_started = true;
+}
+
+static void iap_malloc(void)
+{
+#ifndef IAP_MALLOC_DYNAMIC
+    static unsigned char serbuf[IAP_MALLOC_SIZE];
+#endif
+
+    if (iap_running)
+        return;
+
+#ifdef IAP_MALLOC_DYNAMIC
+    iap_buffer_handle = core_alloc_ex(IAP_MALLOC_SIZE, &iap_buflib_callbacks);
+    if (iap_buffer_handle < 0)
+        panicf("Could not allocate buffer memory");
+    iap_buffers = core_get_data(iap_buffer_handle);
+#else
+    iap_buffers = serbuf;
+#endif
+
+    iap_reset_buffers();
+    iap_running = true;
+}
+
+/* True while frames are arriving. The USB DAC search asks: a serial dock
+ * powers the USB pins as a charger would, and the search would otherwise
+ * take the port as a host and starve the serial line. Recent frames rather
+ * than the device state, which outlives an undocking on targets that
+ * cannot see the accessory leave. */
+bool iap_accessory_present(void)
+{
+    return last_frame_tick &&
+           TIME_BEFORE(current_tick, last_frame_tick + 5*HZ);
+}
+
+/* Off, the serial line is ignored and an attached accessory forgotten, with
+ * whatever it left in the buffer and any seek it held */
+void iap_enable(bool enable)
+{
+    iap_enabled = enable;
+    if (!enable)
+    {
+        iap_remotebtn = BUTTON_NONE;
+        post_reset(false);
+    }
+}
+
+void iap_bitrate_set(const int ratenum)
+{
+    switch(ratenum)
+    {
+        case 0:
+            serial_bitrate(0);
+            break;
+        case 1:
+            serial_bitrate(9600);
+            break;
+        case 2:
+            serial_bitrate(19200);
+            break;
+        case 3:
+            serial_bitrate(38400);
+            break;
+        case 4:
+            serial_bitrate(57600);
+            break;
+    }
+}
+
+/* Message format:
+   0xff
+   0x55
+   length
+   mode
+   command (2 bytes)
+   parameters (0-n bytes)
+   checksum (length+mode+parameters+checksum == 0)
+*/
+
+/* The command being handled, whose transaction ID a reply carries */
+static bool rx_handling;
+static unsigned char rx_lingo;
+static uint16_t rx_tid;
+/* The next ID of a command the player sends */
+static uint16_t own_tid;
+/* The ID iap_send_tx_tid() gives its packet, or -1 */
+static int tid_override = -1;
+
+/* Sent by the player of its own accord, not in answer: these take an ID of
+ * their own even while a command is being handled */
+static bool tx_unsolicited(const unsigned char *p)
+{
+    switch (p[0])
+    {
+        case 0x00: return p[1] == 0x23 || p[1] == 0x27;
+        case 0x03: return p[1] == 0x09;
+        case 0x04: return get_u16(&p[1]) == 0x0027;
+        default:   return false;
+    }
+}
+
+static uint16_t tx_tid(const unsigned char *p)
+{
+    if (tid_override >= 0)
+        return tid_override;
+    /* One ID serves the whole authentication exchange */
+    if (p[0] == 0x00 && (p[1] == 0x14 || p[1] == 0x16
+                         || p[1] == 0x17 || p[1] == 0x19))
+        return device.auth.tid;
+    /* An iPodAck answers a command of any lingo */
+    if (rx_handling && !tx_unsolicited(p)
+        && (p[0] == rx_lingo || (p[0] == 0x00 && p[1] == 0x02)))
+        return rx_tid;
+    return own_tid++;
+}
+
+/* A frame into the USB log's ring, beside USB iAP's, so usb.log holds a
+ * dock on either link. `pkt` starts at the lingo; `tid` says a transaction
+ * ID follows the command. */
+static void serial_log(const unsigned char *pkt, unsigned int len,
+                       bool from_player, bool tid)
+{
+#ifdef USB_ENABLE_IAP
+    unsigned int command, hdr = 2, trans = 0xffff, payload;
+    uint32_t first = 0;
+
+    if (len < 2 || (pkt[0] == 0x04 && len < 3))
+        return;
+    command = pkt[1];
+    if (pkt[0] == 0x04)
+        command = command << 8 | pkt[hdr++];
+    if (tid && len >= hdr + 2)
+    {
+        trans = get_u16(pkt + hdr);
+        hdr += 2;
+    }
+    payload = len > hdr ? len - hdr : 0;
+    for (unsigned int i = 0; i < 4; i++)
+        first = first << 8 | (i < payload ? pkt[hdr + i] : 0);
+    usb_log(USB_LOG_IAP, pkt[0] | USB_LOG_IAP_SERIAL
+            | (from_player ? USB_LOG_IAP_FROM_PLAYER : 0), command,
+            payload | trans << 16, first);
+#else
+    (void)pkt; (void)len; (void)from_player; (void)tid;
+#endif
+}
+
+/* Called for every packet before its lingo's handler, which then reads it
+ * as though transaction IDs did not exist. False for one too short to
+ * carry the ID it owes, which is dropped. */
+static bool rx_take_tid(unsigned char **pkt, unsigned int *len)
+{
+    unsigned char *p = *pkt;
+    unsigned int hdr = (p[0] == 0x04) ? 3 : 2;
+
+    /* The two commands that carry none, and switch them off */
+    if (*len >= 2 && p[0] == 0x00 && (p[1] == 0x01 || p[1] == 0x13))
+    {
+        device.transid = false;
+        device.idps = false;
+        return true;
+    }
+    /* StartIDPS carries the first */
+    if (!device.transid && !(*len >= 2 && p[0] == 0x00 && p[1] == 0x38))
+        return true;
+    if (*len < hdr + 2)
+        return false;
+
+    rx_tid = get_u16(p + hdr);
+    memmove(p + 2, p, hdr);
+    *pkt = p + 2;
+    *len -= 2;
+    return true;
+}
+
+uint16_t iap_rx_tid(void)
+{
+    return rx_tid;
+}
+
+void iap_send_tx_tid(uint16_t tid)
+{
+    tid_override = tid;
+    iap_send_tx();
+    tid_override = -1;
+}
+
+/* Supersedes any IAP_EV_ARTWORK still queued */
+void iap_artwork_post(void)
+{
+    queue_post(&iap_queue, IAP_EV_ARTWORK, ++art_seq);
+}
+
+/* Send the current content of the TX buffer.
+ * This will check for TX buffer overflow and panic, but it might
+ * be too late by then (although one would have to overflow the complete
+ * RX buffer as well)
+ */
+void iap_send_tx(void)
+{
+    int i, chksum;
+    ptrdiff_t txlen;
+    unsigned char* txstart;
+
+    txlen = iap_txnext - iap_txpayload;
+
+    if (txlen <= 0)
+        return;
+
+    if (txlen > TX_BUFLEN)
+        panicf("IAP: TX buffer overflow");
+
+    /* The ID goes after the command, two bytes long for lingo 4; TX_AREA
+     * has the room */
+    if (device.transid)
+    {
+        int hdr = (iap_txpayload[0] == 0x04) ? 3 : 2;
+
+        if (txlen >= hdr)
+        {
+            memmove(iap_txpayload + hdr + 2, iap_txpayload + hdr, txlen - hdr);
+            put_u16(iap_txpayload + hdr, tx_tid(iap_txpayload));
+            iap_txnext += 2;
+            txlen += 2;
+        }
+    }
+
+    /* A short-form length above 0xFC reads as the long form's marker */
+    if (txlen <= 0xFC)
+    {
+        /* Short packet */
+        txstart = iap_txstart+2;
+        *(txstart+2) = txlen;
+        chksum = txlen;
+    } else {
+        /* Long packet */
+        txstart = iap_txstart;
+        *(txstart+2) = 0x00;
+        *(txstart+3) = (txlen >> 8) & 0xFF;
+        *(txstart+4) = (txlen) & 0xFF;
+        chksum = *(txstart+3) + *(txstart+4);
+    }
+    *(txstart) = 0xFF;
+    *(txstart+1) = 0x55;
+
+    for (i=0; i<txlen; i++)
+    {
+        chksum += iap_txpayload[i];
+    }
+    *(iap_txnext) = 0x100 - (chksum & 0xFF);
+    serial_log(iap_txpayload, txlen, true, device.transid);
+
+#if defined(LOGF_ENABLE) && defined(ROCKBOX_HAS_LOGF)
+    logf("T: %s", hexstring(txstart+3, (iap_txnext - txstart)-3));
+#endif
+    for (i=0; i <= (iap_txnext - txstart); i++)
+    {
+        /* A port that never drains would hold the core for good, and
+         * nothing else runs while this thread waits */
+        long end = current_tick + HZ / 10;
+
+        while (!tx_rdy())
+            if (TIME_AFTER(current_tick, end))
+                return;
+        tx_writec(txstart[i]);
+    }
+}
+
+/* This is just a compatibility wrapper around the new TX buffer
+ * infrastructure
+ */
+void iap_send_pkt(const unsigned char * data, const int len)
+{
+    if (!iap_running)
+        return;
+
+    iap_txnext = iap_txpayload;
+    IAP_TX_PUT_DATA(data, len);
+    iap_send_tx();
+}
+
+bool iap_getc(IF_IAP_MP(int port,) const unsigned char x)
+{
+    struct state_t *s = &frame_state;
+    static long pkt_timeout;
+
+    /* Report "still hunting" while IAP is not set up yet, otherwise
+     * the serial driver would lock its autobaud detection onto the
+     * default bitrate before any real traffic was seen.
+     */
+    if (!iap_setupflag || !iap_enabled)
+        return true;
+
+    if (iap_started)
+        iap_tick_start();
+
+    /* Check the time since the last packet arrived. */
+    if ((s->state != ST_SYNC) && TIME_AFTER(current_tick, pkt_timeout)) {
+        /* Packet timeouts only make sense while not waiting for the
+         * sync byte */
+         s->state = ST_SYNC;
+         rx_stats.timeouts++;
+         return iap_getc(IF_IAP_MP(port,) x);
+    }
+
+
+    /* run state machine to detect and extract a valid frame */
+    switch (s->state) {
+    case ST_SYNC:
+        if (x == 0xFF) {
+            /* The IAP infrastructure is started by the first received sync
+             * byte. It takes a while to spin up, so do not advance the state
+             * machine until it has started.
+             */
+            if (!iap_running)
+            {
+                iap_start();
+                break;
+            }
+            iap_rxnext = iap_rxpayload;
+            s->state = ST_SOF;
+        }
+        break;
+    case ST_SOF:
+        if (x == 0x55) {
+            /* received a valid sync/SOF pair */
+            s->state = ST_LEN;
+        } else {
+            s->state = ST_SYNC;
+            return iap_getc(IF_IAP_MP(port,) x);
+        }
+        break;
+    case ST_LEN:
+        s->check = x;
+        s->count = 0;
+        if (x == 0) {
+            /* large packet */
+            s->state = ST_LENH;
+        } else {
+            /* A short-form frame carries at least a lingo and a command, and
+             * lengths above 0xFC are the long form's. Either way the frame is
+             * malformed, so drop it here rather than hand the lingo handlers
+             * a length only their own CHECKLEN would catch. */
+            if (x < 0x02 || x > 0xFC)
+            {
+                s->state = ST_SYNC;
+                rx_stats.bad_len++;
+                rx_stats.last_bad_len = x;
+                break;
+            }
+            /* small packet.
+             * Compare by addition: iap_rxlen is unsigned, so (iap_rxlen-2)
+             * wraps to ~4G once the buffer fills to within one byte, and
+             * every packet after that is accepted past the end of it.
+             */
+            if ((uint32_t)x + 2 > iap_rxlen)
+            {
+                /* Packet too long for buffer */
+                s->state = ST_SYNC;
+                rx_stats.bad_len++;
+                rx_stats.last_bad_len = x;
+                break;
+            }
+            s->len = x;
+            s->state = ST_DATA;
+            put_u16(iap_rxnext, s->len);
+            iap_rxnext += 2;
+        }
+        break;
+    case ST_LENH:
+        s->check += x;
+        s->len = x << 8;
+        s->state = ST_LENL;
+        break;
+    case ST_LENL:
+        s->check += x;
+        s->len += x;
+        /* Same underflow as the small-packet check above. A long-form
+         * frame shorter than 0xFD should have been sent short-form, but
+         * accessories send them, so only the lingo-and-command minimum is
+         * enforced. */
+        if ((s->len < 0x0002) || (s->len > 0xFFFA)
+            || ((uint32_t)s->len + 2 > iap_rxlen)) {
+            /* invalid length */
+            s->state = ST_SYNC;
+            rx_stats.bad_len++;
+            rx_stats.last_bad_len = s->len;
+            break;
+        } else {
+            s->state = ST_DATA;
+            put_u16(iap_rxnext, s->len);
+            iap_rxnext += 2;
+        }
+        break;
+    case ST_DATA:
+        s->check += x;
+        *(iap_rxnext++) = x;
+        s->count += 1;
+        if (s->count == s->len) {
+            s->state = ST_CHECK;
+        }
+        break;
+    case ST_CHECK:
+        s->check += x;
+        if ((s->check & 0xFF) == 0) {
+            /* done, received a valid frame */
+            rx_stats.good++;
+            last_frame_tick = current_tick ? current_tick : 1;
+            rx_stats_keep(iap_rxnext - s->len, s->len);
+            iap_rxlen -= (s->len + 2);
+            iap_rxpayload = iap_rxnext;
+            queue_post(&iap_queue, IAP_EV_MSG_RCVD, 0);
+        } else {
+            /* Invalid frame */
+            rx_stats.bad_check++;
+        }
+        s->state = ST_SYNC;
+        break;
+    default:
+#ifdef LOGF_ENABLE
+           logf("Unhandled iap state %d", (int) s->state);
+#else
+           panicf("Unhandled iap state %d", (int) s->state);
+#endif
+        break;
+    }
+
+    pkt_timeout = current_tick + IAP_PKT_TIMEOUT;
+
+    /* return true while still hunting for the sync and start-of-frame byte */
+    return (s->state == ST_SYNC) || (s->state == ST_SOF);
+}
+
+void iap_get_trackinfo(const unsigned int track, struct mp3entry* id3)
+{
+    int tracknum;
+    struct playlist_track_info info;
+
+    tracknum = track;
+
+    tracknum += playlist_get_first_index(NULL);
+    if(tracknum >= playlist_amount())
+        tracknum -= playlist_amount();
+
+    /* If the tracknumber is not the current one, or nothing is playing and
+       the current one's tags are empty, take them from the database, or
+       failing that read them from the file */
+    if(playlist_get_current()->index != tracknum
+       || !(audio_status() & AUDIO_STATUS_PLAY))
+    {
+        playlist_get_track_info(NULL, tracknum, &info);
+        /* Both clear id3 before filling it */
+        if (!tagcache_fill_tags(id3, info.filename))
+            get_metadata(id3, -1, info.filename);
+    } else {
+        memcpy(id3, audio_current_track(), sizeof(*id3));
+    }
+}
+
+uint32_t iap_get_trackpos(void)
+{
+    struct mp3entry *id3 = audio_current_track();
+
+    return id3->elapsed;
+}
+
+/* Counted from the playlist's first track, which with shuffle or a resumed
+ * playlist need not be index 0 */
+uint32_t iap_get_trackindex(void)
+{
+    struct playlist_info* playlist = playlist_get_current();
+    int index = playlist->index - playlist->first_index;
+
+    if (index < 0)
+        index += playlist->amount;
+    return index;
+}
+
+/* PlayStatusChangeNotification, from iap_periodic(), with a value of
+ * size bytes: 0, 1 or 4 */
+static void iap_send_pb(unsigned char type, int size, uint32_t value)
+{
+    IAP_TX_INIT4(0x04, 0x0027);
+    IAP_TX_PUT(type);
+    if (size == 1)
+        IAP_TX_PUT(value);
+    else if (size == 4)
+        IAP_TX_PUT_U32(value);
+    iap_send_tx();
+}
+
+void iap_periodic(void)
+{
+    static int count;
+    static bool docked;
+    bool present = last_frame_tick
+                   && TIME_BEFORE(current_tick, last_frame_tick + 60 * HZ);
+
+    /* A dock that browsed leaves its lists behind; undocking frees them
+     * unless a USB accessory holds them too. A
+     * minute's silence rather than iap_accessory_present()'s five seconds,
+     * so a quiet dock is not made to rebuffer playback each time it browses */
+    if (present)
+        iap_library_claim(IAP_LIBRARY_SERIAL);
+    else if (docked)
+        iap_library_close(IAP_LIBRARY_SERIAL);
+    docked = present;
+
+#ifdef HAVE_IAP_ACCESSORY_POLL
+    iap_accessory_poll();
+#endif
+    if (departure_deadline && TIME_AFTER(current_tick, departure_deadline))
+    {
+        departure_deadline = 0;
+        if (!device.lingoes && iap_enabled)
+            post_reset(true);
+    }
+    remote_seek_tick();
+
+    if(!iap_setupflag || !iap_enabled) return;
+
+    /* An accessory that stops answering mid-way is told it failed, and may
+     * identify again; until then nothing it is owed is sent */
+    if (DEVICE_AUTH_RUNNING && device.auth.deadline
+        && TIME_AFTER(current_tick, device.auth.deadline))
+    {
+        /* AckDevAuthenticationStatus: failed */
+        IAP_TX_INIT(0x00, 0x19);
+        IAP_TX_PUT(0x02);
+
+        iap_send_tx();
+        iap_reset_auth(&device.auth);
+    }
+
+    /* Handle pending authentication tasks */
+    switch (device.auth.state)
+    {
+        case AUST_INIT:
+        {
+            /* Send out GetDevAuthenticationInfo */
+            device.auth.tid = own_tid++;
+            IAP_TX_INIT(0x00, 0x14);
+
+            iap_send_tx();
+            device.auth.state = AUST_CERTREQ;
+            device.auth.deadline = current_tick + IAP_AUTH_STEP_TIMEOUT;
+            break;
+        }
+
+        case AUST_CERTDONE:
+        {
+            /* Send out GetDevAuthenticationSignature, with
+             * 20 bytes of challenge and a retry counter of 1.
+             * Since we do not really care about the content of the
+             * challenge we just use the first 20 bytes of whatever
+             * is in the RX buffer right now.
+             */
+            IAP_TX_INIT(0x00, 0x17);
+            IAP_TX_PUT_DATA(iap_rxstart,
+                        (device.auth.version == 0x100) ? 16 : 20);
+            IAP_TX_PUT(0x01);
+
+            iap_send_tx();
+            device.auth.state = AUST_CHASENT;
+            /* the time Authentication 1.0 and 2.0 allow to sign */
+            device.auth.deadline = current_tick
+                + ((device.auth.version == 0x100) ? 7 * HZ : 75 * HZ);
+            break;
+        }
+
+        default:
+        {
+            break;
+        }
+    }
+
+    /* Time out button down events */
+    if (iap_timeoutbtn)
+        iap_timeoutbtn -= 1;
+
+    if (!iap_timeoutbtn)
+    {
+        iap_remotebtn = BUTTON_NONE;
+        iap_repeatbtn = 0;
+        iap_btnshuffle = false;
+        iap_btnrepeat = false;
+        iap_btnstop = false;
+        iap_btnchapter = false;
+    }
+
+    /* Handle power down messages. */
+    if (iap_shutdown && device.do_power_notify)
+    {
+        /* NotifyiPodStateChange */
+        IAP_TX_INIT(0x00, 0x23);
+        IAP_TX_PUT(0x01);
+
+        iap_send_tx();
+
+        /* No further actions, we're going down. Once: a shutdown that
+         * is called off must not send it again every tick. */
+        iap_shutdown = false;
+        iap_reset_device(&device);
+        return;
+    }
+
+    /* Handle GetAccessoryInfo messages */
+    if (device.accinfo == ACCST_INIT)
+    {
+        /* GetAccessoryInfo */
+        IAP_TX_INIT(0x00, 0x27);
+        IAP_TX_PUT(0x00);
+
+        iap_send_tx();
+        device.accinfo = ACCST_SENT;
+    }
+
+    /* Do not send requests for device information while
+     * an authentication is still running, this seems to
+     * confuse some devices
+     */
+    if (!DEVICE_AUTH_RUNNING && (device.accinfo == ACCST_DATA))
+    {
+        int first_set;
+
+        /* Find the first bit set in the capabilities field,
+         * ignoring those we already asked for
+         */
+        first_set = find_first_set_bit(device.capabilities & (~device.capabilities_queried));
+
+        if (first_set != 32)
+        {
+            /* Add bit to queried cababilities */
+            device.capabilities_queried |= BIT_N(first_set);
+
+            switch (first_set)
+            {
+                /* Name */
+                case 0x01:
+                /* Firmware version */
+                case 0x04:
+                /* Hardware version */
+                case 0x05:
+                /* Manufacturer */
+                case 0x06:
+                /* Model number */
+                case 0x07:
+                /* Serial number */
+                case 0x08:
+                /* Maximum payload size */
+                case 0x09:
+                {
+                    IAP_TX_INIT(0x00, 0x27);
+                    IAP_TX_PUT(first_set);
+
+                    iap_send_tx();
+                    break;
+                }
+
+                /* Minimum supported iPod firmware version */
+                case 0x02:
+                {
+                    IAP_TX_INIT(0x00, 0x27);
+                    IAP_TX_PUT(2);
+                    IAP_TX_PUT_U32(IAP_MODEL_ID);
+                    IAP_TX_PUT(IAP_IPOD_FIRMWARE_MAJOR);
+                    IAP_TX_PUT(IAP_IPOD_FIRMWARE_MINOR);
+                    IAP_TX_PUT(IAP_IPOD_FIRMWARE_REV);
+
+                    iap_send_tx();
+                    break;
+                }
+
+                /* Minimum supported lingo version. Queries Lingo 0 */
+                case 0x03:
+                {
+                    IAP_TX_INIT(0x00, 0x27);
+                    IAP_TX_PUT(3);
+                    IAP_TX_PUT(0);
+
+                    iap_send_tx();
+                    break;
+                }
+            }
+
+            device.accinfo = ACCST_SENT;
+        }
+    }
+
+    /* Two subscriptions: do_notify and notifications are the Display
+     * Remote's, pb_notifications the Extended Interface's */
+    if (!device.do_notify && device.pb_notifications == 0) return;
+    if ((device.notifications == 0) && (interface_state != IST_EXTENDED)) return;
+
+    if ((interface_state == IST_EXTENDED) && device.pb_track_changed
+        && (device.pb_notifications & BIT_N(2)))
+        iap_send_pb(0x01, 4, iap_get_trackindex());
+    device.pb_track_changed = false;
+
+    /* Volume: looked at every 100ms, sent only on a change */
+    if (device.notifications & (BIT_N(4) | BIT_N(16))) {
+        unsigned char level = device.mute ? 0
+                            : iap_volume_to_byte(global_status.volume);
+
+        if (level != device.volume || device.mute != device.volume_mute) {
+            device.volume = level;
+            device.volume_mute = device.mute;
+            /* Mute/UI volume, and Mute/UI/Absolute: each to the
+             * accessory that asked, both to one that asked for both */
+            if (device.notifications & BIT_N(4)) {
+                IAP_TX_INIT(0x03, 0x09);
+                IAP_TX_PUT(0x04);
+                IAP_TX_PUT(device.mute ? 0x01 : 0x00);
+                IAP_TX_PUT(level);
+                device.changed_notifications |= BIT_N(4);
+                iap_send_tx();
+            }
+            if (device.notifications & BIT_N(16)) {
+                IAP_TX_INIT(0x03, 0x09);
+                IAP_TX_PUT(0x10);
+                IAP_TX_PUT(device.mute ? 0x01 : 0x00);
+                IAP_TX_PUT(level);
+                IAP_TX_PUT(level);
+                device.changed_notifications |= BIT_N(16);
+                iap_send_tx();
+            }
+        }
+    }
+
+    /* All other events are sent every 500ms */
+    count += 1;
+    if (count < 5) return;
+
+    count = 0;
+
+    /* RemoteEventNotification */
+
+    /* Mode 04 PlayStatusChangeNotification, each type only to an
+     * accessory that asked for it and only on a change */
+    if (interface_state == IST_EXTENDED && device.pb_notifications) {
+        uint32_t mask = device.pb_notifications;
+        int status = audio_status();
+        unsigned char ext = (status & AUDIO_STATUS_PAUSE) ? 0x0B
+                          : (status & AUDIO_STATUS_PLAY) ? 0x0A : 0x02;
+        uint32_t ms = iap_get_trackpos();
+        uint32_t n = playlist_amount();
+
+        /* Bit 0: stopped */
+        if ((mask & BIT_N(0)) && !(status & AUDIO_STATUS_PLAY)
+            && (device.pb_play_status & AUDIO_STATUS_PLAY))
+            iap_send_pb(0x00, 0, 0);
+        device.pb_play_status = status;
+
+        /* Bit 1: playing, paused or stopped */
+        if ((mask & BIT_N(1)) && ext != device.pb_ext_state)
+            iap_send_pb(0x06, 1, ext);
+        device.pb_ext_state = ext;
+
+        /* Bits 3 and 4: the position, in ms and in seconds */
+        if ((mask & BIT_N(3)) && ms != device.pb_trackpos_ms)
+            iap_send_pb(0x04, 4, ms);
+        device.pb_trackpos_ms = ms;
+        if ((mask & BIT_N(4)) && ms / 1000 != device.pb_trackpos_s)
+            iap_send_pb(0x07, 4, ms / 1000);
+        device.pb_trackpos_s = ms / 1000;
+
+        /* Bit 5: the chapter */
+        {
+            struct iap_chapter_info chapter;
+            uint32_t ch = iap_current_chapter(&chapter) ? chapter.index
+                                                        : UINT32_MAX;
+            if ((mask & BIT_N(5)) && ch != device.pb_chapter_index)
+                iap_send_pb(0x05, 4, ch);
+            device.pb_chapter_index = ch;
+        }
+
+        /* Bit 12: the playback engine's contents */
+        if ((mask & BIT_N(12)) && n != device.pb_numtracks)
+            iap_send_pb(0x0E, 4, n);
+        device.pb_numtracks = n;
+    }
+
+    /* Track position (ms)  or Track position (s) */
+    if (device.notifications & (BIT_N(0) | BIT_N(15)))
+    {
+        uint32_t t;
+        uint16_t ts;
+        bool changed = false;
+
+        t = iap_get_trackpos();
+        ts = (t / 1000) & 0xFFFF;
+
+        if ((device.notifications & BIT_N(0)) && (device.trackpos_ms != t))
+        {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x00);
+            IAP_TX_PUT_U32(t);
+            device.changed_notifications |= BIT_N(0);
+            changed = true;
+
+            iap_send_tx();
+        }
+
+        if ((device.notifications & BIT_N(15)) && (device.trackpos_s != ts)) {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x0F);
+            IAP_TX_PUT_U16(ts);
+            device.changed_notifications |= BIT_N(15);
+            changed = true;
+
+            iap_send_tx();
+        }
+
+        if (changed)
+        {
+            device.trackpos_ms = t;
+            device.trackpos_s = ts;
+        }
+    }
+
+    /* Track index */
+    if (device.notifications & BIT_N(1))
+    {
+        uint32_t index;
+
+        index = iap_get_trackindex();
+
+        if (device.track_index != index) {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x01);
+            IAP_TX_PUT_U32(index);
+            device.changed_notifications |= BIT_N(1);
+
+            iap_send_tx();
+
+            device.track_index = index;
+        }
+    }
+
+    /* Chapter index: the track, its chapter count and the chapter, on a
+     * change of either. Kept apart from the track index notification's
+     * value, which would otherwise hide every change from this one. */
+    if (device.notifications & BIT_N(2))
+    {
+        struct iap_chapter_info chapter;
+        bool has = iap_current_chapter(&chapter);
+        uint32_t index = iap_get_trackindex();
+        uint32_t key = (index << 16) | (has ? chapter.index : 0xFFFF);
+
+        if (device.chapter_index != key)
+        {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x02);
+            IAP_TX_PUT_U32(index);
+            IAP_TX_PUT_U16(has ? chapter.count : 0);
+            IAP_TX_PUT_U16(has ? chapter.index : 0xFFFF);
+            device.changed_notifications |= BIT_N(2);
+
+            iap_send_tx();
+
+            device.chapter_index = key;
+        }
+    }
+
+    /* Play status */
+    if (device.notifications & BIT_N(3))
+    {
+        unsigned char play_status;
+
+        play_status = audio_status();
+        if (device.play_status != play_status)
+        {
+			/* If play_status = PAUSE/STOP we should mute else
+			 * we should unmute
+			 * 0 = Stopped
+			 * 1 = Playing
+			 * 2 = Pause
+			 * 3 = Play/Pause
+			 */
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x03);
+            if (play_status & AUDIO_STATUS_PLAY) {
+                /* Playing or paused */
+                if (play_status & AUDIO_STATUS_PAUSE) {
+                    /* Paused */
+                    IAP_TX_PUT(0x02);
+                } else {
+                    /* Playing */
+                    IAP_TX_PUT(0x01);
+                }
+            } else {
+                IAP_TX_PUT(0x00);
+            }
+            device.changed_notifications |= BIT_N(3);
+
+            iap_send_tx();
+
+            device.play_status = play_status;
+            /* A notification only reports the play state; the radio is the
+             * one thing that follows it */
+#if CONFIG_TUNER
+            if (radio_present == 1)
+                tuner_set(RADIO_MUTE, play_status != 1);
+#endif
+        }
+    }
+
+    /* Power/Battery */
+    if (device.notifications & BIT_N(5))
+    {
+        unsigned char power_state;
+        unsigned char battery_l;
+
+        power_state = charger_input_state;
+        battery_l = battery_level();
+
+        if ((device.power_state != power_state) || (device.battery_level != battery_l))
+        {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x05);
+
+            iap_fill_power_state();
+            device.changed_notifications |= BIT_N(5);
+
+            iap_send_tx();
+
+            device.power_state = power_state;
+            device.battery_level = battery_l;
+        }
+    }
+
+    /* Equalizer state
+     * This is not handled yet.
+     *
+     * TODO: Fix equalizer handling
+     */
+
+    /* Shuffle */
+    if (device.notifications & BIT_N(7))
+    {
+        unsigned char shuffle;
+
+        shuffle = global_settings.playlist_shuffle;
+
+        if (device.shuffle != shuffle)
+        {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x07);
+            IAP_TX_PUT(shuffle?0x01:0x00);
+            device.changed_notifications |= BIT_N(7);
+
+            iap_send_tx();
+
+            device.shuffle = shuffle;
+        }
+    }
+
+    /* Repeat */
+    if (device.notifications & BIT_N(8))
+    {
+        unsigned char repeat;
+
+        repeat = global_settings.repeat_mode;
+
+        if (device.repeat != repeat)
+        {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x08);
+            switch (repeat)
+            {
+                case REPEAT_OFF:
+                {
+                    IAP_TX_PUT(0x00);
+                    break;
+                }
+
+                case REPEAT_ONE:
+                {
+                    IAP_TX_PUT(0x01);
+                    break;
+                }
+
+                /* REPEAT_ALL, and the shuffle and A-B modes the protocol lacks */
+                default:
+                {
+                    IAP_TX_PUT(0x02);
+                    break;
+                }
+            }
+            device.changed_notifications |= BIT_N(8);
+
+            iap_send_tx();
+
+            device.repeat = repeat;
+        }
+    }
+
+    /* Date/Time */
+    if (device.notifications & BIT_N(9))
+    {
+        struct tm* tm;
+
+        tm = get_time();
+
+        if (memcmp(tm, &(device.datetime), sizeof(struct tm)))
+        {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x09);
+            IAP_TX_PUT_U16(tm->tm_year + 1900);
+
+            /* Month */
+            IAP_TX_PUT(tm->tm_mon+1);
+
+            /* Day */
+            IAP_TX_PUT(tm->tm_mday);
+
+            /* Hour */
+            IAP_TX_PUT(tm->tm_hour);
+
+            /* Minute */
+            IAP_TX_PUT(tm->tm_min);
+
+            device.changed_notifications |= BIT_N(9);
+
+            iap_send_tx();
+
+            memcpy(&(device.datetime), tm, sizeof(struct tm));
+        }
+    }
+
+    /* Alarm
+     * This is not supported yet.
+     *
+     * TODO: Fix alarm handling
+     */
+
+    /* Backlight
+     * This is not supported yet.
+     *
+     * TODO: Fix backlight handling
+     */
+
+    /* Hold switch */
+    if (device.notifications & BIT_N(0x0C))
+    {
+        unsigned char hold;
+
+        hold = button_hold();
+        if (device.hold != hold) {
+            IAP_TX_INIT(0x03, 0x09);
+            IAP_TX_PUT(0x0C);
+            IAP_TX_PUT(hold?0x01:0x00);
+
+            device.changed_notifications |= BIT_N(0x0C);
+
+            iap_send_tx();
+
+            device.hold = hold;
+        }
+    }
+
+    /* Sound check
+     * This is not supported yet.
+     *
+     * TODO: Fix sound check handling
+     */
+
+    /* Audiobook check
+     * This is not supported yet.
+     *
+     * TODO: Fix audiobook handling
+     */
+}
+
+/* Playing or paused, a skip to index; stopped, a skip has nothing to move
+ * (audio_skip() drops it), so playback starts there. True if it started. */
+bool iap_skip_to(uint32_t index)
+{
+    if (!(audio_status() & AUDIO_STATUS_PLAY))
+    {
+        playlist_start((playlist_get_first_index(NULL) + index)
+                       % playlist_amount(), 0, 0);
+        return true;
+    }
+    audio_skip(index - iap_get_trackindex());
+    return false;
+}
+
+/* Play, from paused or stopped, for the commands that say "play" rather
+ * than press a button: a button press acts on whatever screen has focus,
+ * and outside the WPS opens the highlighted row. False if there is nothing
+ * to play. */
+bool iap_play_or_resume(void)
+{
+    if (audio_status() & AUDIO_STATUS_PLAY)
+    {
+        audio_resume();
+        return true;
+    }
+    if (playlist_amount() <= 0)
+        return false;
+    playlist_start(playlist_get_current()->index, 0, 0);
+    return true;
+}
+
+/* Change the current interface state. A dock handing the library back,
+ * Extended to Standard, pauses what it was playing; one taking it, as it
+ * docks, leaves playback alone, as plugging in any other output does. */
+void iap_interface_state_change(const enum interface_state new)
+{
+    if ((interface_state == IST_EXTENDED) && (new == IST_STANDARD)) {
+        if (audio_status() == AUDIO_STATUS_PLAY)
+            audio_pause();
+    }
+
+    interface_state = new;
+}
+
+static void iap_handlepkt_mode5(const unsigned int len, const unsigned char *buf)
+{
+    /* Begin and EndHighPower are the player's to send; the lingo has no
+     * command from the accessory and no ack, so none is echoed back */
+    (void)len;
+    (void)buf;
+}
+
+void iap_handlepkt(void)
+{
+    int level;
+    int length;
+
+    if(!iap_setupflag || !iap_enabled) return;
+    if(!iap_running) return;
+
+    /* The number of queued IAP_EV_MSG_RCVD events does not reliably
+     * match the number of complete packets in the RX buffer, since
+     * the event queue can overflow during input bursts. Drain every
+     * complete packet instead, they occupy the buffer from
+     * iap_rxstart up to iap_rxpayload.
+     */
+    while (iap_rxpayload != iap_rxstart)
+    {
+        if (reset_pending)
+        {
+            iap_do_reset();
+            return;
+        }
+
+        /* if we are waiting for a remote button to go out,
+           delay the handling of the new packet */
+        if(iap_repeatbtn)
+        {
+            queue_post(&iap_queue, IAP_EV_MSG_RCVD, 0);
+            sleep(1);
+            return;
+        }
+
+        /* handle command by mode */
+        length = get_u16(iap_rxstart);
+#if defined(LOGF_ENABLE) && defined(ROCKBOX_HAS_LOGF)
+        logf("R: %s", hexstring(iap_rxstart+2, (length)));
+#endif
+
+        unsigned char *pkt = iap_rxstart+2;
+        unsigned int plen = length;
+
+        /* The ID is where rx_take_tid() is about to look for it */
+        serial_log(pkt, plen, false,
+                   plen >= 2 && !(pkt[0] == 0x00
+                                  && (pkt[1] == 0x01 || pkt[1] == 0x13))
+                   && (device.transid
+                       || (pkt[0] == 0x00 && pkt[1] == 0x38)));
+
+        if (length != 0 && rx_take_tid(&pkt, &plen)) {
+            unsigned char mode = pkt[0];
+
+            rx_handling = true;
+            rx_lingo = mode;
+            switch (mode) {
+            case 0: iap_handlepkt_mode0(plen, pkt); break;
+#ifdef HAVE_LINE_REC
+            case 1: iap_handlepkt_mode1(plen, pkt); break;
+#endif
+            case 2: iap_handlepkt_mode2(plen, pkt); break;
+            case 3: iap_handlepkt_mode3(plen, pkt); break;
+            case 4: iap_handlepkt_mode4(plen, pkt); break;
+            case 5: iap_handlepkt_mode5(plen, pkt); break;
+#if CONFIG_TUNER
+            case 7: iap_handlepkt_mode7(plen, pkt); break;
+#endif
+            }
+            rx_handling = false;
+        }
+
+        /* Remove the handled packet from the RX buffer
+         * This needs to be done with interrupts disabled, to make
+         * sure the buffer and the pointers into it are handled
+         * cleanly
+         */
+        level = disable_irq_save();
+        memmove(iap_rxstart, iap_rxstart+(length+2), (RX_BUFLEN+2)-(length+2));
+        iap_rxnext -= (length+2);
+        iap_rxpayload -= (length+2);
+        iap_rxlen += (length+2);
+        restore_irq(level);
+
+        /* poke the poweroff timer */
+        reset_poweroff_timer();
+    }
+}
+
+int remote_control_rx(void)
+{
+    int btn = iap_remotebtn;
+    if(iap_repeatbtn)
+        iap_repeatbtn--;
+
+    return btn;
+}
+
+const unsigned char *iap_get_serbuf(void)
+{
+    return iap_rxstart;
+}
+
+#ifdef IAP_MALLOC_DYNAMIC
+static int iap_move_callback(int handle, void* current, void* new)
+{
+    (void) handle;
+    (void) current;
+
+    iap_txstart = new;
+    iap_txpayload = iap_txstart+5;
+    iap_txnext = iap_txpayload;
+    iap_rxstart = iap_buffers+TX_AREA;
+
+    return BUFLIB_CB_OK;
+}
+#endif
+
+/* Change the shuffle state */
+void iap_shuffle_state(const bool state)
+{
+    if (iap_library_queue_lent())
+        return;
+    /* Set shuffle to enabled */
+    if(state && !global_settings.playlist_shuffle)
+    {
+        global_settings.playlist_shuffle = 1;
+        settings_save();
+        if (audio_status() & AUDIO_STATUS_PLAY)
+            playlist_randomise(NULL, current_tick, true);
+    }
+    /* Set shuffle to disabled */
+    else if(!state && global_settings.playlist_shuffle)
+    {
+        global_settings.playlist_shuffle = 0;
+        settings_save();
+        if (audio_status() & AUDIO_STATUS_PLAY)
+            playlist_sort(NULL, true);
+    }
+}
+
+/* Change the repeat state */
+void iap_repeat_state(const unsigned char state)
+{
+    if (state != global_settings.repeat_mode)
+    {
+        global_settings.repeat_mode = state;
+        settings_save();
+        if (audio_status() & AUDIO_STATUS_PLAY)
+            audio_flush_and_reload_tracks();
+    }
+}
+
+void iap_repeat_next(void)
+{
+    switch (global_settings.repeat_mode)
+    {
+        case REPEAT_OFF:
+        {
+            iap_repeat_state(REPEAT_ALL);
+            break;
+        }
+        case REPEAT_ALL:
+        {
+            iap_repeat_state(REPEAT_ONE);
+            break;
+        }
+        case REPEAT_ONE:
+        {
+            iap_repeat_state(REPEAT_OFF);
+            break;
+        }
+    }
+}
+
+/* This function puts the current power/battery state
+ * into the TX buffer. The buffer is assumed to be initialized
+ */
+void iap_fill_power_state(void)
+{
+    unsigned char power_state;
+    unsigned char battery_l;
+
+    power_state = charger_input_state;
+    battery_l = battery_level();
+
+    /* CHARGER_UNPLUGGED is the way out of CHARGER, so on battery */
+    if (power_state == NO_CHARGER || power_state == CHARGER_UNPLUGGED) {
+        if (battery_l < 30) {
+            IAP_TX_PUT(0x00);
+        } else {
+            IAP_TX_PUT(0x01);
+        }
+        IAP_TX_PUT((char)((battery_l * 255)/100));
+    } else {
+        /* Charging, or external power with the charger idle: charged
+         * once the level reads full, which on external power is 99 */
+        IAP_TX_PUT(charging_state() ? 0x04 : battery_l >= 99 ? 0x05 : 0x03);
+        IAP_TX_PUT(0x00);
+    }
+}
+
+#include "widgets/list.h"
+
+static int dbg_iap_callback(int action, struct gui_synclist *lists)
+{
+    (void)lists;
+    simplelist_reset_lines();
+    simplelist_addline("auth: %d acc: %d", device.auth.state, device.accinfo);
+    simplelist_addline("lin: %08lx", (unsigned long)device.lingoes);
+    simplelist_addline("idps: %s tid: %s max: %u",
+                       device.idps ? "running" :
+                       device.identified_by_idps ? "done" : "no",
+                       device.transid ? "yes" : "no", device.max_payload);
+    simplelist_addline("notif: %08lx", (unsigned long)device.notifications);
+    simplelist_addline("cap: %08lx/%08lx", (unsigned long)device.capabilities,
+                       (unsigned long)device.capabilities_queried);
+    simplelist_addline("cert: v%04x section %d of %d", device.auth.version,
+                       device.auth.next_section, device.auth.max_section);
+    simplelist_addline("rx: %lu bad sum: %lu timeout: %lu", rx_stats.good,
+                       rx_stats.bad_check, rx_stats.timeouts);
+    simplelist_addline("bad len: %lu (last %u)", rx_stats.bad_len,
+                       rx_stats.last_bad_len);
+    simplelist_addline("last frames, newest first:");
+    for (int i = 0; i < RX_HISTORY; i++)
+    {
+        unsigned int k = (rx_stats.next + RX_HISTORY - 1 - i) % RX_HISTORY;
+        char line[3 * sizeof(rx_stats.last[0]) + 1];
+        char *p = line;
+
+        *p = '\0';
+        for (unsigned int b = 0; b < rx_stats.last_len[k]; b++)
+            p += snprintf(p, 4, "%02x ", rx_stats.last[k][b]);
+        simplelist_addline("%s", line);
+    }
+    if (action == ACTION_NONE)
+        action = ACTION_REDRAW;
+    return action;
+}
+
+bool dbg_iap(void)
+{
+    struct simplelist_info info;
+    simplelist_info_init(&info, "Serial iAP", 0, NULL);
+    info.action_callback = dbg_iap_callback;
+    info.scroll_all = true;
+    dbg_iap_callback(ACTION_REDRAW, NULL);
+    return simplelist_show_list(&info);
+}

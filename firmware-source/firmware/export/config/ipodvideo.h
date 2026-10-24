@@ -15,8 +15,8 @@
 /* define this if the ATA controller and method of USB access support LBA48 */
 #define HAVE_LBA48
 
-/* define this if you have recording possibility */
-#define HAVE_RECORDING
+/* Recording support removed for this DAP-only fork. */
+//#define HAVE_RECORDING
 
 /* Define bitmask of input sources - recordable bitmask can be defined
    explicitly if different */
@@ -76,8 +76,12 @@
 /* define this if you have a real-time clock */
 #define CONFIG_RTC RTC_PCF50605
 
-/* Define if the device can wake from an RTC alarm */
-#define HAVE_RTC_ALARM
+/* RTC wake-up alarm -- disabled for this fork (matches ipod6g.h). The PCF
+ * cannot report that it was the alarm that started us, because the Apple
+ * bootloader clears its interrupt registers first; rtc_check_alarm_started()
+ * falls back to matching the clock against the alarm registers within ten
+ * seconds, which a 5G booting off a spinning disk rarely manages. */
+//#define HAVE_RTC_ALARM
 
 /* Define this if you can switch on/off the accessory power supply */
 #define HAVE_ACCESSORY_SUPPLY
@@ -114,6 +118,9 @@
 #define HAVE_LCD_SLEEP_SETTING
 /* The same code may also be used when shutting down the iPod */
 #define HAVE_LCD_SHUTDOWN
+/* Composite TV output through the BCM, PAL or NTSC */
+#define HAVE_COMPOSITE_VIDEO_OUT
+#define HAVE_VIDEOOUT_STANDARD
 #endif
 
 /* We can fade the backlight by using PWM */
@@ -169,10 +176,13 @@
 #define CURRENT_RECORD     35  /* FIXME: this needs adjusting */
 #endif
 
-/* Define Apple remote tuner */
-#define CONFIG_TUNER IPOD_REMOTE_TUNER
-#define HAVE_RDS_CAP
-#define CONFIG_RDS RDS_CFG_PUSH
+/* Apple remote tuner accessory support -- disabled for this fork (matches
+ * ipod6g.h): not something this build targets, and leaving it enabled left
+ * a full FM radio UI surface (Radio Screen theme option, Radio Settings
+ * menu, main-menu FM item) reachable but pointless. */
+//#define CONFIG_TUNER IPOD_REMOTE_TUNER
+//#define HAVE_RDS_CAP
+//#define CONFIG_RDS RDS_CFG_PUSH
 
 /* Define this if you have a PortalPlayer PP5022 */
 #define CONFIG_CPU PP5022
@@ -234,9 +244,9 @@
 #define BOOTFILE "rockbox." BOOTFILE_EXT
 #define BOOTDIR "/.rockbox"
 
-#define ICODE_ATTR_TREMOR_NOT_MDCT
-
 #define IPOD_ACCESSORY_PROTOCOL
+/* The accessory detect is read through the PCF's I2C, so from a thread */
+#define HAVE_IAP_ACCESSORY_POLL
 #define HAVE_SERIAL
 
 /* DMA is used only for reading on PP502x because although reads are ~8x faster

@@ -37,6 +37,14 @@
 #include "string.h"
 #ifdef HAVE_USBSTACK
 #include "usb_core.h"
+#ifdef USB_ENABLE_IAP
+#include "usbstack/usb_iap.h"
+#endif
+#include "usb_log.h"
+#endif
+#ifdef HAVE_USB_HOST_AUDIO
+#include "usb_drv.h"
+#include "usb_host_audio.h"
 #endif
 #include "logf.h"
 #include "screendump.h"
@@ -82,10 +90,21 @@ static int usb_state = USB_EXTRACTED;
 static int usb_mmc_countdown = 0;
 #endif
 #if defined(HAVE_USB_POWER) || defined(HAVE_USB_ADB)
+static int usb_mode = USBMODE_DEFAULT;
 #ifdef USB_FULL_INIT
 static bool usb_power_only = false;
+static bool usb_drive_only_now = false;
+
+static bool usb_mode_drive_only(void)
+{
+#ifdef USB_MODE_DRIVE_ONLY
+    return usb_mode == USB_MODE_DRIVE_ONLY;
+#else
+    return false;
 #endif
-static int usb_mode = USBMODE_DEFAULT;
+}
+#endif
+
 void usb_set_mode(int mode)
 {
     usb_mode = mode;
@@ -123,9 +142,97 @@ static bool usb_serial = false;
 #ifdef USB_ENABLE_AUDIO
 static int usb_audio = 0;
 #endif
+#ifdef USB_ENABLE_IAP
+static bool usb_iap = true;
+/* A car that finds the sound card beside the disk goes no further than
+ * Apple's 0x53, and reports an authentication error (a Mazda CX-30), where
+ * without it the car moves on to the iAP configuration at once. So once a
+ * host proves a car, the player leaves the bus and comes back without the
+ * card, for as long as the cable stays in. */
+static bool usb_car_no_audio = false;
+#endif
 static bool usb_host_present = false;
+/* The host ejected the disk and it is back with the player, which goes on
+ * charging; it is not handed over again until the cable is replugged. */
+static bool usb_disk_ejected = false;
+/* The host probe owns the controller: cable events are not acted on. */
+static bool usb_host_probe_on = false;
+#ifdef HAVE_USB_HOST_AUDIO
+/* Looking for a DAC. A cable that no computer has spoken on within
+ * USB_DAC_WAIT gets one try as a host: poll for a device, and play to it if
+ * it is USB audio, else give the port back. Once per insertion -- any end
+ * of host mode counts as the try, so only a real extraction re-arms it. */
+#define USB_DAC_WAIT        (2*HZ)
+#define USB_DAC_POLL        (HZ/10)
+#define USB_DAC_MAX_POLLS   15
+static bool usb_dac_auto = true;
+static bool usb_dac_tried = false;
+static int usb_dac_polls = 0;           /* >0 while a try is polling */
+static volatile bool usb_dac_requested; /* Turn On posted, not yet taken */
+/* This try came from Turn On, so no 5V is no reason to stop: a DAC on its
+ * own power puts none on the cable */
+static bool usb_dac_turned_on;
+static struct timeout usb_dac_tmo;
+static struct timeout usb_hub_tmo;
+static struct usb_dac_auto_record usb_dac_rec = { .step = "no cable yet" };
+/* The last poll of the port, for the log: USB_LOG_HOST_DAC's b and d */
+static int usb_dac_port_bits;
+static uint32_t usb_dac_port_reg;
+
+static void usb_dac_note(const char *step)
+{
+    usb_dac_rec.step = step;
+    usb_dac_rec.tick = current_tick;
+    usb_dac_rec.polls = usb_dac_polls;
+    usb_log(USB_LOG_HOST_DAC, usb_dac_polls, usb_dac_port_bits,
+            (uintptr_t)step, usb_dac_port_reg);
+}
+#endif
 static int usb_num_acks_to_expect = 0;
 static uint32_t usb_broadcast_seqnum = 0x80000000;
+
+#ifndef BOOTLOADER
+/* Diagnostic only: what happened at the last cable insertion. A connect that
+ * appears to do nothing is either charging-only or a handover that never
+ * completed, and nothing on screen distinguishes them. Shown by the debug
+ * menu's "USB info". Written outside the timing-critical path -- plain
+ * stores, no allocation, no disk. */
+static struct usb_insert_record usb_record = { .acks_expected = -1 };
+
+/* Waypoints, called from usb_core.c as enumeration proceeds. Plain counters. */
+void usb_record_waypoint(enum usb_waypoint w, int a, int b)
+{
+    switch(w)
+    {
+        case USB_WP_BUS_RESET:  usb_record.bus_resets++;  break;
+        case USB_WP_SETUP:
+            usb_record.setups++;
+            usb_record.last_setup = a;
+            break;
+        case USB_WP_SET_ADDR:   usb_record.set_addr++;    break;
+        case USB_WP_SET_CONFIG:
+            usb_record.set_config++;
+            usb_record.last_config = a;
+            break;
+        case USB_WP_DRIVERS:
+            usb_record.drv_active = a;
+            usb_record.drv_error = b;
+            break;
+        case USB_WP_EXCLUSIVE:
+            usb_record.exclusive_required = (a != 0);
+            break;
+    }
+}
+
+const struct usb_insert_record *usb_get_insert_record(void)
+{
+    /* The live half, read at display time rather than recorded: a handover
+     * still waiting on a thread shows a non-zero count here. */
+    usb_record.acks_remaining = usb_num_acks_to_expect;
+    usb_record.storage_handed_over = exclusive_storage_enabled;
+    return &usb_record;
+}
+#endif /* !BOOTLOADER */
 #if defined(USB_FIREWIRE_HANDLING)
 static void try_reboot(void)
 {
@@ -199,6 +306,17 @@ static inline void usb_handle_hotswap(long id)
 }
 #endif /* HAVE_HOTSWAP */
 
+#ifdef USB_ENABLE_AUDIO
+static bool usb_audio_wanted(void)
+{
+#ifdef USB_ENABLE_IAP
+    if(usb_car_no_audio)
+        return false;
+#endif
+    return usb_audio != 0;
+}
+#endif
+
 static inline void usb_configure_drivers(int for_state)
 {
 #ifdef USB_ENABLE_AUDIO
@@ -222,10 +340,12 @@ static inline void usb_configure_drivers(int for_state)
         usb_core_enable_driver(USB_DRIVER_SERIAL, usb_serial);
 #endif
 #ifdef USB_ENABLE_AUDIO
-        usb_core_enable_driver(USB_DRIVER_AUDIO, (usb_audio == 1) || (usb_audio == 2)); // while "always" or "only in charge-only mode"
+        usb_core_enable_driver(USB_DRIVER_AUDIO, usb_audio_wanted());
 #endif /* USB_ENABLE_AUDIO */
 #ifdef USB_ENABLE_IAP
-        usb_core_enable_driver(USB_DRIVER_IAP, false);
+        /* Charge only keeps the disk from a computer, not the audio from a
+         * dock, which has a configuration of its own (Gerrit 7940). */
+        usb_core_enable_driver(USB_DRIVER_IAP, usb_iap);
 #endif
 
 #ifdef USB_ENABLE_CHARGING_ONLY
@@ -237,20 +357,35 @@ static inline void usb_configure_drivers(int for_state)
         /* USB_POWERED: */
 
     case USB_INSERTED:
+        /* Drive Only overrides the settings below rather than changing
+         * them, so switching back to Mass Storage restores each as set */
 #ifdef USB_ENABLE_STORAGE
-        usb_core_enable_driver(USB_DRIVER_MASS_STORAGE, true);
+        /* Answering iAP2, no disk: a car selects configuration 1 before the
+         * iAP one, and an iPhone's is PTP, so it takes nothing. Handing the
+         * disk over unmounts it, stops playback and remounts it as the car
+         * moves on. Accessory Protocol off answers no iAP2 at all. */
+        usb_core_enable_driver(USB_DRIVER_MASS_STORAGE,
+#ifdef USB_ENABLE_IAP
+                               usb_drive_only() || !usb_iap ||
+                               !usb_iap_answer_iap2()
+#else
+                               true
+#endif
+                               );
 #endif
 #ifdef USB_ENABLE_HID
-        usb_core_enable_driver(USB_DRIVER_HID, usb_hid);
+        usb_core_enable_driver(USB_DRIVER_HID, usb_hid && !usb_drive_only());
 #endif
 #ifdef USB_ENABLE_SERIAL
-        usb_core_enable_driver(USB_DRIVER_SERIAL, usb_serial);
+        usb_core_enable_driver(USB_DRIVER_SERIAL,
+                               usb_serial && !usb_drive_only());
 #endif
 #ifdef USB_ENABLE_AUDIO
-        usb_core_enable_driver(USB_DRIVER_AUDIO, (usb_audio == 1) || (usb_audio == 3)); // while "always" or "only in mass-storage mode"
+        usb_core_enable_driver(USB_DRIVER_AUDIO,
+                               usb_audio_wanted() && !usb_drive_only());
 #endif /* USB_ENABLE_AUDIO */
 #ifdef USB_ENABLE_IAP
-        usb_core_enable_driver(USB_DRIVER_IAP, true);
+        usb_core_enable_driver(USB_DRIVER_IAP, usb_iap && !usb_drive_only());
 #endif
 #ifdef USB_ENABLE_CHARGING_ONLY
         usb_core_enable_driver(USB_DRIVER_CHARGING_ONLY, false);
@@ -261,6 +396,10 @@ static inline void usb_configure_drivers(int for_state)
         /* USB_INSERTED: */
 
     case USB_EXTRACTED:
+#ifdef USB_ENABLE_IAP
+        usb_iap2_host_new();    /* the next host is not known to be a car */
+        usb_car_no_audio = false;
+#endif
         /* do not call usb_release_exclusive_storage.
          * usb core handles it */
         break;
@@ -389,6 +528,10 @@ static inline void usb_slave_mode(bool on)
 }
 #endif /* HAVE_USBSTACK */
 
+#if !defined(HAVE_PRIORITY_SCHEDULING)
+#define thread_set_priority(...)
+#endif
+
 static void usb_set_host_present(bool present)
 {
     if(usb_host_present == present)
@@ -398,9 +541,20 @@ static void usb_set_host_present(bool present)
 
     if(!usb_host_present)
     {
+#ifdef USB_ENABLE_IAP
+        usb_iap_end_reset_hold(true);
+#endif
         usb_configure_drivers(USB_EXTRACTED);
+        thread_set_priority(thread_self(), PRIORITY_SYSTEM);
         return;
     }
+
+    /* usb_core_do_set_config() raises this too, but SET_CONFIGURATION is late:
+     * until then the thread sits at PRIORITY_SYSTEM (18), below the UI thread
+     * at PRIORITY_USER_INTERFACE (16), so UI-thread disk work can hold it off
+     * for the whole of enumeration. Raised only once a host has spoken, so a
+     * charger costs nothing. */
+    thread_set_priority(thread_self(), PRIORITY_REALTIME);
 
 #ifdef HAVE_USB_POWER
     if (usb_power_only)
@@ -413,6 +567,239 @@ static void usb_set_host_present(bool present)
 
     usb_configure_drivers(USB_INSERTED);
 }
+
+static void usb_extract(void)
+{
+    if(usb_state == USB_EXTRACTED)
+        return;
+
+    if(usb_state == USB_POWERED || usb_state == USB_INSERTED)
+        usb_stack_enable(false);
+
+#ifdef IPOD_ACCESSORY_PROTOCOL
+    iap_power_reset();
+#endif
+
+    usb_state = USB_EXTRACTED;
+#ifndef BOOTLOADER
+    send_event(SYS_EVENT_USB_EXTRACTED, NULL);
+#endif
+    usb_disk_ejected = false;
+    usb_set_host_present(false);
+}
+
+#if defined(HAVE_USBSTACK) && !defined(BOOTLOADER)
+void usb_set_host_probe(bool on)
+{
+    queue_post(&usb_queue, USB_HOST_PROBE, on);
+}
+
+bool usb_host_probe_active(void)
+{
+    return usb_host_probe_on;
+}
+
+static void usb_host_probe_switch(bool on)
+{
+    if(on == usb_host_probe_on)
+        return;
+    usb_host_probe_on = on;
+    usb_log(USB_LOG_HOST_MODE, on, 0, 0, 0);
+    if(on)
+    {
+        usb_extract();
+        usb_host_probe_enable(true);
+#ifdef HAVE_USB_CHARGING_ENABLE
+        /* usb_extract() dropped the charge current with the device stack,
+         * which on the 6G also stops the battery charging;
+         * usb_charging_maxcurrent() answers for the probe */
+        usb_charging_maxcurrent_change(usb_charging_maxcurrent());
+#endif
+        return;
+    }
+
+#ifdef HAVE_USB_HOST_AUDIO
+    usb_host_audio_stop();
+    usb_dac_tried = true;
+    usb_dac_polls = 0;
+    usb_dac_port_bits = 0;
+#endif
+    usb_host_probe_enable(false);
+    /* Insertions were dropped meanwhile; replay the cable. */
+    queue_post(&usb_queue, usb_detect(), 0);
+}
+#endif
+
+#ifdef HAVE_USB_HOST_AUDIO
+void usb_set_dac_output(int mode)
+{
+    usb_dac_auto = mode != 0;
+}
+
+void usb_set_dac_active(bool on)
+{
+    if(on)
+        usb_dac_requested = true;
+    queue_post(&usb_queue, USB_HOST_DAC, on);
+}
+
+bool usb_dac_searching(void)
+{
+    return usb_dac_requested || usb_dac_polls > 0;
+}
+
+bool usb_dac_playing(void)
+{
+    return !strcmp(usb_host_audio_get_status()->state, "on");
+}
+
+static void usb_dac_auto_step(void);
+
+/* USB thread: Turn On starts the search at its polling step, past the
+ * setting and once-per-cable checks. It never takes the port from a
+ * computer, car or dock that is using it, nor from a serial accessory. */
+static void usb_dac_turn(bool on)
+{
+    if(on && !usb_host_probe_on)
+    {
+        if(usb_state == USB_INSERTED)
+            usb_dac_note("refused: a host answered");
+#ifdef IPOD_ACCESSORY_PROTOCOL
+        else if(iap_accessory_present())
+            usb_dac_note("refused: serial accessory");
+#endif
+        else
+        {
+            usb_host_probe_switch(true);
+            usb_dac_polls = 1;
+            usb_dac_port_bits = 0;
+            usb_dac_turned_on = true;
+            usb_dac_note("polling (turned on)");
+            usb_dac_requested = false;
+            usb_dac_auto_step();
+            return;
+        }
+    }
+    usb_dac_requested = false;
+    if(!on && usb_host_probe_on)
+        usb_host_probe_switch(false);
+}
+
+static int usb_hub_tmo_cb(struct timeout *tmo)
+{
+    (void)tmo;
+    queue_post(&usb_queue, USB_HOST_HUB, 0);
+    return 0;
+}
+
+void usb_host_hub_watch(bool on)
+{
+    if(on)
+        timeout_register(&usb_hub_tmo, usb_hub_tmo_cb, HZ, 0);
+    else
+        timeout_cancel(&usb_hub_tmo);
+}
+
+/* USB thread: the DAC gone from its hub port ends host mode, as unplugging
+ * it from the player does. */
+static void usb_hub_check(void)
+{
+    if(!usb_dac_playing())
+        return;
+    if(usb_host_hub_device_present())
+        usb_host_hub_watch(true);
+    else
+        usb_host_probe_switch(false);
+}
+
+const struct usb_dac_auto_record *usb_get_dac_auto_record(void)
+{
+    return &usb_dac_rec;
+}
+
+static int usb_dac_tmo_cb(struct timeout *tmo)
+{
+    (void)tmo;
+    queue_post(&usb_queue, USB_HOST_AUTO, 0);
+    return 0;
+}
+
+/* The first step is the USB_DAC_WAIT timer. A computer, or a car or dock
+ * that reads the player as a disk or over iAP, has sent a request by then,
+ * which under USB_DETECT_BY_REQUEST moves the state on from USB_POWERED. A
+ * bus reset alone does not count: plugging in the Fosi DS2 makes one, and a
+ * computer follows its reset with a request within milliseconds. Each later step
+ * is one poll of the port, which resets and enumerates a device as soon as
+ * one connects. */
+static void usb_dac_auto_step(void)
+{
+    const struct usb_drv_host_enum *e;
+    struct usb_drv_host_status st;
+
+    if(usb_dac_polls == 0)
+    {
+        usb_dac_port_bits = 0;
+        usb_dac_turned_on = false;
+        usb_dac_rec.bus_resets = usb_record.bus_resets;
+        if(!usb_dac_auto)
+            usb_dac_note("skipped: setting off");
+        else if(usb_dac_tried)
+            usb_dac_note("skipped: tried this cable");
+        else if(usb_host_probe_on)
+            usb_dac_note("skipped: probe screen open");
+        else if(usb_state == USB_INSERTED)
+            usb_dac_note("skipped: a host answered");
+        else if(usb_state != USB_POWERED)
+            usb_dac_note("skipped: cable out");
+#ifdef IPOD_ACCESSORY_PROTOCOL
+        else if(iap_accessory_present())
+            usb_dac_note("skipped: serial accessory");
+#endif
+        else
+        {
+            usb_host_probe_switch(true);
+            usb_dac_polls = 1;
+            usb_dac_note("polling");
+        }
+        if(usb_dac_polls == 0)
+            return;
+    }
+
+    usb_drv_host_poll(&st);
+    usb_dac_port_bits = USB_LOG_HOST_PORT_READ | (st.vbus ? 1 : 0) |
+                        (st.connected ? 2 : 0) | (st.enabled ? 4 : 0);
+    usb_dac_port_reg = st.nregs ? st.regs[0].val : 0;
+    e = usb_host_get_enum();
+    if(e->result == 1)
+    {
+        bool ok = usb_host_audio_start();
+        usb_dac_note(ok ? "started" : usb_host_audio_get_status()->state);
+        if(ok)
+        {
+            usb_dac_polls = 0;
+            return;
+        }
+    }
+    else if(e->result < 0)
+        usb_dac_note(e->step);
+#ifdef IPOD_ACCESSORY_PROTOCOL
+    else if(iap_accessory_present())
+        usb_dac_note("stopped: serial accessory");
+#endif
+    else if(usb_dac_polls >= USB_DAC_MAX_POLLS)
+        usb_dac_note("no device");
+    else if(!usb_dac_turned_on && usb_detect() == USB_EXTRACTED)
+        usb_dac_note("cable out");
+    else
+    {
+        usb_dac_polls++;
+        usb_dac_note("polling");
+        timeout_register(&usb_dac_tmo, usb_dac_tmo_cb, USB_DAC_POLL, 0);
+        return;
+    }
+    usb_host_probe_switch(false);
+}
+#endif
 
 /*--- General driver code ---*/
 static void NORETURN_ATTR usb_thread(void)
@@ -462,7 +849,7 @@ static void NORETURN_ATTR usb_thread(void)
 #endif /* HAVE_USBSTACK */
 
         case USB_INSERTED:
-            if(usb_state != USB_EXTRACTED)
+            if(usb_state != USB_EXTRACTED || usb_host_probe_on)
                 break;
 
             if(usb_do_screendump())
@@ -482,15 +869,44 @@ static void NORETURN_ATTR usb_thread(void)
 #endif
 #ifdef HAVE_USB_POWER
             /* Power (charging-only) button */
-            usb_power_only = usb_mode != USB_MODE_MASS_STORAGE;
+            usb_power_only = usb_mode != USB_MODE_MASS_STORAGE
+                             && !usb_mode_drive_only();
             if(button_status() & ~USBPOWER_BTN_IGNORE) {
                 usb_power_only = !usb_power_only;
             }
+            usb_drive_only_now = usb_mode_drive_only() && !usb_power_only;
+#endif
+
+#ifndef BOOTLOADER
+            /* Zero the counters first: a reading has to describe this
+             * insertion, not every one since boot. */
+            memset(&usb_record, 0, sizeof(usb_record));
+            usb_record.tick = current_tick;
+            usb_record.btn_status = button_status();
+            usb_record.btn_ignore = ~USBPOWER_BTN_IGNORE;
+            usb_record.usb_mode = usb_mode;
+#ifdef HAVE_USB_POWER
+            usb_record.power_only = usb_power_only;
+#else
+            usb_record.power_only = false;
+#endif
+            usb_record.acks_expected = -1;   /* no broadcast yet this session */
+#ifdef HAVE_USBSTACK
+            usb_log(USB_LOG_INSERT, usb_record.power_only, 0, 0, 0);
+#endif
 #endif
 
 #ifndef USB_DETECT_BY_REQUEST
             usb_state = USB_INSERTED;
             usb_set_host_present(true);
+#endif
+#ifdef HAVE_USB_HOST_AUDIO
+            if(usb_dac_auto && !usb_dac_tried && !usb_drive_only())
+            {
+                timeout_register(&usb_dac_tmo, usb_dac_tmo_cb,
+                                 USB_DAC_WAIT, 0);
+                usb_dac_note("waiting for a host");
+            }
 #endif
             break;
             /* USB_INSERTED */
@@ -521,23 +937,47 @@ static void NORETURN_ATTR usb_thread(void)
             /* SYS_USB_CONNECTED_ACK */
 
         case USB_EXTRACTED:
-            if(usb_state == USB_EXTRACTED)
-                break;
-
-            if(usb_state == USB_POWERED || usb_state == USB_INSERTED)
-                usb_stack_enable(false);
-
-#ifdef IPOD_ACCESSORY_PROTOCOL
-            iap_reset_state(IF_IAP_MP(0));
+#ifdef HAVE_USB_HOST_AUDIO
+            usb_dac_tried = false;
 #endif
-
-            usb_state = USB_EXTRACTED;
-#ifndef BOOTLOADER
-            send_event(SYS_EVENT_USB_EXTRACTED, NULL);
-#endif
-            usb_set_host_present(false);
+            usb_extract();
             break;
             /* USB_EXTRACTED: */
+
+#ifdef USB_ENABLE_IAP
+        case USB_CAR_RECONNECT:
+            if(usb_state != USB_INSERTED || usb_car_no_audio)
+                break;
+            usb_car_no_audio = true;
+            usb_log(USB_LOG_IAP2_EVENT, USB_LOG_IAP2_RECONNECT, 0, 0, 0);
+            usb_stack_enable(false);
+            sleep(HZ / 5);      /* long enough for the car to see it go */
+            usb_stack_enable(true);
+#ifdef HAVE_USB_POWER
+            /* charge only stays charge only */
+            usb_configure_drivers(usb_power_only ? USB_POWERED : USB_INSERTED);
+#else
+            usb_configure_drivers(USB_INSERTED);
+#endif
+            break;
+#endif
+
+#if defined(HAVE_USBSTACK) && !defined(BOOTLOADER)
+        case USB_HOST_PROBE:
+            usb_host_probe_switch(ev.data);
+            break;
+#endif
+#ifdef HAVE_USB_HOST_AUDIO
+        case USB_HOST_AUTO:
+            usb_dac_auto_step();
+            break;
+        case USB_HOST_DAC:
+            usb_dac_turn(ev.data);
+            break;
+        case USB_HOST_HUB:
+            usb_hub_check();
+            break;
+#endif
 
         /*** Miscellaneous USB thread duties ***/
 
@@ -758,6 +1198,14 @@ void usb_init(void)
     tick_add_task(usb_tick);
 #endif
 #endif /* USB_FULL_INIT */
+
+#if defined(USB_ENABLE_STORAGE) && !defined(BOOTLOADER)
+    /* Here and nowhere later: this runs before audio_init() claims the rest of
+     * the RAM, so the mass-storage transfer buffers cost nothing to obtain.
+     * Asked for once a host is talking to us, the same allocation stalls the
+     * USB thread long enough to lose the connection -- see the function. */
+    usb_storage_alloc_buffers();
+#endif
 }
 
 void usb_wait_for_disconnect(struct event_queue *q)
@@ -822,6 +1270,45 @@ bool usb_inserted(void)
 }
 
 #if defined(USB_FULL_INIT)
+/* Whether a host has spoken to us, rather than a cable merely supplying 5V.
+ * usb_inserted() covers USB_POWERED too, so a charger satisfies it.
+ *
+ * Where USB_DETECT_BY_REQUEST is defined this turns true on the first
+ * completed control transfer -- before SET_ADDRESS, so callers have time to
+ * stand down and leave the controller the CPU it needs to answer. Elsewhere it
+ * follows cable detect. False again once the host has ejected the disk: from
+ * then on it is a charger, and work that waits for the host to go can run. */
+bool usb_host_is_present(void)
+{
+    return usb_host_present && !usb_disk_ejected;
+}
+
+/* Storage is requested at a configuration that needs it, or when that
+ * configuration's handover hold ends, and released at one without it. Until
+ * the host has settled it counts as wanting the disk: one that unconfigures
+ * us mid-session releases it before it asks again. */
+bool usb_host_wants_storage(void)
+{
+#if defined(HAVE_USBSTACK) && !defined(BOOTLOADER)
+    return usb_host_is_present()
+           && (exclusive_storage_requested || usb_core_storage_pending());
+#else
+    return usb_host_is_present();
+#endif
+}
+
+/* Fixed at insertion, as the drivers are: a setting changed mid-session would
+ * otherwise re-enumerate with a configuration count the enabled drivers do
+ * not match. A cable held to charge only stays charge only. */
+bool usb_drive_only(void)
+{
+#if defined(HAVE_USB_POWER) && defined(USB_FULL_INIT)
+    return usb_drive_only_now;
+#else
+    return false;
+#endif
+}
+
 bool usb_exclusive_storage(void)
 {
     /* Storage isn't actually exclusive until slave mode has been entered */
@@ -874,13 +1361,17 @@ bool usb_exclusive_storage(void)
 
 void usb_request_exclusive_storage(void)
 {
-    if(exclusive_storage_requested)
+    if(exclusive_storage_requested || usb_disk_ejected)
         return;
 
     exclusive_storage_requested = true;
     usb_broadcast_seqnum += 1;
     usb_num_acks_to_expect = queue_broadcast(SYS_USB_CONNECTED, usb_broadcast_seqnum) - 1;
     DEBUGF("usb: waiting for %d acks...\n", usb_num_acks_to_expect);
+#ifndef BOOTLOADER
+    usb_record.acks_expected = usb_num_acks_to_expect;
+    usb_record.broadcast_tick = current_tick;
+#endif
     if(usb_num_acks_to_expect == 0 && usb_host_present) {
         usb_slave_mode(true);
         exclusive_storage_enabled = true;
@@ -914,19 +1405,74 @@ void usb_release_exclusive_storage(void)
     return;
 }
 
+/* USB thread, once the host has ejected every drive. The player stays
+ * configured, so it keeps the current the host granted and goes on charging. */
+void usb_storage_ejected(void)
+{
+    usb_disk_ejected = true;
+    usb_release_exclusive_storage();
+}
+
+bool usb_storage_is_ejected(void)
+{
+    return usb_disk_ejected;
+}
+
 #ifdef USB_ENABLE_HID
 void usb_set_hid(bool enable)
 {
     usb_hid = enable;
-    usb_core_enable_driver(USB_DRIVER_HID, usb_hid);
+    usb_core_enable_driver(USB_DRIVER_HID, usb_hid && !usb_drive_only());
 }
 #endif /* USB_ENABLE_HID */
+
+#ifdef USB_ENABLE_IAP
+/* Takes effect at the next connection, either way: off mid-connection would
+ * skip the driver's disconnect at unplug, leaving the mixer on the iAP
+ * sink. */
+void usb_set_iap(bool enable)
+{
+    usb_iap = enable;
+}
+
+void usb_set_iap2_mode(int mode)
+{
+    usb_iap_set_iap2_mode(mode);
+}
+
+/* The iPod Classic's are the 160 GB model's, which serial iAP reports where
+ * USB has no setting; the iPhone 4's are those ipod-gadget answers cars with */
+static const struct usb_identity identities[] = {
+    [USB_IDENTITY_OWN]          = { 0,      0x00130200, "MC293" },
+    [USB_IDENTITY_IPOD_CLASSIC] = { 0x1261, 0x00130200, "MC293" },
+    [USB_IDENTITY_IPHONE_4]     = { 0x1297, 0x00111349, "MC676" },
+};
+static int identity = USB_IDENTITY_OWN;
+
+void usb_set_identity(int new_identity)
+{
+    if(new_identity >= 0 && new_identity < (int)ARRAYLEN(identities))
+        identity = new_identity;
+}
+
+const struct usb_identity* usb_identity(void)
+{
+    return &identities[identity];
+}
+
+/* Any thread or an interrupt */
+void usb_car_found(void)
+{
+    if(usb_audio && !usb_car_no_audio)
+        queue_post(&usb_queue, USB_CAR_RECONNECT, 0);
+}
+#endif /* USB_ENABLE_IAP */
 
 #ifdef USB_ENABLE_SERIAL
 void usb_set_serial(bool enable)
 {
     usb_serial = enable;
-    usb_core_enable_driver(USB_DRIVER_SERIAL, usb_serial);
+    usb_core_enable_driver(USB_DRIVER_SERIAL, usb_serial && !usb_drive_only());
 }
 
 bool usb_get_serial(void)
@@ -955,6 +1501,11 @@ bool usb_powered_only(void)
 /* Dummy functions for USB_NONE  */
 
 bool usb_inserted(void)
+{
+    return false;
+}
+
+bool usb_host_is_present(void)
 {
     return false;
 }

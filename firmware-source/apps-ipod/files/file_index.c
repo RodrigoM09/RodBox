@@ -1,0 +1,309 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * An index of the documents and images on the player.
+ *
+ * Nothing else indexes them. The tag database knows about audio and nothing
+ * but audio, so a flat "every document on the device" list has no existing
+ * source to read -- which is why this walks the disk itself.
+ *
+ * One walk produces both lists. Classifying a file is a lookup on its
+ * extension (filetype_get_attr()), so having found a file it is as cheap to
+ * ask both questions as one; walking twice would double the only expensive
+ * part.
+ *
+ * The lists are plain text, one path per line, written to a .tmp and renamed
+ * only on a completed walk -- so an interrupted one leaves the previous list
+ * standing rather than a partial one that reads as the whole truth.
+ *
+ * Why this is not a normal bg_task
+ * --------------------------------
+ * bg_task's staleness rule is the database's entry count (see bg_task.c), and
+ * that does not move when a .txt or a .jpg appears. So this uses the
+ * .request-only shape -- the same one the tag database itself uses -- and
+ * supplies its own triggers: the maintenance menu's Rescan row, a USB session
+ * (the one moment files reliably change), and having no index at all at
+ * startup. It takes its turn on the shared background thread through a tick of
+ * its own, after the ranked tasks.
+ *
+ * Parts, in order:
+ *   - the lists on disk
+ *   - the walk
+ *   - the tick, and what wakes it
+ ****************************************************************************/
+
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include "config.h"
+#include "system/library_files.h"
+#include "system.h"
+#include "kernel.h"
+#include "file.h"
+#include "dir.h"
+#include "rbpaths.h"
+#include "usb.h"
+#include "core_alloc.h"
+#include "database/tagcache.h"
+#include "system/bg_task.h"
+#include "system/debug_log.h"
+#include "files/filetypes.h"
+#include "files/path_list.h"
+#include "file_index.h"
+
+#define FILE_INDEX_DOCS   LIB_DOCUMENTS_FILE
+#define FILE_INDEX_IMAGES LIB_IMAGES_FILE
+
+/* Deepest nesting the walk will follow. Recursion here costs stack, and the
+ * thread's is modest; anything filed deeper than this is almost certainly not
+ * a document someone means to browse. */
+#define FILE_INDEX_MAX_DEPTH 12
+
+/* Set when something has happened that the lists would not reflect. */
+static volatile bool fi_wants_scan;
+static volatile bool fi_abort;
+static volatile bool fi_busy;
+
+/* The walk's two output lists. path_list owns the .tmp-and-rename publishing,
+ * and the line accounting with it. */
+static struct path_list_writer fi_docs;
+static struct path_list_writer fi_images;
+
+/* One path buffer, reused down the recursion rather than one per level:
+ * MAX_PATH per frame times the depth limit is far more stack than the thread
+ * has. The walk appends to it and truncates on the way back out. */
+static char fi_path[MAX_PATH];
+
+bool file_index_is_busy(void)
+{
+    return fi_busy;
+}
+
+const char *file_index_state(void)
+{
+    if (fi_busy)
+        return "Scanning";
+    if (fi_wants_scan)
+        return "Waiting";
+    return "Idle";
+}
+
+/* The writers keep their line counts past the close, so these are the last
+ * pass's totals once it has finished and its running ones while it walks. */
+void file_index_counts(int *docs, int *images)
+{
+    *docs = fi_docs.count;
+    *images = fi_images.count;
+}
+
+const char *file_index_activity(void)
+{
+    return fi_busy ? fi_path : "";
+}
+
+const char *file_index_list(bool images)
+{
+    return images ? FILE_INDEX_IMAGES : FILE_INDEX_DOCS;
+}
+
+/* ---- the walk ---------------------------------------------------------- */
+
+/* Give up promptly for a USB session, a shutdown, or the artwork cache
+ * wanting the thread -- this holds no lock, but it does hold the disk and the
+ * thread, and a walk can run for minutes. */
+static bool fi_check_abort(void)
+{
+    if (fi_abort)
+        return true;
+
+    if (bg_task_should_stop(&file_index_task))
+    {
+        fi_abort = true;
+        return true;
+    }
+    return false;
+}
+
+/* Cover art rather than a picture someone put here to be looked at.
+ *
+ * These lists are for images filed deliberately, and a music library holds far
+ * more album art than anything else -- unfiltered, the art buries the rest.
+ * The names matched are the conventional ones the artwork search itself looks
+ * for (see search_albumart_files() in metadata/albumart.c): cover.* and
+ * folder.*, any extension.
+ *
+ * It cannot catch everything. Album art is also commonly named after the album
+ * or the track, which is indistinguishable from any other filename without
+ * asking the database what the album is called -- and this walk deliberately
+ * knows nothing about the database. Getting the two conventional names is what
+ * makes the difference in practice. */
+static bool fi_is_cover_art(const char *name)
+{
+    static const char * const art_names[] = { "cover", "folder" };
+    const char *dot = strrchr(name, '.');
+    size_t stem = dot ? (size_t)(dot - name) : strlen(name);
+    unsigned i;
+
+    for (i = 0; i < ARRAYLEN(art_names); i++)
+    {
+        if (stem == strlen(art_names[i])
+            && !strncasecmp(name, art_names[i], stem))
+            return true;
+    }
+    return false;
+}
+
+/* Both lists full: nothing more can be recorded, so stop walking. */
+static bool fi_lists_full(void)
+{
+    return path_list_write_full(&fi_docs)
+        && path_list_write_full(&fi_images);
+}
+
+/* Walk 'fi_path' (a directory) and everything under it. */
+static void fi_walk(int depth)
+{
+    DIR *dir;
+    struct dirent *entry;
+    size_t len = strlen(fi_path);
+
+    if (depth > FILE_INDEX_MAX_DEPTH)
+        return;
+
+    dir = opendir(fi_path);
+    if (!dir)
+        return;
+
+    while ((entry = readdir(dir)))
+    {
+        struct dirinfo info;
+
+        if (fi_check_abort() || fi_lists_full())
+            break;
+
+        /* "." and "..", and by the same test every dot-directory: none of
+         * them holds anything a person filed there to read, and /.rockbox in
+         * particular is full of files that would classify as documents. */
+        if (entry->d_name[0] == '.')
+            continue;
+
+        /* Rebuild the path at this level each time round; the previous
+         * entry's name is simply overwritten. */
+        if (len + 1 + strlen((char *)entry->d_name) >= sizeof(fi_path))
+            continue;
+        snprintf(fi_path + len, sizeof(fi_path) - len, "%s%s",
+                 len > 1 ? "/" : "", (char *)entry->d_name);
+
+        info = dir_get_info(dir, entry);
+        if (info.attribute & ATTR_DIRECTORY)
+        {
+            fi_walk(depth + 1);
+        }
+        else
+        {
+            switch (filetype_get_attr(fi_path) & FILE_ATTR_MASK)
+            {
+                case FILE_ATTR_TXT:
+                    path_list_write_record(&fi_docs, fi_path);
+                    break;
+                case FILE_ATTR_IMG:
+                    if (!fi_is_cover_art((char *)entry->d_name))
+                        path_list_write_record(&fi_images, fi_path);
+                    break;
+            }
+        }
+
+        /* Back to the directory this level is walking. */
+        fi_path[len] = '\0';
+        yield();
+    }
+
+    closedir(dir);
+}
+
+/* One complete pass. */
+static void fi_run_scan(void)
+{
+    bool completed;
+    long started;
+
+    fi_abort = false;
+    fi_busy = true;
+
+    /* Both or neither. One walk fills both lists, so a pass that could only
+     * open one of them has nothing worth publishing -- and publishing half a
+     * pass would leave the two lists describing different walks. */
+    if (!path_list_write_open(&fi_docs, FILE_INDEX_DOCS)
+        || !path_list_write_open(&fi_images, FILE_INDEX_IMAGES))
+    {
+        path_list_write_close(&fi_docs, false);
+        path_list_write_close(&fi_images, false);
+        fi_busy = false;
+        fi_wants_scan = true;     /* no room to write now; try again later */
+        return;
+    }
+
+    debug_log(DEBUG_LOG_TASKS, "%s: walk started", file_index_task.name);
+    started = current_tick;
+    strcpy(fi_path, "/");
+    fi_walk(0);
+
+    completed = !fi_abort;
+    debug_log(DEBUG_LOG_TASKS, "%s: walk %s after %ld s",
+              file_index_task.name, completed ? "done" : "interrupted",
+              (long)(current_tick - started) / HZ);
+    path_list_write_close(&fi_docs, completed);
+    path_list_write_close(&fi_images, completed);
+
+    fi_busy = false;
+    fi_wants_scan = !completed;   /* interrupted: try again later */
+}
+
+/* ---- the tick, and what wakes it --------------------------------------- */
+
+/* bg_task.tick: this task's turn on the shared thread. */
+static void fi_tick(void)
+{
+    /* Only while the database is leaving the disk alone: both walk it, and two
+     * at once makes each slower than the pair run in turn. Nor ahead of a
+     * task that outranks this one, which would only stop the walk again.
+     *
+     * And never while a host has hold of us: the disk is about to be taken
+     * back. The run is gated rather than the arming, so the request stays
+     * pending and a real extraction still gets its scan however early the
+     * question is asked. */
+    if (fi_wants_scan && !tagcache_is_busy() && !usb_host_wants_storage()
+        && !bg_task_preempted(&file_index_task))
+    {
+        fi_wants_scan = false;
+        fi_run_scan();
+    }
+}
+
+/* bg_task.request: both triggers do the same thing here. There is nothing to
+ * keep between passes -- the walk rewrites both lists from scratch -- so a
+ * rebuild and an update are the same walk. The thread sends one after a USB
+ * session too: the host has had the disk, the one moment files reliably
+ * appear and disappear without anyone telling us. */
+static void fi_request(bool rebuild)
+{
+    (void)rebuild;
+    fi_wants_scan = true;
+}
+
+struct bg_task file_index_task =
+{
+    .name    = "documents & images",
+    .rank    = BG_RANK_FILES,
+    .request = fi_request,
+    .tick    = fi_tick,
+};
+
+void file_index_init(void)
+{
+    bg_task_init(&file_index_task);
+
+    /* Nothing to read on a first boot, or after the lists were deleted. */
+    if (!file_exists(FILE_INDEX_DOCS) && !file_exists(FILE_INDEX_IMAGES))
+        fi_wants_scan = true;
+}

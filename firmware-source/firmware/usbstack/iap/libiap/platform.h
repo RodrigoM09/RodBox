@@ -38,6 +38,12 @@ enum IAPPlatformControl {
     IAPPlatformControl_VolumeUp,
     IAPPlatformControl_VolumeDown,
     IAPPlatformControl_ToggleMute,
+    IAPPlatformControl_StartFF,
+    IAPPlatformControl_StartRew,
+    IAPPlatformControl_EndFFRew,
+    /* the chapter where the track has chapters, else the track */
+    IAPPlatformControl_NextChapter,
+    IAPPlatformControl_PrevChapter,
 };
 
 struct IAPPlatformPendingControl {
@@ -70,6 +76,15 @@ struct IAPPlatformTrackInfo {
     struct IAPSpan*     title;
 };
 
+/* iap_platform_get_chapter */
+struct IAPPlatformChapter {
+    uint32_t        index;
+    uint32_t        count;
+    uint32_t        length_ms;
+    uint32_t        elapsed_ms;
+    struct IAPSpan* name; /* user, may be NULL */
+};
+
 /* iap_platform_open_artwork */
 struct IAPPlatformArtwork {
     uint16_t  width;  /* user */
@@ -86,8 +101,12 @@ int   iap_platform_send_hid_report(struct IAPContext* iap_ctx, const void* ptr, 
 
 /* system info */
 IAPBool iap_platform_get_ipod_serial_num(struct IAPContext* iap_ctx, struct IAPSpan* serial);
+IAPBool iap_platform_get_ipod_name(struct IAPContext* iap_ctx, struct IAPSpan* name);
+/* ReturniPodModelNum's payload: the model ID, big-endian, then its string */
+IAPBool iap_platform_get_ipod_model_num(struct IAPContext* iap_ctx, struct IAPSpan* model);
 
 /* audio controls */
+uint32_t iap_platform_get_time_ms(struct IAPContext* iap_ctx);
 IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatformPlayStatus* status);
 void    iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl control, struct IAPPlatformPendingControl pending);
 IAPBool iap_platform_get_volume(struct IAPContext* iap_ctx, struct IAPPlatformVolumeStatus* status);
@@ -99,14 +118,28 @@ IAPBool iap_platform_set_repeat_setting(struct IAPContext* iap_ctx, uint8_t stat
 IAPBool iap_platform_get_date_time(struct IAPContext* iap_ctx, struct IAPDateTime* time);
 IAPBool iap_platform_get_backlight_level(struct IAPContext* iap_ctx, uint8_t* level);
 IAPBool iap_platform_get_hold_switch_state(struct IAPContext* iap_ctx, IAPBool* state);
+IAPBool iap_platform_get_lineout_usage(struct IAPContext* iap_ctx, IAPBool* used);
+/* the disk's size and free space, in bytes */
+IAPBool iap_platform_get_storage_space(struct IAPContext* iap_ctx, uint64_t* total, uint64_t* avail);
 IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformTrackInfo* info);
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index);
 IAPBool iap_platform_open_artwork(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformArtwork* artwork);
 IAPBool iap_platform_get_artwork_ptr(struct IAPContext* iap_ctx, struct IAPPlatformArtwork* artwork, struct IAPSpan* span);
 IAPBool iap_platform_close_artwork(struct IAPContext* iap_ctx, struct IAPPlatformArtwork* artwork);
+/* false for a category the platform does not offer */
+IAPBool iap_platform_get_db_count(struct IAPContext* iap_ctx, uint8_t type /* IAPDatabaseType */, uint32_t* count);
+IAPBool iap_platform_get_db_record(struct IAPContext* iap_ctx, uint8_t type /* IAPDatabaseType */, uint32_t index, struct IAPSpan* name);
+/* an index of 0xFFFFFFFF steps back up a level; sort is SelectSortDBRecord's, 0xFF for none */
+IAPBool iap_platform_select_db_record(struct IAPContext* iap_ctx, uint8_t type /* IAPDatabaseType */, uint32_t index, uint8_t sort);
+void    iap_platform_reset_db_selection(struct IAPContext* iap_ctx);
+/* the playing track's chapter at index, or its current one for 0xFFFFFFFF;
+ * false with no such chapter */
+IAPBool iap_platform_get_chapter(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformChapter* chapter);
+IAPBool iap_platform_set_chapter(struct IAPContext* iap_ctx, uint32_t index);
 
 /* other callbacks */
 IAPBool iap_platform_on_acc_samprs_received(struct IAPContext* iap_ctx, struct IAPSpan* samprs);
+void    iap_platform_on_audio_attrs_ack(struct IAPContext* iap_ctx, IAPBool success);
 
 /* debugging */
 void iap_platform_dump_hex(const void* ptr, size_t size);

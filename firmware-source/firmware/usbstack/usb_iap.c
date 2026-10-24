@@ -19,11 +19,13 @@
  ****************************************************************************/
 #include "audio.h"
 #include "panic.h"
+#include "pcm.h"
 #include "pcm_mixer.h"
 #include "pcm_sink.h"
 #include "playback.h"
 #include "powermgmt.h"
 #include "timefuncs.h"
+#include "usb.h"
 #include "usb_core.h"
 #include "usb_drv.h"
 
@@ -33,10 +35,12 @@
 #include "iap/macros.h"
 #include "iap/platform-macros.h"
 #include "iap/platform.h"
+#include "iap_library.h"
 #include "usb_audio_def.h"
 #include "usb_class_driver.h"
 #include "usb_hid_def.h"
 #include "usb_iap.h"
+#include "usb_iap2.h"
 
 struct usb_class_driver_ep_allocation usb_iap_ep_allocs[2] = {
     /* uac input */
@@ -129,6 +133,31 @@ static struct usb_as_format_type_i_discrete ipod_audio_stream_1_uac_discrete = {
     .bBitResolution     = 16,
     .bSamFreqType       = 3,
     .tSamFreq           = {
+        {0x00, 0x7D, 0x00}, /* 32000 */
+        {0x44, 0xAC, 0x00}, /* 44100 */
+        {0x80, 0xBB, 0x00}, /* 48000 */
+    },
+};
+
+/* An iPhone's list, used while answering iAP2: an iAP2 car names rates as
+ * indexes into it (this car's 08 07 06 are 48000, 44100 and 32000). Only the
+ * last three can be set; the car takes nothing else. */
+static struct usb_as_format_type_i_discrete iphone_stream_1_uac_discrete = {
+    .bLength            = USB_AS_SIZEOF_FORMAT_TYPE_I_DISCRETE(9),
+    .bDescriptorType    = USB_DT_CS_INTERFACE,
+    .bDescriptorSubType = USB_AS_FORMAT_TYPE,
+    .bFormatType        = USB_AS_FORMAT_TYPE_I,
+    .bNrChannels        = 2,
+    .bSubframeSize      = 2,
+    .bBitResolution     = 16,
+    .bSamFreqType       = 9,
+    .tSamFreq           = {
+        {0x40, 0x1F, 0x00}, /* 8000 */
+        {0x11, 0x2B, 0x00}, /* 11025 */
+        {0xE0, 0x2E, 0x00}, /* 12000 */
+        {0x80, 0x3E, 0x00}, /* 16000 */
+        {0x22, 0x56, 0x00}, /* 22050 */
+        {0xC0, 0x5D, 0x00}, /* 24000 */
         {0x00, 0x7D, 0x00}, /* 32000 */
         {0x44, 0xAC, 0x00}, /* 44100 */
         {0x80, 0xBB, 0x00}, /* 48000 */
@@ -308,10 +337,47 @@ enum Notify {
     Notify_Tick,
 };
 
+static long          counts_tick;
+static unsigned long counts_elapsed;
+
+/* Every 5 s, what the stream took against how far the track moved, as iAP2
+ * logs it. Only a running stream counts packets, so a period with none
+ * logs nothing. */
+static void log_audio_counts(void) {
+    struct iap_audio_counts c;
+    uint32_t                ran_empty, failed;
+    if(!TIME_AFTER(current_tick, counts_tick + 5 * HZ)) {
+        return;
+    }
+    const struct mp3entry* id3     = audio_current_track();
+    const unsigned long    elapsed = id3 ? id3->elapsed : 0;
+    iap_audio_take_counts(&c);
+    usb_drv_batch_take_counts(&ran_empty, &failed);
+    if(c.bytes || c.silent) {
+        usb_log(USB_LOG_IAP2_EVENT, USB_LOG_IAP2_AUDIO_TAKEN, MIN((current_tick - counts_tick) * 1000 / HZ, 0xffff), c.bytes, c.chunks);
+        usb_log(USB_LOG_IAP2_EVENT, USB_LOG_IAP2_AUDIO_GAPS, MIN(c.odd, 0xffff), c.silent, elapsed - counts_elapsed);
+        usb_log(USB_LOG_IAP2_EVENT, USB_LOG_IAP2_AUDIO_USB, 0, ran_empty, failed);
+    }
+    counts_tick    = current_tick;
+    counts_elapsed = elapsed;
+}
+
 static int tick_callback(struct timeout* tmo) {
     (void)tmo;
     usb_signal_class_notify(USB_DRIVER_IAP, Notify_Tick);
     return HZ / 10;
+}
+
+static struct timeout soon_tmo;
+
+static int soon_callback(struct timeout* tmo) {
+    (void)tmo;
+    usb_signal_class_notify(USB_DRIVER_IAP, Notify_Tick);
+    return 0;
+}
+
+void usb_iap2_tick_soon(long ticks) {
+    timeout_register(&soon_tmo, soon_callback, MAX(ticks, 1), 0);
 }
 
 static int usb_iap_set_first_interface(int interface) {
@@ -347,7 +413,10 @@ static int usb_iap_get_config_descriptor(unsigned char* dest, int max_packet_siz
     PACK_DESC(ipod_audio_stream_0_desc);
     PACK_DESC(ipod_audio_stream_1_desc);
     PACK_DESC(ipod_audio_stream_1_uac_header);
-    PACK_DESC(ipod_audio_stream_1_uac_discrete);
+    if(!usb_iap2_offered())
+        PACK_DESC(ipod_audio_stream_1_uac_discrete);
+    else
+        PACK_DESC(iphone_stream_1_uac_discrete);
     PACK_DESC(ipod_audio_stream_1_endpoint);
     PACK_DESC(ipod_audio_stream_1_endpoint_uac);
 
@@ -375,6 +444,7 @@ static int usb_iap_init_connection(void) {
     last_hold_switch_state = -1;
 
     iap_debug_reset_timestamp();
+    usb_iap2_connect();
 
     /* init audio sink */
     check_act(iap_audio_init(), return -1);
@@ -407,6 +477,7 @@ static int usb_iap_init_connection(void) {
     /* register timer */
     timeout_register(&tick_tmo, tick_callback, HZ / 10, 0);
 
+    iap_library_claim(IAP_LIBRARY_USB);
     iap_initialized = true;
     LOG("initialized");
     return 0;
@@ -446,11 +517,50 @@ static void usb_iap_init(void) {
     LOG("init");
 }
 
+/* Set while a bus reset keeps an iAP1 dock's sink for its return. */
+static bool reset_hold;
+
+void usb_iap_end_reset_hold(bool give_back) {
+    if(!reset_hold) {
+        return;
+    }
+    reset_hold = false;
+    LOG("reset hold ends, give_back=%d", give_back);
+    if(give_back) {
+        mixer_switch_sink(PCM_SINK_BUILTIN);
+    }
+}
+
 static void usb_iap_disconnect(void) {
     iap_initialized = false;
-    audio_pause();
-    mixer_switch_sink(PCM_SINK_BUILTIN);
+    /* The stream stops before the sink changes or its buffers go. */
+    check_act(iap_audio_disable(), );
+    /* and a scan ends where it has got to */
+    iap_platform_seek_stop(_iap_acquire_ctx(true));
+    _iap_release_ctx();
+    /* A bus reset is not the dock leaving (Gerrit 7900). An iAP1 dock's sink
+     * stays, so the track waits where it is, paused or playing, until the
+     * dock's rates come back; another configuration or the cable going ends
+     * the wait as an unplug would. To pause at a reset instead, drop this
+     * test. */
+    if(usb_core_bus_resetting() && usb_detect() == USB_INSERTED &&
+       pcm_current_sink() == PCM_SINK_IAP && !usb_iap2_keeps_playing()) {
+        reset_hold = true;
+        LOG("bus reset keeps the sink");
+    } else {
+        reset_hold = false;
+        /* An accessory that had the audio takes it with it, as a dock does:
+         * the switch says so. A car that never took it leaves playback alone
+         * -- one that has only identified itself, or the connection the
+         * player drops to come back to it without the sound card -- but an
+         * iAP1 accessory playing the line out is an output going too. */
+        if(pcm_current_sink() != PCM_SINK_IAP && !usb_iap2_keeps_playing()) {
+            send_event(SYS_EVENT_OUTPUT_GONE, (void *)OUTPUT_ACCESSORY);
+        }
+        mixer_switch_sink(PCM_SINK_BUILTIN);
+    }
     timeout_cancel(&tick_tmo);
+    timeout_cancel(&soon_tmo);
     if(platform.aa_slot >= 0) {
         playback_release_aa_slot(platform.aa_slot);
     }
@@ -458,6 +568,7 @@ static void usb_iap_disconnect(void) {
     check_act(iap_deinit_ctx(ctx), );
     _iap_release_ctx();
     check_act(iap_audio_deinit(), );
+    iap_library_close(IAP_LIBRARY_USB);
     LOG("disconnected");
 }
 
@@ -465,12 +576,24 @@ static void usb_iap_transfer_complete(int ep, int dir, int status, int length) {
     (void)length;
 
     if((ep | dir) == HID_EP_IN) {
-        check_act(status == 0, return);
+        if(usb_iap2_sent(status, length)) {
+            /* libiap did not send it, so is not told */
+            return;
+        }
+        if(!iap_initialized) {
+            /* cancelled by the disconnect, which has freed the context's buffers */
+            return;
+        }
 #if DEBUG_DUMP_TX
         LOG("ep=%d dir=%d state=%d length=%d", ep, dir, status, length);
 #endif
         struct IAPContext* ctx = _iap_acquire_ctx(true);
-        check_act(iap_notify_send_complete(ctx), );
+        if(status == 0) {
+            check_act(iap_notify_send_complete(ctx), );
+        } else {
+            ERROR("hid report failed, status=%d", status);
+            check_act(iap_notify_send_failed(ctx), );
+        }
         _iap_release_ctx();
     }
 }
@@ -543,12 +666,19 @@ static bool control_request_if_class(struct usb_ctrlrequest* req, uint8_t* reqda
             logf("==== acc: %u bytes ====", req->wLength);
             iap_platform_dump_hex(reqdata, req->wLength);
 #endif
+            if(usb_iap2_report(reqdata, req->wLength)) {
+                usb_core_control_response(USB_CONTROL_ACK, NULL, 0);
+                return true;
+            }
 
+            iap_audio_accessory_heard();
             struct IAPContext* ctx = _iap_acquire_ctx(true);
-            const bool         ret = iap_feed_hid_report(ctx, reqdata, req->wLength);
+            iap_log_report(ctx, reqdata, req->wLength, false);
+            /* The report arrived whatever libiap makes of it. A STALL would
+             * tell the accessory the transfer failed, not the frame. */
+            iap_feed_hid_report(ctx, reqdata, req->wLength);
             _iap_release_ctx();
 
-            check_act(ret, return false);
             usb_core_control_response(USB_CONTROL_ACK, NULL, 0);
             return true;
         }
@@ -624,9 +754,15 @@ static bool usb_iap_control_request(struct usb_ctrlrequest* req, uint8_t* reqdat
 static void usb_iap_notify_event(intptr_t data) {
     switch(data) {
     case Notify_Tick: {
+        if(usb_iap2_tick()) {
+            /* the connection is iAP2's, and libiap stays quiet */
+            return;
+        }
+        log_audio_counts();
         struct IAPContext* ctx = _iap_acquire_ctx(true);
-        struct Platform*   plt = ctx->platform;
-        if(plt->control_pending) {
+        iap_remote_buttons_tick(ctx);
+        iap_platform_seek_tick(ctx);
+        if(iap_platform_control_waits(ctx)) {
             /* waiting for playback begins */
             _iap_release_ctx();
             return;
@@ -654,6 +790,7 @@ static void usb_iap_notify_event(intptr_t data) {
         }
 #endif
 
+        iap_audio_tick();
         check_act(iap_periodic_tick(ctx), );
         _iap_release_ctx();
     } break;

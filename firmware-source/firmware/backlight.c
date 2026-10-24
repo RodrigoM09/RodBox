@@ -23,7 +23,7 @@
 #if !defined(BOOTLOADER)
 #include "settings.h"
 #include "action.h"
-#include "../apps/gui/skin_engine/skin_engine.h"
+#include "gui/skin_engine/skin_engine.h"
 #endif
 #include <stdlib.h>
 #include "cpu.h"
@@ -39,10 +39,8 @@
 #include "timer.h"
 #include "backlight.h"
 #include "lcd.h"
-#include "screendump.h"
-#if defined(IPOD_6G) && !defined(SIMULATOR)
 #include "storage.h"
-#endif
+#include "screendump.h"
 
 #ifdef HAVE_REMOTE_LCD
 #include "lcd-remote.h"
@@ -358,7 +356,8 @@ static void backlight_dim(int value)
     if (bl_timer_active)
         return ;
 
-    if (timer_register(0, backlight_release_timer, 2, backlight_isr
+    /* Priority 1: above the 5G's wheel click, which gives the timer up. */
+    if (timer_register(1, backlight_release_timer, 2, backlight_isr
                        IF_COP(, CPU)))
     {
 #ifdef _BACKLIGHT_FADE_BOOST
@@ -483,6 +482,20 @@ static void backlight_setup_fade_down(void)
 }
 #endif /* CONFIG_BACKLIGHT_FADING */
 
+/* Set when the backlight goes off in SSD mode, cleared by the first wake that
+ * acts on it, so exactly one Q_STORAGE_PRE_WAKE is posted per off->on cycle.
+ *
+ * Trap: backlight_on() runs from the button tick for *every* button event,
+ * repeats included, so posting there unconditionally puts one event on the
+ * storage queue per press. That queue holds 16, queue_post() wraps silently
+ * when it is full, and KERNEL_ASSERT is compiled out of a release build, so a
+ * burst quietly overwrites unread events -- SYS_USB_CONNECTED among them.
+ *
+ * Read and written from both the backlight thread and the tick, so volatile;
+ * the worst a race can do is one extra post, which the handler treats as
+ * idempotent. */
+static volatile bool ssd_wants_prewake;
+
 static inline void do_backlight_off(void)
 {
     backlight_timer = 0;
@@ -496,6 +509,13 @@ static inline void do_backlight_off(void)
     backlight_lcd_sleep_countdown(true);
 #endif
 #endif
+    /* Accelerate SSD sleep when backlight turns off — the deep sleep
+     * timer in the storage driver uses backlight state as a gate. */
+    if (storage_get_ssd_mode())
+    {
+        storage_sleep();
+        ssd_wants_prewake = true;
+    }
 }
 
 /* Update state of backlight according to timeout setting */
@@ -531,10 +551,6 @@ static void backlight_update_state(void)
         backlight_setup_fade_up();
 #else
         backlight_hw_on();
-#endif
-#if defined(IPOD_6G) && !defined(SIMULATOR)
-        if (storage_get_ssd_mode())
-            storage_post_event(Q_STORAGE_PRE_WAKE, 0);
 #endif
     }
 }
@@ -827,6 +843,14 @@ void backlight_on(void)
 {
     if(!ignore_backlight_on)
     {
+        /* Pre-wake SSD from ISR context so the storage thread starts powering
+         * up before the UI thread processes the button event that triggered
+         * this. Once per off->on cycle -- see ssd_wants_prewake. */
+        if (ssd_wants_prewake)
+        {
+            ssd_wants_prewake = false;
+            storage_post_event(Q_STORAGE_PRE_WAKE, 0);
+        }
         queue_remove_from_head(&backlight_queue, BACKLIGHT_ON);
         queue_post(&backlight_queue, BACKLIGHT_ON, 0);
     }
@@ -869,7 +893,7 @@ int backlight_get_current_timeout(void)
         /* always on or always off */
     else
 #if CONFIG_CHARGING
-        if (power_input_present())
+        if (charger_inserted())
             return backlight_timeout_plugged;
         else
 #endif
@@ -900,8 +924,11 @@ void backlight_hold_changed(bool hold_button)
     if (!hold_button || (backlight_on_button_hold > 0))
     {
         /* if unlocked or override in effect */
-
-        /*backlight_on(); REMOVED*/
+        if (ssd_wants_prewake)
+        {
+            ssd_wants_prewake = false;
+            storage_post_event(Q_STORAGE_PRE_WAKE, 0);
+        }
         queue_remove_from_head(&backlight_queue, BACKLIGHT_ON);
         queue_post(&backlight_queue, BACKLIGHT_ON, 0);
     }

@@ -18,6 +18,20 @@ use Getopt::Long qw(:config pass_through);    # pass_through so not confused by 
 
 my $ROOT="..";
 
+# The application layer is not necessarily "apps": tools/configure --appsdir
+# moves it, and this fork builds from apps-ipod/ while keeping upstream's apps/
+# in the tree unbuilt. Files shipped FROM the application layer must follow
+# APPSDIR, or they are silently taken from the wrong tree. make exports it.
+my $APPSDIR = $ENV{'APPSDIR'} || "$ROOT/apps";
+
+# Build products of the application layer need the matching directory in the
+# BUILD tree, which is a bare name relative to the build dir this runs in --
+# not $APPSDIR, which is a source path. COREAPPSDIR rather than APPSDIR
+# because a bootloader build points the latter at bootloader/.
+my $COREAPPSDIR = $ENV{'COREAPPSDIR'} || "$ROOT/apps";
+my ($APPSBUILDDIR) = $COREAPPSDIR =~ m{([^/]+)$};
+$APPSBUILDDIR = "apps" unless $APPSBUILDDIR;
+
 my $ziptool;
 my $output;
 my $verbose;
@@ -579,7 +593,7 @@ sub buildzip {
 
     glob_unlink("$temp_dir/rocks/*.lua"); # Clean up unwanted *.lua files (e.g. actions.lua, buttons.lua)
 
-    copy("$ROOT/apps/tagnavi.config", "$temp_dir/");
+    copy("$APPSDIR/tagnavi.config", "$temp_dir/");
     copy("$ROOT/apps/plugins/disktidy.config", "$temp_dir/rocks/apps/");
 
     if(-e "$temp_dir/rocks/viewers/open_plugins.rock") {
@@ -683,10 +697,10 @@ sub buildzip {
     copy("rockbox-info.txt", "$temp_dir/rockbox-info.txt");
 
     # copy the already built lng files
-    glob_copy('apps/lang/*.lng', "$temp_dir/langs/");
-    glob_copy('apps/lang/*.zip', "$temp_dir/langs/");
+    glob_copy("$APPSBUILDDIR/lang/*.lng", "$temp_dir/langs/");
+    glob_copy("$APPSBUILDDIR/lang/*.zip", "$temp_dir/langs/");
     # Copy over the Invalid Language fallback stuff
-    glob_copy("$ROOT/apps/lang/Invalid*.talk", "$temp_dir/langs/");
+    glob_copy("$APPSDIR/lang/Invalid*.talk", "$temp_dir/langs/");
 
     # Copy over any generated voice/talk clips
     glob_copy('Invalid*.talk', "$temp_dir/langs/");
@@ -697,12 +711,11 @@ sub buildzip {
     glob_mkdir("$temp_dir/rocks/viewers/lua/");
     glob_copy('apps/plugins/lua/*.lua', "$temp_dir/rocks/viewers/lua/");
 
-    # finally, bundle map files for debug
-    glob_mkdir("$temp_dir/debug");
-    glob_copy("*.map", "$temp_dir/debug");
-# codecs and plugin maps add up
-#    find(find_copyfile(qr/\.(map)/, abs_path("$temp_dir/debug")), 'lib');
-#    find(find_copyfile(qr/\.(map)/, abs_path("$temp_dir/debug")), 'apps/plugins');
+    # Upstream bundles the .map files into debug/ here. Not wanted: rockbox.map
+    # is ~4MB of text and the zip is /MIR-synced onto the player, so it would
+    # cost that much of the user's disk on every sync. release.sh attaches each
+    # build's map to the release instead. Re-deleted after each merge; see
+    # docs/podbox/upstream-divergence.md.
 }
 
 my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =

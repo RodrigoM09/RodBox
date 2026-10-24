@@ -26,3 +26,28 @@ bool iap_audio_deinit(void);
 bool iap_audio_enable(void);
 bool iap_audio_disable(void);
 bool iap_audio_set_sampr(uint32_t sampr);
+/* RetAccessorySampleRateCaps: logged, and the sink offers only the listed
+ * rates. False, refusing the accessory, if none of 48, 44.1 and 32 kHz is
+ * among them. */
+struct IAPSpan;
+bool iap_audio_accessory_rates(struct IAPSpan* list);
+/* TrackNewAudioAttributes once the accessory's rates are accepted, if
+ * nothing has sent it yet on this connection. */
+void iap_audio_connected(void);
+/* The accessory's ack of TrackNewAudioAttributes, which lets a new rate play. */
+void iap_audio_attrs_ack(bool success);
+/* USB thread: an iAP1 report has arrived, which holds back the rate fallback */
+void iap_audio_accessory_heard(void);
+/* USB thread: TrackNewAudioAttributes again if a track has started since. */
+void iap_audio_tick(void);
+/* The rate the iAP sink is configured for. */
+unsigned long iap_audio_sampr(void);
+
+/* What the stream has done since the last call, for the USB log: bytes
+ * taken from playback, in how many chunks; packets of silence sent for want
+ * of any; chunks that were not a whole number of stereo samples. */
+struct iap_audio_counts
+{
+    uint32_t bytes, chunks, silent, odd;
+};
+void iap_audio_take_counts(struct iap_audio_counts *c);

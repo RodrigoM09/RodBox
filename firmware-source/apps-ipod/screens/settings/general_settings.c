@@ -1,0 +1,1237 @@
+/***************************************************************************
+ * Original code from RockBox
+ * was: apps/menus/settings_menu.c
+ * Copyright (C) 2007 Jonathan Gordon
+ * Portions Copyright (C) 2026 RockPod contributors
+ * GNU General Public License (version 2+)
+ *
+ * The general settings menu: filesystem, database, language, voice, hotkey
+ * and startup options.
+ ****************************************************************************/
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <limits.h>
+#include <string.h>
+#include "config.h"
+#include "lang.h"
+#include "kernel.h"
+#include "input/action.h"
+#include "settings/settings.h"
+#include "rbpaths.h"
+#include "widgets/menu.h"
+#include "widgets/keyboard.h"
+#include "exported_settings.h"
+#include "screens/browse/browser.h"
+#include "screens/browse/browser_db.h"
+#include "screens/music_menu_config.h"
+#include "usb.h"
+#ifdef IPOD_ACCESSORY_PROTOCOL
+#include "iap.h"                 /* iap_accessory_present */
+#endif
+#ifdef HAVE_COMPOSITE_VIDEO_OUT
+#include "videoout.h"
+#include "lcd.h"                 /* FBADDR */
+#endif
+#include "widgets/splash.h"
+#include "widgets/yesno.h"
+#include "speech/talk.h"
+#include "powermgmt.h"
+#include "power.h"               /* charger_inserted */
+#include "button.h"
+#include "audio/playback.h"
+#include "screens/playback/quick_screen.h"
+#include "dircache.h"
+#include "widgets/folder_select.h"
+#include "screens/context_menu.h"
+#include "system/activity.h"
+#include "system/bg_task.h"      /* tagcache_task, the standard triggers */
+#include "screens/covers/album_covers.h"  /* album_covers_task (the db index) */
+#include "metadata/art_cache.h"           /* art_cache_task */
+#include "files/file_index.h"
+#include "system/format_time.h"
+#include "system/volume.h"
+#include "system/app_util.h"     /* charging_splash */
+#include "system/debug_log.h"
+#include "pathfuncs.h"
+#include "screens/system/sound_library.h"
+#include "screens/system/sound_scan.h"
+#include "database/sound_index.h"
+#include "viewers/playback_viewer/pv_index.h"  /* the Playback Report's two */
+#include "viewers/playback_viewer/pv_names.h"  /* caches, cleared together */
+
+
+/** Tagcache menu **/
+
+static void tagcache_rebuild_with_splash(void)
+{
+    bg_task_rebuild(&tagcache_task);
+    splash(HZ*2, ID2P(LANG_TAGCACHE_FORCE_UPDATE_SPLASH));
+}
+
+static int dirs_to_scan(void)
+{
+    if (folder_select(str(LANG_SELECT_FOLDER),
+                      (char *)global_settings.tagcache_scan_paths,
+                      sizeof(global_settings.tagcache_scan_paths)))
+    {
+        if (yesno_pop_confirm(ID2P(LANG_TAGCACHE_FORCE_UPDATE)))
+            tagcache_rebuild_with_splash();
+    }
+    return 0;
+}
+
+MENUITEM_SETTING(tagcache_scan_on_eject, &global_settings.tagcache_scan_on_eject, NULL);
+MENUITEM_SETTING(tagcache_scan_on_startup,
+                 &global_settings.tagcache_scan_on_startup, NULL);
+MENUITEM_SETTING(year_from_folder, &global_settings.year_from_folder, NULL);
+
+MENUITEM_FUNCTION(tc_export, MENU_ADVANCED, ID2P(LANG_TAGCACHE_EXPORT),
+                  browser_db_export,
+                  NULL, Icon_NOICON);
+
+MENUITEM_FUNCTION(tc_import, MENU_ADVANCED, ID2P(LANG_TAGCACHE_IMPORT),
+                  browser_db_import,
+                  NULL, Icon_NOICON);
+MENUITEM_FUNCTION(tc_paths, MENU_ADVANCED, ID2P(LANG_SELECT_DATABASE_DIRS),
+                  dirs_to_scan, NULL, Icon_NOICON);
+
+MAKE_MENU(tagcache_menu, ID2P(LANG_TAGCACHE), 0, Icon_NOICON,
+                &tagcache_scan_on_startup, &tagcache_scan_on_eject,
+                &tc_paths, &year_from_folder,
+                &tc_export, &tc_import
+                );
+
+/** Library maintenance **/
+
+/* Every rebuild and update in one screen, ordered cheapest first.
+ *
+ * They were in three menus and it hid that they disagreed with each other. The
+ * two database rows did not confirm at all -- and a full rebuild is the slowest
+ * thing the firmware does -- while the index and cache rows did. The splash was
+ * two seconds, one second, or missing. And two rows were named for the wrong
+ * verb: LANG_TAGCACHE_FORCE_UPDATE labelled the *rebuild*, and the file rescan
+ * was called "Rebuild" while calling bg_task_update().
+ *
+ * All six are the same two calls over four tasks, so this is a table and one
+ * handler rather than six near-identical functions. It is fewer lines than
+ * the rows it replaces, and the three inconsistencies cannot come back: there
+ * is one confirm, one splash and one naming pattern by construction.
+ *
+ * The index has an update row and no rebuild row, because for that task the
+ * two would do the same thing: it is a single file that is always rewritten
+ * whole, so a rebuild has nothing to discard that an update does not
+ * overwrite. See album_covers_request().
+ *
+ * Every one of these only *queues* work -- the background task does it -- which
+ * is why the splash says started rather than done. */
+static const struct maint_action {
+    struct bg_task *task;
+    int   lang_id;
+    bool  rebuild;            /* false = update */
+} maint_actions[] = {
+    { &tagcache_task,     LANG_UPDATE_DB,      false },
+    { &album_covers_task, LANG_UPDATE_INDEX,   false },
+    { &art_cache_task,    LANG_UPDATE_CACHE,   false },
+    { &file_index_task,   LANG_RESCAN_FILES,   false },
+    { &tagcache_task,     LANG_REBUILD_DB,     true  },
+    { &art_cache_task,    LANG_REBUILD_CACHE,  true  },
+};
+
+static int maint_run(void *param)
+{
+    const struct maint_action *a = &maint_actions[(intptr_t)param];
+
+    if (yesno_pop_confirm(ID2P(a->lang_id)))
+    {
+        if (a->rebuild)
+            bg_task_rebuild(a->task);
+        else
+            bg_task_update(a->task);
+        splash(HZ, ID2P(LANG_MAINT_STARTED));
+    }
+    return 0;
+}
+
+#define MAINT_ITEM(name, idx, lang)                                     \
+    MENUITEM_FUNCTION_W_PARAM(name, 0, ID2P(lang), maint_run,           \
+                              (void*)idx, NULL, Icon_NOICON)
+
+MAINT_ITEM(maint_update_db,      0, LANG_UPDATE_DB);
+MAINT_ITEM(maint_update_index,   1, LANG_UPDATE_INDEX);
+MAINT_ITEM(maint_update_cache,   2, LANG_UPDATE_CACHE);
+MAINT_ITEM(maint_rescan_files,   3, LANG_RESCAN_FILES);
+MAINT_ITEM(maint_rebuild_db,     4, LANG_REBUILD_DB);
+MAINT_ITEM(maint_rebuild_cache,  5, LANG_REBUILD_CACHE);
+
+/* The sound analysis is not one of the table rows above: those queue a
+ * background task and return, and this holds the player for as long as it
+ * runs. It is also the only pair here that can be absent -- there is nothing
+ * to update until the engine has been switched on. */
+static int maint_sound_update(void)
+{
+    sound_scan_screen(false);
+    return 0;
+}
+
+static int maint_sound_rebuild(void)
+{
+    sound_scan_screen(true);
+    return 0;
+}
+
+static int maint_sound_callback(int action,
+                                const struct menu_item_ex *this_item,
+                                struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+
+    if (action == ACTION_REQUEST_MENUITEM && !global_settings.playlist_engine)
+        return ACTION_EXIT_MENUITEM;
+
+    return action;
+}
+
+MENUITEM_FUNCTION(maint_update_sound, 0, ID2P(LANG_UPDATE_SOUND),
+                  maint_sound_update, maint_sound_callback, Icon_NOICON);
+MENUITEM_FUNCTION(maint_rebuild_sound, 0, ID2P(LANG_REBUILD_SOUND),
+                  maint_sound_rebuild, maint_sound_callback, Icon_NOICON);
+
+/* Neither a table row nor a background task: this deletes the files the
+ * Playback Report caches and leaves the screen to rebuild them the next time
+ * it opens, which is where the work is and why the splash promises it rather
+ * than reporting it.
+ *
+ * Both of them, because they only make sense together. The index holds the
+ * rows the log added up to, and the moved-folder table says where the files
+ * those rows were named from are now, so clearing only one rebuilds the same
+ * rows from the same names. */
+static int maint_report_rebuild(void)
+{
+    if (yesno_pop_confirm(ID2P(LANG_REBUILD_REPORT)))
+    {
+        pv_index_discard();
+        pv_names_discard();
+        splash(HZ, ID2P(LANG_REBUILD_REPORT_SPLASH));
+    }
+    return 0;
+}
+
+MENUITEM_FUNCTION(maint_rebuild_report, 0, ID2P(LANG_REBUILD_REPORT),
+                  maint_report_rebuild, NULL, Icon_NOICON);
+
+MAKE_MENU(maintenance_menu, ID2P(LANG_LIBRARY_MAINTENANCE), 0, Icon_NOICON,
+            &maint_update_db,
+            &maint_update_index,
+            &maint_update_cache,
+            &maint_rescan_files,
+            &maint_update_sound,
+            &maint_rebuild_report,
+            &maint_rebuild_db,
+            &maint_rebuild_cache,
+            &maint_rebuild_sound);
+
+/** Playlist Engine **/
+
+MENUITEM_SETTING(playlist_engine, &global_settings.playlist_engine, NULL);
+MENUITEM_SETTING(track_playlist, &global_settings.track_playlist, NULL);
+MENUITEM_SETTING(analysis_depth, &global_settings.analysis_depth, NULL);
+MENUITEM_SETTING(mood_playlist, &global_settings.mood_playlist, NULL);
+MENUITEM_SETTING(mix_length, &global_settings.mix_length, NULL);
+MENUITEM_SETTING(continue_playing, &global_settings.continue_playing, NULL);
+
+/* A report rather than a setting, so it sits after the settings and not among
+ * them. It is offered only with an index to read: the rows are counts over
+ * one, and a screen that can only say nothing is worse than no screen. */
+static int sound_library_run(void)
+{
+    return sound_library_screen() ? MENU_ATTACHED_USB : 0;
+}
+
+static int sound_library_callback(int action,
+                                  const struct menu_item_ex *this_item,
+                                  struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+
+    if (action == ACTION_REQUEST_MENUITEM &&
+        (!global_settings.playlist_engine || !sound_index_exists()))
+        return ACTION_EXIT_MENUITEM;
+
+    return action;
+}
+
+MENUITEM_SETTING(mix_starts_with_selected,
+                 &global_settings.mix_starts_with_selected, NULL);
+MENUITEM_FUNCTION(sound_library_item, 0, ID2P(LANG_SOUND_LIBRARY),
+                  sound_library_run, sound_library_callback, Icon_NOICON);
+
+MAKE_MENU(playlist_engine_menu, ID2P(LANG_PLAYLIST_ENGINE), 0, Icon_Playlist,
+            &playlist_engine, &analysis_depth, &mix_length,
+            &track_playlist, &mood_playlist, &mix_starts_with_selected,
+            &continue_playing, &sound_library_item);
+
+/** File view menu **/
+MENUITEM_SETTING_W_LABEL(sort_case, &global_settings.sort_case,
+                         ID2P(LANG_SORT_CASE_SHORT), NULL);
+MENUITEM_SETTING_W_LABEL(sort_dir, &global_settings.sort_dir,
+                         ID2P(LANG_SORT_DIR_SHORT), NULL);
+MENUITEM_SETTING_W_LABEL(sort_file, &global_settings.sort_file,
+                         ID2P(LANG_SORT_FILE_SHORT), NULL);
+MENUITEM_SETTING_W_LABEL(interpret_numbers, &global_settings.interpret_numbers,
+                         ID2P(LANG_SORT_INTERPRET_NUMBERS_SHORT), NULL);
+MAKE_MENU(file_sort_menu, ID2P(LANG_SORT_MENU), 0, Icon_NOICON,
+          &sort_case, &sort_dir, &sort_file, &interpret_numbers);
+MENUITEM_SETTING(dirfilter, &global_settings.dirfilter, NULL);
+MENUITEM_SETTING(show_filename_ext, &global_settings.show_filename_ext, NULL);
+MENUITEM_SETTING(browse_current, &global_settings.browse_current, NULL);
+MENUITEM_SETTING(show_path_in_browser, &global_settings.show_path_in_browser, NULL);
+/* The file browser hotkey uses the same picker as the WPS items, but only
+   item 0 of its packed setting -- there is no configurable menu here. */
+static char *tree_hotkey_get_name(int selected_item, void *data,
+                                  char *buffer, size_t buffer_len)
+{
+    (void)selected_item; (void)data;
+    const struct hotkey_assignment *cur =
+        get_hotkey(HK_CTX_GET(0, global_settings.hotkey_tree));
+
+    snprintf(buffer, buffer_len, "%s [%s]",
+             str(LANG_HOTKEY_FILE_BROWSER), str(cur->lang_id));
+    return buffer;
+}
+
+static int tree_hotkey_speak_item(int selected_item, void *data)
+{
+    (void)selected_item; (void)data;
+    const struct hotkey_assignment *cur =
+        get_hotkey(HK_CTX_GET(0, global_settings.hotkey_tree));
+
+    talk_id(LANG_HOTKEY_FILE_BROWSER, false);
+    talk_id(cur->lang_id, true);
+    return 0;
+}
+
+MENUITEM_FUNCTION_DYNTEXT_W_PARAM(hotkey_tree_item, 0,
+                                  tree_context_menu_do_setting, (void*)0,
+                                  tree_hotkey_get_name,
+                                  tree_hotkey_speak_item,
+                                  (void*)0, NULL, Icon_NOICON);
+static int clear_start_directory(void)
+{
+    path_append(global_settings.start_directory, PATH_ROOTSTR,
+                PA_SEP_HARD, sizeof(global_settings.start_directory));
+    settings_save();
+    splash(HZ, ID2P(LANG_RESET_DONE_CLEAR));
+    return false;
+}
+MENUITEM_FUNCTION(clear_start_directory_item, 0, ID2P(LANG_RESET_START_DIR),
+                  clear_start_directory, NULL, Icon_file_view_menu);
+
+static int dircache_callback(int action,
+                             const struct menu_item_ex *this_item,
+                             struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    switch (action)
+    {
+        case ACTION_EXIT_MENUITEM: /* on exit */
+            if (global_settings.dircache)
+            {
+                if (dircache_enable() < 0)
+                    splash(HZ*2, ID2P(LANG_PLEASE_REBOOT));
+            }
+            else
+            {
+                dircache_disable();
+            }
+            break;
+    }
+    return action;
+}
+MENUITEM_SETTING(dircache, &global_settings.dircache, dircache_callback);
+
+MAKE_MENU(file_menu, ID2P(LANG_DIR_BROWSER), NULL,
+                Icon_file_view_menu,
+                &file_sort_menu,
+                &dirfilter, &show_filename_ext, &browse_current,
+                &show_path_in_browser,
+                &dircache,
+                &clear_start_directory_item
+                ,&hotkey_tree_item
+                );
+
+
+
+/** System menu **/
+
+/* Battery */
+#if BATTERY_CAPACITY_INC > 0
+MENUITEM_SETTING(battery_capacity, &global_settings.battery_capacity, NULL);
+#endif
+
+static int usbcharging_callback(int action,
+                                const struct menu_item_ex *this_item,
+                                struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    switch (action)
+    {
+        case ACTION_EXIT_MENUITEM: /* on exit */
+            usb_charging_enable(global_settings.usb_charging);
+            break;
+    }
+    return action;
+}
+MENUITEM_SETTING(usb_charging, &global_settings.usb_charging, usbcharging_callback);
+MENUITEM_SETTING(usb_mode, &global_settings.usb_mode, NULL);
+/* Disk */
+MENUITEM_SETTING(disk_spindown, &global_settings.disk_spindown, NULL);
+MENUITEM_SETTING_W_LABEL(storage_mode, &global_settings.storage_mode,
+                         ID2P(LANG_STORAGE_MODE_SHORT), NULL);
+MAKE_MENU(storage_menu, ID2P(LANG_STORAGE), 0, Icon_NOICON,
+          &disk_spindown, &storage_mode);
+
+/* Limits menu */
+MENUITEM_SETTING(max_files_in_dir, &global_settings.max_files_in_dir, NULL);
+MENUITEM_SETTING(max_files_in_playlist, &global_settings.max_files_in_playlist, NULL);
+MENUITEM_SETTING(default_glyphs, &global_settings.glyphs_to_cache, NULL);
+MAKE_MENU(limits_menu, ID2P(LANG_LIMITS_MENU), 0, Icon_NOICON,
+           &max_files_in_dir, &max_files_in_playlist
+           ,&default_glyphs
+           );
+
+/* What a long press of Select opens. A control decision rather than an
+   appearance one, which is why it is here and not under Appearance. */
+MENUITEM_SETTING(shortcuts_replaces_quickscreen,
+                 &global_settings.shortcuts_replaces_qs, NULL);
+
+/* Volume adjustment. The step count is what Perceptual divides the range into
+   and Direct never reads, so it is listed only in that mode. */
+static int volume_steps_callback(int action,
+                                 const struct menu_item_ex *this_item,
+                                 struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    if (action == ACTION_REQUEST_MENUITEM
+        && global_settings.volume_adjust_mode != VOLUME_ADJUST_PERCEPTUAL)
+        return ACTION_EXIT_MENUITEM;
+    return action;
+}
+
+MENUITEM_SETTING(volume_adjust_mode, &global_settings.volume_adjust_mode, NULL);
+MENUITEM_SETTING(volume_adjust_norm_steps,
+                 &global_settings.volume_adjust_norm_steps,
+                 volume_steps_callback);
+
+/* Keyclick menu */
+MENUITEM_SETTING(keyclick, &global_settings.keyclick, NULL);
+MENUITEM_SETTING(keyclick_repeats, &global_settings.keyclick_repeats, NULL);
+MENUITEM_SETTING(keyclick_hardware, &global_settings.keyclick_hardware, NULL);
+MAKE_MENU(keyclick_menu, ID2P(LANG_KEYCLICK), 0, Icon_NOICON,
+           &keyclick, &keyclick_hardware, &keyclick_repeats);
+
+MENUITEM_SETTING(car_adapter_mode, &global_settings.car_adapter_mode, NULL);
+MENUITEM_SETTING(car_adapter_mode_delay, &global_settings.car_adapter_mode_delay, NULL);
+MAKE_MENU(car_adapter_mode_menu, ID2P(LANG_CAR_ADAPTER_MODE), 0, Icon_NOICON,
+           &car_adapter_mode, &car_adapter_mode_delay);
+MENUITEM_SETTING(iap_enabled, &global_settings.iap_enabled, NULL);
+/* Accessory Protocol off silences every accessory transport, iAP2 included,
+ * so the rows that only shape what an accessory is told are hidden while it
+ * is off. */
+static int iap_only_callback(int action,
+                             const struct menu_item_ex *this_item,
+                             struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    if (action == ACTION_REQUEST_MENUITEM && !global_settings.iap_enabled)
+        return ACTION_EXIT_MENUITEM;
+    return action;
+}
+MENUITEM_SETTING(iap_browse_size, &global_settings.iap_browse_size,
+                 iap_only_callback);
+MENUITEM_SETTING(car_artwork, &global_settings.car_artwork, iap_only_callback);
+#ifdef USB_ENABLE_IAP
+MENUITEM_SETTING(iap2_mode, &global_settings.iap2_mode, iap_only_callback);
+MENUITEM_SETTING(iap_identity, &global_settings.iap_identity,
+                 iap_only_callback);
+#endif
+MENUITEM_SETTING(serial_bitrate, &global_settings.serial_bitrate,
+                 iap_only_callback);
+MENUITEM_SETTING(accessory_supply, &global_settings.accessory_supply, NULL);
+MENUITEM_SETTING(lineout_onoff, &global_settings.lineout_active, NULL);
+#ifdef HAVE_COMPOSITE_VIDEO_OUT
+/* Turn On starts the picture with the format set below it, and nothing
+ * saves it: a restart always comes back with the TV off. */
+static int tv_out_toggle(void)
+{
+    if (!videoout_requested())
+        settings_apply_tv_out();
+    videoout_set_mode(videoout_requested() ? VIDEOOUT_OFF : VIDEOOUT_ON,
+                      FBADDR(0, 0), LCD_WIDTH, LCD_HEIGHT);
+    return 0;
+}
+
+static char *tv_out_toggle_name(int selected_item, void *data,
+                                char *buffer, size_t buffer_len)
+{
+    (void)selected_item;
+    (void)data;
+    (void)buffer;
+    (void)buffer_len;
+    return (char *)str(videoout_requested() ? LANG_TV_OUT_TURN_OFF
+                                            : LANG_TV_OUT_TURN_ON);
+}
+
+MENUITEM_FUNCTION_DYNTEXT(tv_out_toggle_item, 0, tv_out_toggle,
+                          tv_out_toggle_name, NULL, NULL, NULL,
+                          Icon_NOICON);
+MENUITEM_SETTING(tv_out_size, &global_settings.tv_out_size, NULL);
+#ifdef HAVE_VIDEOOUT_STANDARD
+MENUITEM_SETTING(tv_standard, &global_settings.tv_standard, NULL);
+#endif
+MAKE_MENU(tv_out_menu, ID2P(LANG_TV_OUT), 0, Icon_NOICON,
+          &tv_out_toggle_item, &tv_out_size
+#ifdef HAVE_VIDEOOUT_STANDARD
+          , &tv_standard
+#endif
+         );
+#endif
+#ifdef HAVE_MIKEY_REMOTE
+/* Hidden where the board has no Mikey to read a remote with -- the same
+ * units whose poller never starts. */
+static int remote_track_skip_callback(int action,
+                                      const struct menu_item_ex *this_item,
+                                      struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    if (action == ACTION_REQUEST_MENUITEM && !mikey_supported())
+        return ACTION_EXIT_MENUITEM;
+    return action;
+}
+MENUITEM_SETTING(remote_track_skip, &global_settings.remote_track_skip,
+                 remote_track_skip_callback);
+#endif
+MENUITEM_SETTING(usb_hid, &global_settings.usb_hid, NULL);
+MENUITEM_SETTING(usb_keypad_mode, &global_settings.usb_keypad_mode, NULL);
+#ifdef HAVE_USB_HOST_AUDIO
+MENUITEM_SETTING(usb_dac_output, &global_settings.usb_dac_output, NULL);
+
+/* Turn On searches for up to about two seconds; the splash for a DAC found
+ * comes from the broadcast that playback moved. */
+static int usb_dac_toggle(void)
+{
+    long end;
+
+    if (usb_dac_playing())
+    {
+        usb_set_dac_active(false);
+        return 0;
+    }
+    usb_set_dac_active(true);
+    splash(0, ID2P(LANG_WAIT));
+    end = current_tick + 5*HZ;
+    while (usb_dac_searching() && TIME_BEFORE(current_tick, end))
+        sleep(HZ/10);
+    if (!usb_dac_playing())
+        splash(HZ*2, ID2P(LANG_USB_DAC_NOT_FOUND));
+    return 0;
+}
+
+static char *usb_dac_toggle_name(int selected_item, void *data,
+                                 char *buffer, size_t buffer_len)
+{
+    (void)selected_item;
+    (void)data;
+    (void)buffer;
+    (void)buffer_len;
+    return (char *)str(usb_dac_playing() ? LANG_USB_DAC_TURN_OFF
+                                         : LANG_USB_DAC_TURN_ON);
+}
+
+/* Turn On is hidden while a computer, car or dock is using the port, or a
+ * serial accessory is attached: the firmware refuses it then. Turn Off is
+ * always offered. */
+static int usb_dac_toggle_callback(int action,
+                                   const struct menu_item_ex *this_item,
+                                   struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    if (action == ACTION_REQUEST_MENUITEM && !usb_dac_playing()
+        && (usb_host_is_present()
+#ifdef IPOD_ACCESSORY_PROTOCOL
+            || iap_accessory_present()
+#endif
+           ))
+        return ACTION_EXIT_MENUITEM;
+    return action;
+}
+
+MENUITEM_FUNCTION_DYNTEXT(usb_dac_toggle_item, 0, usb_dac_toggle,
+                          usb_dac_toggle_name, NULL, NULL,
+                          usb_dac_toggle_callback, Icon_NOICON);
+MAKE_MENU(usb_dac_menu, ID2P(LANG_USB_DAC_OUTPUT), 0, Icon_NOICON,
+          &usb_dac_output, &usb_dac_toggle_item);
+#endif
+#ifdef USB_ENABLE_AUDIO
+/* The receive buffers are claimed at boot, from this setting -- the driver
+ * cannot claim them itself, because doing that from the USB thread wedges the
+ * player. So switching this on takes effect at the next start. */
+static int usb_audio_callback(int action,
+                              const struct menu_item_ex *this_item,
+                              struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    switch (action)
+    {
+        case ACTION_EXIT_MENUITEM: /* on exit */
+            if (global_settings.usb_audio != 0 && !usb_audio_buffers_ready())
+                splash(HZ*2, ID2P(LANG_PLEASE_REBOOT));
+            break;
+    }
+    return action;
+}
+MENUITEM_SETTING(usb_audio, &global_settings.usb_audio, usb_audio_callback);
+#endif
+
+MENUITEM_SETTING(show_debug_menu, &global_settings.show_debug_menu, NULL);
+
+/* Every diagnostic log's switch in one place, and how long they stay on */
+MENUITEM_SETTING(debug_log_tagcache, &global_settings.debug_log_tagcache, NULL);
+MENUITEM_SETTING(debug_log_artcache, &global_settings.debug_log_artcache, NULL);
+#ifdef HAVE_USBSTACK
+MENUITEM_SETTING(debug_log_usb, &global_settings.debug_log_usb, NULL);
+#endif
+MENUITEM_SETTING(debug_log_battery, &global_settings.debug_log_battery, NULL);
+MENUITEM_SETTING(debug_log_playback, &global_settings.debug_log_playback,
+                 NULL);
+MENUITEM_SETTING(debug_log_skin, &global_settings.debug_log_skin, NULL);
+MENUITEM_SETTING(debug_log_tasks, &global_settings.debug_log_tasks, NULL);
+MENUITEM_SETTING(debug_log_expiry, &global_settings.debug_log_expiry, NULL);
+
+static char *debug_log_left_name(int selected_item, void *data, char *buffer,
+                                 size_t buffer_len)
+{
+    int left = debug_log_minutes_left();
+
+    (void)selected_item;
+    (void)data;
+    if (left >= 0)
+    {
+        snprintf(buffer, buffer_len, str(LANG_DEBUG_LOG_LEFT),
+                 left / 60, left % 60);
+        return buffer;
+    }
+    return str(debug_log_any_on() ? LANG_DEBUG_LOG_STAY_ON
+                                  : LANG_DEBUG_LOG_NONE_ON);
+}
+
+/* Measured once a visit: it opens every log file, and the getter runs on
+ * every redraw. -1 until measured. */
+static long debug_log_files_bytes = -1;
+
+static char *debug_log_files_name(int selected_item, void *data, char *buffer,
+                                  size_t buffer_len)
+{
+    char size[16];
+
+    (void)selected_item;
+    (void)data;
+    if (debug_log_files_bytes < 0)
+        debug_log_files_bytes = debug_log_files_size();
+    output_dyn_value(size, sizeof size, debug_log_files_bytes, byte_units,
+                     4, true);
+    snprintf(buffer, buffer_len, str(LANG_DEBUG_LOG_FILES), size);
+    return buffer;
+}
+
+static int debug_log_nothing(void)
+{
+    return 0;
+}
+
+static int debug_log_all_off_item(void)
+{
+    debug_log_all_off();
+    return 0;
+}
+
+MENUITEM_FUNCTION_DYNTEXT(debug_log_left, 0, debug_log_nothing,
+                          debug_log_left_name, NULL, NULL, NULL, Icon_NOICON);
+MENUITEM_FUNCTION_DYNTEXT(debug_log_files, 0, debug_log_nothing,
+                          debug_log_files_name, NULL, NULL, NULL, Icon_NOICON);
+MENUITEM_FUNCTION(debug_log_all_off_func, 0, ID2P(LANG_DEBUG_LOG_ALL_OFF),
+                  debug_log_all_off_item, NULL, Icon_NOICON);
+
+static int debug_logs_menu_callback(int action,
+                                    const struct menu_item_ex *this_item,
+                                    struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    if (action == ACTION_ENTER_MENUITEM)
+        debug_log_files_bytes = -1;
+    return action;
+}
+
+MAKE_MENU(debug_logs_menu, ID2P(LANG_DEBUG_LOG), debug_logs_menu_callback,
+          Icon_NOICON,
+            &debug_log_tagcache,
+            &debug_log_artcache,
+#ifdef HAVE_USBSTACK
+            &debug_log_usb,
+#endif
+            &debug_log_battery,
+            &debug_log_playback,
+            &debug_log_skin,
+            &debug_log_tasks,
+            &debug_log_expiry,
+            &debug_log_left,
+            &debug_log_files,
+            &debug_log_all_off_func);
+
+/* What the player does when something is plugged into it. */
+MAKE_MENU(usb_menu, ID2P(LANG_USB), 0, Icon_NOICON,
+            &usb_mode,
+            &usb_hid,
+            &usb_keypad_mode,
+#ifdef USB_ENABLE_AUDIO
+            &usb_audio,
+#endif
+#ifdef HAVE_USB_HOST_AUDIO
+            &usb_dac_menu,
+#endif
+         );
+
+/* The dock connector's other pins, and the headphone jack's remote. */
+MAKE_MENU(accessories_menu, ID2P(LANG_ACCESSORIES), 0, Icon_NOICON,
+            &lineout_onoff,
+#ifdef HAVE_COMPOSITE_VIDEO_OUT
+            &tv_out_menu,
+#endif
+            &iap_enabled,
+#ifdef USB_ENABLE_IAP
+            &iap2_mode, &iap_identity,
+#endif
+            &accessory_supply,
+            &iap_browse_size, &car_artwork, &serial_bitrate
+#ifdef HAVE_MIKEY_REMOTE
+            , &remote_track_skip
+#endif
+         );
+
+/* system_menu itself is built at the foot of this file, once the menus it
+   gathers -- Startup/Shutdown, Language & Text -- have been defined. */
+
+
+/** Startup/shutdown menu **/
+
+
+char* sleeptimer_getname(int selected_item, void * data,
+                         char *buffer, size_t buffer_len)
+{
+    (void)selected_item;
+    (void)data;
+    return string_sleeptimer(buffer, buffer_len);
+}
+
+int sleeptimer_voice(int selected_item, void*data)
+{
+    (void)selected_item;
+    (void)data;
+    talk_sleeptimer(-1);
+    return 0;
+}
+
+/* Handle restarting a current sleep timer to the newly set default
+   duration */
+static int sleeptimer_duration_cb(int action,
+                                  const struct menu_item_ex *this_item,
+                                  struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    static int initial_duration;
+    switch (action)
+    {
+        case ACTION_ENTER_MENUITEM:
+            initial_duration = global_settings.sleeptimer_duration;
+            break;
+        case ACTION_EXIT_MENUITEM:
+            if (initial_duration != global_settings.sleeptimer_duration
+                    && get_sleep_timer())
+                set_sleeptimer_duration(global_settings.sleeptimer_duration);
+    }
+    return action;
+}
+
+MENUITEM_SETTING(start_screen, &global_settings.start_in_screen, NULL);
+MENUITEM_SETTING(poweroff, &global_settings.poweroff, NULL);
+MENUITEM_FUNCTION_DYNTEXT(sleeptimer_toggle, 0, toggle_sleeptimer,
+                          sleeptimer_getname, sleeptimer_voice, NULL,
+                          NULL, Icon_NOICON);
+MENUITEM_SETTING(sleeptimer_duration,
+                 &global_settings.sleeptimer_duration,
+                 sleeptimer_duration_cb);
+MENUITEM_SETTING(sleeptimer_on_startup,
+                 &global_settings.sleeptimer_on_startup, NULL);
+MENUITEM_SETTING(keypress_restarts_sleeptimer,
+                 &global_settings.keypress_restarts_sleeptimer, NULL);
+MENUITEM_SETTING(show_shutdown_message, &global_settings.show_shutdown_message, NULL);
+
+/* The same calls as the Shut Down and Reboot shortcuts, and the same refusal
+ * on the charger. */
+static bool refused_on_charger(void)
+{
+#if CONFIG_CHARGING && !defined(HAVE_POWEROFF_WHILE_CHARGING)
+    if (charger_inserted())
+    {
+        charging_splash();
+        return true;
+    }
+#endif
+    return false;
+}
+
+static int menu_shutdown(void)
+{
+    if (!refused_on_charger())
+        sys_poweroff();
+    return 0;
+}
+
+static int menu_reboot(void)
+{
+    if (!refused_on_charger())
+        sys_reboot();
+    return 0;
+}
+
+MENUITEM_FUNCTION(shutdown_item, 0, ID2P(LANG_SHUT_DOWN), menu_shutdown,
+                  NULL, Icon_NOICON);
+MENUITEM_FUNCTION(reboot_item, 0, ID2P(LANG_REBOOT), menu_reboot,
+                  NULL, Icon_NOICON);
+
+/* The sleep timer is its own screen under Battery & Power rather than four
+   rows of Startup/Shutdown: it is the thing people reach for to make the
+   player stop on its own, and it has nothing to do with booting. */
+MAKE_MENU(sleep_timer_menu, ID2P(LANG_SLEEP_TIMER), 0, Icon_NOICON,
+            &sleeptimer_toggle,
+            &sleeptimer_duration,
+            &sleeptimer_on_startup,
+            &keypress_restarts_sleeptimer);
+
+MAKE_MENU(startup_shutdown_menu, ID2P(LANG_STARTUP_SHUTDOWN),
+          0, Icon_System_menu,
+            &show_shutdown_message,
+            &start_screen,
+            &shutdown_item,
+            &reboot_item,
+         );
+
+/* Battery & Power.
+ *
+ * The branch this re-cut exists for. Every row here was already in the tree
+ * and none of them were together: the backlight under Display, the capacity
+ * and USB charging under System > Battery, spindown and storage mode under
+ * System > Disk, idle poweroff and the sleep timer under Startup/Shutdown.
+ * Nothing anywhere said "battery", which is the thing an iPod owner tunes
+ * most.
+ *
+ * Brightness first and on its own, a single step away, then the backlight --
+ * how long the light stays on is the biggest lever there is on runtime --
+ * then everything else that spends the battery, and charging last. */
+MAKE_MENU(power_menu, ID2P(LANG_BATTERY_POWER), 0, Icon_System_menu,
+            &brightness_item,
+            &backlight_menu,
+            &poweroff,
+            &sleep_timer_menu,
+            &storage_menu,
+#if BATTERY_CAPACITY_INC > 0
+            &battery_capacity,
+#endif
+            &car_adapter_mode_menu,
+            &usb_charging);
+
+
+/** Bookmark menu **/
+static int bmark_callback(int action,
+                          const struct menu_item_ex *this_item,
+                          struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    switch (action)
+    {
+        case ACTION_EXIT_MENUITEM: /* on exit */
+            if(global_settings.autocreatebookmark ==  BOOKMARK_RECENT_ONLY_YES ||
+               global_settings.autocreatebookmark ==  BOOKMARK_RECENT_ONLY_ASK)
+            {
+                if(global_settings.usemrb == BOOKMARK_NO)
+                    global_settings.usemrb = BOOKMARK_YES;
+
+            }
+            break;
+    }
+    return action;
+}
+MENUITEM_SETTING(autocreatebookmark,
+                 &global_settings.autocreatebookmark, bmark_callback);
+MENUITEM_SETTING(autoupdatebookmark, &global_settings.autoupdatebookmark, NULL);
+MENUITEM_SETTING(autoloadbookmark, &global_settings.autoloadbookmark, NULL);
+MENUITEM_SETTING(usemrb, &global_settings.usemrb, NULL);
+MAKE_MENU(bookmark_settings_menu, ID2P(LANG_BOOKMARK_SETTINGS), 0,
+          Icon_Bookmark,
+          &autocreatebookmark, &autoupdatebookmark, &autoloadbookmark, &usemrb);
+
+/** Autoresume menu **/
+
+static int autoresume_nexttrack_callback(int action,
+                                         const struct menu_item_ex *this_item,
+                                         struct gui_synclist *this_list)
+{
+    (void)this_item;
+    (void)this_list;
+    static int oldval = 0;
+    switch (action)
+    {
+        case ACTION_ENTER_MENUITEM:
+            oldval = global_settings.autoresume_automatic;
+            break;
+        case ACTION_EXIT_MENUITEM:
+            if (global_settings.autoresume_automatic == AUTORESUME_NEXTTRACK_CUSTOM
+                && !folder_select(str(LANG_AUTORESUME),
+                                  (char *)global_settings.autoresume_paths,
+                                  sizeof(global_settings.autoresume_paths)))
+            {
+                global_settings.autoresume_automatic = oldval;
+            }
+    }
+    return action;
+}
+
+MENUITEM_SETTING(autoresume_enable, &global_settings.autoresume_enable,
+                 NULL);
+MENUITEM_SETTING(autoresume_automatic, &global_settings.autoresume_automatic,
+                 autoresume_nexttrack_callback);
+
+MAKE_MENU(autoresume_menu, ID2P(LANG_AUTORESUME),
+          0, Icon_NOICON,
+          &autoresume_enable, &autoresume_automatic);
+
+
+/** Voice menu **/
+static int talk_callback(int action,
+                         const struct menu_item_ex *this_item,
+                         struct gui_synclist *this_list);
+
+MENUITEM_SETTING(talk_menu_item, &global_settings.talk_menu, NULL);
+MENUITEM_SETTING(talk_voice_item, &global_settings.talk_voice, NULL);
+MENUITEM_SETTING(talk_speech_rate_item, &global_settings.talk_speech_rate,
+                 NULL);
+MENUITEM_SETTING(talk_dir_item, &global_settings.talk_dir, NULL);
+MENUITEM_SETTING(talk_dir_clip_item, &global_settings.talk_dir_clip, talk_callback);
+MENUITEM_SETTING(talk_file_item, &global_settings.talk_file, NULL);
+MENUITEM_SETTING(talk_file_clip_item, &global_settings.talk_file_clip, talk_callback);
+static int talk_callback(int action,
+                         const struct menu_item_ex *this_item,
+                         struct gui_synclist *this_list)
+{
+    (void)this_list;
+    static int oldval = 0;
+    switch (action)
+    {
+        case ACTION_ENTER_MENUITEM:
+            oldval = global_settings.talk_file_clip;
+            break;
+        case ACTION_EXIT_MENUITEM:
+            audio_set_crossfade(global_settings.crossfade);
+            if (this_item == &talk_dir_clip_item)
+                break;
+            if (!oldval && global_settings.talk_file_clip)
+            {
+                /* force reload if newly talking thumbnails,
+                because the clip presence is cached only if enabled */
+                reload_directory();
+            }
+            break;
+    }
+    return action;
+}
+MENUITEM_SETTING(talk_filetype_item, &global_settings.talk_filetype, NULL);
+MENUITEM_SETTING(talk_list_title_item, &global_settings.talk_list_title, NULL);
+MENUITEM_SETTING(talk_track_change_item,
+                 &global_settings.talk_track_change, NULL);
+MENUITEM_SETTING(talk_battery_level_item,
+                 &global_settings.talk_battery_level, NULL);
+MENUITEM_SETTING(talk_mixer_amp_item, &global_settings.talk_mixer_amp, NULL);
+MAKE_MENU(voice_settings_menu, ID2P(LANG_VOICE), 0, Icon_Voice,
+          &talk_menu_item, &talk_voice_item,
+          &talk_speech_rate_item,
+          &talk_dir_item, &talk_dir_clip_item,
+          &talk_file_item, &talk_file_clip_item, &talk_filetype_item,
+          &talk_list_title_item, &talk_track_change_item,
+          &talk_battery_level_item,
+          &talk_mixer_amp_item);
+
+/** WPS settings menu **/
+
+MENUITEM_SETTING(browser_default,
+                 &global_settings.browser_default, NULL);
+
+/* Where Select from the now-playing screen goes. */
+MENUITEM_SETTING(wps_select_action, &global_settings.wps_select_action, NULL);
+
+/* The hotkey button, showing what it is currently assigned to; selecting it
+   opens the list of available actions. */
+static char *wps_context_menu_get_name(int selected_item, void *data,
+                                       char *buffer, size_t buffer_len)
+{
+    (void)selected_item;
+    (void)data;
+    const struct hotkey_assignment *cur =
+        get_hotkey(HK_CTX_GET(0, global_settings.context_wps));
+
+    snprintf(buffer, buffer_len, "%s [%s]",
+             str(LANG_HOTKEY_WPS), str(cur->lang_id));
+    return buffer;
+}
+
+static int wps_context_menu_speak_item(int selected_item, void *data)
+{
+    (void)selected_item;
+    (void)data;
+    const struct hotkey_assignment *cur =
+        get_hotkey(HK_CTX_GET(0, global_settings.context_wps));
+
+    talk_id(LANG_HOTKEY_WPS, false);
+    talk_id(cur->lang_id, true);
+    return 0;
+}
+
+MENUITEM_FUNCTION_DYNTEXT_W_PARAM(hotkey_wps_item, 0,
+                                  wps_context_menu_do_setting, (void*)0,
+                                  wps_context_menu_get_name,
+                                  wps_context_menu_speak_item,
+                                  (void*)0, NULL, Icon_NOICON);
+
+
+/* Which picture the screen shows, and where its album cover is looked for
+ * first. Properties of this screen rather than of the theme: no skin sets
+ * either, and a theme that wanted to could not. */
+MENUITEM_SETTING(wps_art_source, &global_settings.wps_art_source, NULL);
+MENUITEM_SETTING(album_art, &global_settings.album_art, NULL);
+MENUITEM_SETTING(trim_titles, &global_settings.trim_titles, NULL);
+
+/* One list under two names: Appearance > Now Playing Screen, and Appearance
+ * inside Playback > Now Playing Screen. */
+#define WPS_APPEARANCE_ITEMS &wps_art_source, &album_art, &trim_titles
+MAKE_MENU(wps_appearance_menu, ID2P(LANG_WPS), 0, Icon_NOICON,
+            WPS_APPEARANCE_ITEMS);
+MAKE_MENU(wps_appearance_link, ID2P(LANG_APPEARANCE), 0, Icon_NOICON,
+            WPS_APPEARANCE_ITEMS);
+
+MAKE_MENU(wps_settings, ID2P(LANG_WPS), 0, Icon_Playback_menu
+            ,&browser_default
+            ,&wps_select_action
+            ,&hotkey_wps_item
+            ,&wps_appearance_link
+            );
+
+
+
+/* The text search over the database (screens/system/db_search.c). Its own
+ * submenu rather than rows under Music, because all three shape one screen --
+ * and nested under Music, since searching is one of the ways in to it. */
+MENUITEM_SETTING(db_search_max_rows, &global_settings.db_search_max_rows, NULL);
+MENUITEM_SETTING(db_search_min_letters,
+                 &global_settings.db_search_min_letters, NULL);
+MENUITEM_SETTING(db_search_order, &global_settings.db_search_order, NULL);
+MAKE_MENU(search_menu, ID2P(LANG_DB_SEARCH), 0, Icon_NOICON,
+          &db_search_max_rows, &db_search_min_letters, &db_search_order
+          );
+
+/* How the Music browser presents what the database holds -- as against the
+ * Database menu below, which is about building and maintaining it. */
+
+/* Album order, per parent context. The setting behind these is one packed word
+ * (browser_db.h), so there is no settings_list.c entry per context to hang an
+ * ordinary row off and each row runs the option screen itself. "Other Lists"
+ * is the plain database_sort_albums_by setting, which the four above fall back
+ * to and which still answers for any parent with no row of its own. */
+static const int album_sort_ctx_lang[DB_ALBUM_CTX_COUNT] = {
+    [DB_ALBUM_CTX_ROOT]        = LANG_ALL_ALBUMS,
+    [DB_ALBUM_CTX_ARTIST]      = LANG_ID3_ARTIST,
+    [DB_ALBUM_CTX_ALBUMARTIST] = LANG_ID3_ALBUMARTIST,
+    [DB_ALBUM_CTX_COMPOSER]    = LANG_ID3_COMPOSER,
+};
+
+static int album_sort_ctx_option(void *param)
+{
+    static const struct opt_items orders[] = {
+        { STR(LANG_SORT_USE_DEFAULT) },
+        { STR(LANG_NAME) },
+        { STR(LANG_SORT_BY_YEAR_ASC) },
+        { STR(LANG_SORT_BY_YEAR_DESC) },
+        { STR(LANG_ARTIST_PLUS_NAME) },
+        { STR(LANG_ARTIST_PLUS_YEAR) },
+        { STR(LANG_ARTIST_PLUS_YEAR_DESC) },
+    };
+    int ctx = (int)(intptr_t)param;
+    int order = browser_db_album_sort_get(ctx);
+    int count = ARRAYLEN(orders);
+    int choice;
+
+    /* Default, Name and the two year orders: see
+     * browser_db_album_sort_artist_first_moot(). */
+    if (browser_db_album_sort_artist_first_moot(ctx))
+    {
+        count = 1 + DB_SORT_ALBUMS_ARTIST_NAME;
+        if (order >= DB_SORT_ALBUMS_ARTIST_NAME)
+            order -= DB_SORT_ALBUMS_ARTIST_NAME;
+    }
+    choice = order + 1;
+
+    /* set_option() returns true only when USB took over the screen. */
+    if (!set_option(str(album_sort_ctx_lang[ctx]), &choice, RB_INT,
+                    orders, count, NULL))
+    {
+        browser_db_album_sort_set(ctx, choice - 1);
+        settings_save();
+    }
+    return 0;
+}
+
+MENUITEM_FUNCTION_W_PARAM(album_sort_root, 0, ID2P(LANG_ALL_ALBUMS),
+                          album_sort_ctx_option,
+                          (void*)(intptr_t)DB_ALBUM_CTX_ROOT, NULL, Icon_NOICON);
+MENUITEM_FUNCTION_W_PARAM(album_sort_artist, 0, ID2P(LANG_ID3_ARTIST),
+                          album_sort_ctx_option,
+                          (void*)(intptr_t)DB_ALBUM_CTX_ARTIST, NULL, Icon_NOICON);
+MENUITEM_FUNCTION_W_PARAM(album_sort_albumartist, 0, ID2P(LANG_ID3_ALBUMARTIST),
+                          album_sort_ctx_option,
+                          (void*)(intptr_t)DB_ALBUM_CTX_ALBUMARTIST, NULL,
+                          Icon_NOICON);
+MENUITEM_FUNCTION_W_PARAM(album_sort_composer, 0, ID2P(LANG_ID3_COMPOSER),
+                          album_sort_ctx_option,
+                          (void*)(intptr_t)DB_ALBUM_CTX_COMPOSER, NULL,
+                          Icon_NOICON);
+MENUITEM_SETTING(database_sort_albums_by,
+                 &global_settings.database_sort_albums_by, NULL);
+MAKE_MENU(album_sort_menu, ID2P(LANG_SORT_ALBUMS_BY_SHORT), 0, Icon_NOICON,
+          &album_sort_root, &album_sort_artist, &album_sort_albumartist,
+          &album_sort_composer, &database_sort_albums_by
+          );
+MENUITEM_SETTING_W_LABEL(database_sort_artists_by,
+                         &global_settings.database_sort_artists_by,
+                         ID2P(LANG_SORT_ARTISTS_BY_SHORT), NULL);
+MENUITEM_SETTING_W_LABEL(sort_ignore_articles,
+                         &global_settings.sort_ignore_articles,
+                         ID2P(LANG_SORT_IGNORE_ARTICLES_SHORT), NULL);
+MAKE_MENU(music_sort_menu, ID2P(LANG_SORT_MENU), 0, Icon_NOICON,
+          &album_sort_menu, &database_sort_artists_by, &sort_ignore_articles);
+MENUITEM_SETTING(album_show_year, &global_settings.album_show_year, NULL);
+
+MENUITEM_FUNCTION(music_menu_config_item, MENU_FUNC_CHECK_RETVAL,
+                  ID2P(LANG_MUSIC_MENU_SETTINGS),
+                  music_menu_config, NULL, Icon_NOICON);
+MENUITEM_SETTING(featured_artists, &global_settings.featured_artists, NULL);
+MENUITEM_SETTING(segregate_audiobooks, &global_settings.segregate_audiobooks,
+                 NULL);
+/* The Music Quiz's kinds of question. One always stays on: turning off the
+ * last is put back, since a quiz asking nothing cannot be played. */
+static int quiz_kind_callback(int action, const struct menu_item_ex *this_item,
+                              struct gui_synclist *this_list)
+{
+    (void)this_list;
+
+    if (action == ACTION_EXIT_MENUITEM
+        && !global_settings.quiz_title && !global_settings.quiz_artist
+        && !global_settings.quiz_album && !global_settings.quiz_year)
+    {
+        *(bool *)this_item->variable = true;
+        settings_save();
+        splash(HZ * 2, ID2P(LANG_QUIZ_ONE_KIND));
+    }
+    return action;
+}
+
+MENUITEM_SETTING(quiz_title, &global_settings.quiz_title, quiz_kind_callback);
+MENUITEM_SETTING(quiz_artist, &global_settings.quiz_artist,
+                 quiz_kind_callback);
+MENUITEM_SETTING(quiz_album, &global_settings.quiz_album, quiz_kind_callback);
+MENUITEM_SETTING(quiz_year, &global_settings.quiz_year, quiz_kind_callback);
+MAKE_MENU(quiz_menu, ID2P(LANG_QUIZ_QUESTIONS), 0, Icon_NOICON,
+          &quiz_title, &quiz_artist, &quiz_album, &quiz_year);
+
+MAKE_MENU(music_menu, ID2P(LANG_MUSIC_BROWSER), 0, Icon_NOICON,
+          &music_sort_menu,
+          &album_show_year,
+          &featured_artists, &segregate_audiobooks,
+          &search_menu, &quiz_menu,
+          &music_appearance_menu    /* theme_settings.c */
+          );
+
+/** The branches built here **/
+
+/* Reached from the root menu, and gathered into System below. */
+extern const struct menu_item_ex timedate_item, manage_settings;
+
+/* One family, not two: the text viewer and the lyrics viewer are the same
+   shape of screen with nearly the same settings, and splitting them by where
+   each is opened from would scatter them across two branches. Listed under
+   Appearance and under Library, as the same item. */
+MAKE_MENU(viewers_menu, ID2P(LANG_VIEWERS), 0, Icon_NOICON,
+          &text_viewer_menu, &lyric_viewer_menu, &spun_menu);
+
+static struct browse_folder_info langs = { LANG_DIR, SHOW_LNG };
+
+MENUITEM_FUNCTION_W_PARAM(browse_langs, 0, ID2P(LANG_LANGUAGE),
+                          browse_folder, (void*)&langs, NULL, Icon_Language);
+
+/* Everything about what words the player uses and how it reads them: the
+   language it speaks, the voice that speaks it, and the character set it
+   assumes for tags that do not say. */
+MAKE_MENU(language_menu, ID2P(LANG_LANGUAGE_AND_TEXT), 0, Icon_Language,
+          &browse_langs, &voice_settings_menu, &codepage_setting);
+
+/* Library: everything about what music the player knows about and how it is
+   presented -- as against Playback, which is about what happens when it is
+   played. The viewers are here as well as under Appearance; they are opened
+   from these browsers. */
+MAKE_MENU(library_menu, ID2P(LANG_LIBRARY), 0, Icon_Playlist,
+          &file_menu,
+          &music_menu,
+          &album_covers_menu,
+          &tagcache_menu,
+          &art_cache_menu,
+          &playlist_engine_menu,
+          &viewers_menu,
+          &maintenance_menu);
+
+/* See the note where usb_menu is defined: this is built last because it
+   gathers menus defined above it. */
+MAKE_MENU(system_menu, ID2P(LANG_SYSTEM),
+          0, Icon_System_menu,
+            &usb_menu,
+            &accessories_menu,
+            &shortcuts_replaces_quickscreen,
+            &keyclick_menu,
+            &limits_menu,
+            &volume_adjust_mode,
+            &volume_adjust_norm_steps,
+            &timedate_item,
+            &startup_shutdown_menu,
+            &language_menu,
+            &manage_settings,
+            &debug_logs_menu,
+            &show_debug_menu,
+         );

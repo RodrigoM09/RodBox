@@ -136,6 +136,7 @@
 #define ASC_READ_ERROR              0x11
 #define ASC_NOT_READY               0x04
 #define ASC_INVALID_COMMAND         0x20
+#define ASC_LOGICAL_UNIT_NOT_SUPPORTED 0x25
 #define ASC_WRITE_PROTECTED         0x27
 
 /* A drive whose driver can only read it is reported write protected */
@@ -331,6 +332,43 @@ static void send_and_read_next(void);
 static bool ejected[NUM_DRIVES];
 static bool locked[NUM_DRIVES];
 
+/* Scale a host-supplied LBA and block count by the sector multiplier and test
+ * them against the device, committing to cur_cmd only if they fit. Doing this
+ * at the call sites overflows twice: the multiply is 32-bit there, and
+ * sector_t is 32-bit without STORAGE_64BIT_SECTOR, so sector + count can wrap
+ * past the range test and turn a request the device should refuse into an
+ * in-range access at the wrong offset. On a write that is silent corruption.
+ * Both terms are widened here before anything is compared. */
+static bool set_transfer_range(uint64_t sector, uint32_t count,
+                               unsigned int multiplier, sector_t block_count)
+{
+    uint64_t first = sector * multiplier;
+    uint64_t last = first + (uint64_t)count * multiplier;
+
+    if (multiplier == 0 || last > (uint64_t)block_count)
+        return false;
+
+    cur_cmd.sector = first;
+    cur_cmd.count = count * multiplier;
+    return true;
+}
+
+/* Did the host write to us since the cable went in? Cleared when the stack
+ * starts, not on SET_CONFIGURATION, so a host that writes and then
+ * re-enumerates (sleep and resume, error recovery) still reports the write
+ * when the cable comes out.
+ *
+ * The app layer rebuilds the database and dircache after USB only when the
+ * host wrote, because a read-only session changes nothing. Windows
+ * disconnects and reconnects once on every connect, and a rebuild started by
+ * that blip leaves the tagcache thread mid-scan when the reconnect arrives. */
+static bool host_wrote;
+
+bool usb_storage_host_wrote(void)
+{
+    return host_wrote;
+}
+
 static int usb_interface;
 
 static struct usb_class_driver_ep_allocation ep_allocs[2] = {
@@ -412,12 +450,6 @@ void usb_set_skip_first_drive(bool skip)
 }
 #endif
 
-/* called by usb_core_init() */
-static void usb_storage_init(void)
-{
-    logf("usb_storage_init done");
-}
-
 static int usb_storage_set_first_interface(int interface)
 {
     usb_interface = interface;
@@ -449,33 +481,43 @@ static int usb_storage_get_config_descriptor(unsigned char *dest,int max_packet_
 static int usb_handle = 0;
 #endif
 
-/* Sets up the buffers and primes the rx endpoint for the first command.
- * The buffers are allocated only once Rockbox has handed the storage over:
- * the host configures the device before every thread has acknowledged the
- * connect, while for example the recording buffer still holds all free
- * memory. Until then the host's first command waits at the endpoint. */
-static void start_receiving_commands(void)
+/* Claim the transfer buffers. Idempotent, and deliberately never released.
+ *
+ * PODBOX: must be called from usb_init(), at boot, and from nowhere else that
+ * matters. The allocation is ~128K of *immovable* buflib, so once audio_init()
+ * has taken the rest of the RAM it can only be satisfied by shrinking the audio
+ * buffer -- and that callback stops playback with a synchronous queue_send,
+ * blocking the calling thread for a fade, a codec halt and several disk writes.
+ * Called at boot it lands before audio_init(), so there is nothing to shrink
+ * and nothing to wait for.
+ *
+ * Trap: two later placements are fatal.
+ *
+ *  - usb_storage_init_connection() runs inside the
+ *    host's SET_CONFIGURATION. The USB thread stalls mid-control-transfer, the
+ *    host gives up, and usb_request_exclusive_storage() -- which sits *after*
+ *    the driver loop in usb_core_do_set_config() -- is never reached, so no
+ *    thread is ever asked to release storage.
+ *  - usb_storage_init(), i.e. usb_core_init(), runs after usb_drv_init() has
+ *    set USBCMD_RUN and attached the device. A stall there is before
+ *    SET_ADDRESS, so enumeration never starts and the host bus-resets until
+ *    it gives up.
+ *
+ * The storage handover, usb_storage_notify_event(), stalls nothing, but
+ * reshapes the audio buffer to fit the allocation on every connection.
+ *
+ * Not freed on disconnect either, or the next connection would pay for it.
+ *
+ * Targets with USB_STATIC_ALLOC never had the problem: their buffers are BSS.
+ * PP502x is excluded from that because USB_DEVBSS_ATTR is IBSS_ATTR there and
+ * 128K does not fit in IRAM. */
+void usb_storage_alloc_buffers(void)
 {
-    /* prime rx endpoint. We only need room for commands */
-    state = WAITING_FOR_COMMAND;
-
-#ifdef USB_STATIC_ALLOC
-    static unsigned char _cbw_buffer[MAX_CBW_SIZE]
-        USB_DEVBSS_ATTR __attribute__((aligned(32)));
-    cbw_buffer = (void *)_cbw_buffer;
-
-    static unsigned char _transfer_buffer[ALLOCATE_BUFFER_SIZE]
-        USB_DEVBSS_ATTR __attribute__((aligned(32)));
-    tb.transfer_buffer = (void *)_transfer_buffer;
-#ifdef USB_USE_RAMDISK
-    static unsigned char _ramdisk_buffer[RAMDISK_SIZE*SECTOR_SIZE];
-    ramdisk_buffer = _ramdisk_buffer;
-#endif
-#else
-    unsigned char * buffer;
+#ifndef USB_STATIC_ALLOC
+    unsigned char *buffer;
 
     if (usb_handle > 0)
-        return; /* already receiving */
+        return;
 
     // Add 31 to handle worst-case misalignment
     usb_handle = core_alloc_ex(ALLOCATE_BUFFER_SIZE + MAX_CBW_SIZE + 31,
@@ -494,6 +536,40 @@ static void start_receiving_commands(void)
 #ifdef USB_USE_RAMDISK
     ramdisk_buffer = tb.transfer_buffer + ALLOCATE_BUFFER_SIZE;
 #endif
+#endif /* !USB_STATIC_ALLOC */
+}
+
+/* called by usb_core_init() -- which has already attached the device, so
+ * nothing expensive belongs here. See usb_storage_alloc_buffers(). */
+static void usb_storage_init(void)
+{
+    host_wrote = false;
+    logf("usb_storage_init done");
+}
+
+/* Primes the rx endpoint for the first command, which then waits in
+ * WAITING_FOR_STORAGE until Rockbox has handed the storage over. */
+static void start_receiving_commands(void)
+{
+    /* prime rx endpoint. We only need room for commands */
+    state = WAITING_FOR_COMMAND;
+
+#ifdef USB_STATIC_ALLOC
+    static unsigned char _cbw_buffer[MAX_CBW_SIZE]
+        USB_DEVBSS_ATTR __attribute__((aligned(32)));
+    cbw_buffer = (void *)_cbw_buffer;
+
+    static unsigned char _transfer_buffer[ALLOCATE_BUFFER_SIZE]
+        USB_DEVBSS_ATTR __attribute__((aligned(32)));
+    tb.transfer_buffer = (void *)_transfer_buffer;
+#ifdef USB_USE_RAMDISK
+    static unsigned char _ramdisk_buffer[RAMDISK_SIZE*SECTOR_SIZE];
+    ramdisk_buffer = _ramdisk_buffer;
+#endif
+#else
+    /* Already done at init; a no-op unless something skipped that. Must not
+     * be the first allocation -- see usb_storage_alloc_buffers(). */
+    usb_storage_alloc_buffers();
 #endif
     usb_drv_recv_nonblocking(EP_OUT, cbw_buffer, MAX_CBW_SIZE);
 }
@@ -511,15 +587,17 @@ static int usb_storage_init_connection(void)
 {
     logf("ums: set config");
     state = WAITING_FOR_COMMAND;
-#ifndef USB_STATIC_ALLOC
-    if(usb_exclusive_storage())
-#endif
-        start_receiving_commands();
+    /* the buffers exist from boot, so the endpoint can be primed at once */
+    start_receiving_commands();
 
     int i;
     for(i=0;i<storage_num_drives();i++) {
         locked[i] = false;
-        ejected[i] = !check_disk_present(IF_MD(i));
+        ejected[i] = !check_disk_present(IF_MD(i))
+#ifndef BOOTLOADER
+                     || usb_storage_is_ejected()
+#endif
+                     ;
         queue_broadcast(SYS_USB_LUN_LOCKED, (i<<16)+0);
     }
     return 0;
@@ -527,9 +605,9 @@ static int usb_storage_init_connection(void)
 
 void usb_storage_disconnect(void)
 {
-#ifndef USB_STATIC_ALLOC
-    usb_handle = core_free(usb_handle);
-#endif
+    /* The transfer buffers stay claimed for the life of the firmware --
+     * releasing them here means re-allocating on the next connection, which is
+     * the cost usb_storage_alloc_buffers() exists to move out of the way. */
 }
 
 /* called by usb_core_transfer_complete() */
@@ -845,6 +923,20 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
     if(skip_first) lun++;
 #endif
 
+    /* The host picks the LUN, and it indexes ejected[] and locked[] as well as
+     * addressing the storage and disk layers. Refuse one past the last drive
+     * here, where it is still a protocol error, rather than below where it is
+     * an out-of-bounds access. The tag has to be in place first: send_csw()
+     * answers with it. */
+    if(lun >= storage_num_drives()) {
+        cur_cmd.tag = cbw->tag;
+        send_csw(UMS_STATUS_FAIL);
+        cur_sense_data.sense_key=SENSE_ILLEGAL_REQUEST;
+        cur_sense_data.asc=ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+        cur_sense_data.ascq=0;
+        return;
+    }
+
     storage_get_info(lun,&info);
 #ifdef USB_USE_RAMDISK
     block_size = SECTOR_SIZE;
@@ -863,6 +955,10 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
     unsigned int block_size_mult = 1; /* Number of LOGICAL storage device blocks in each USB block */
 #ifdef MAX_VIRT_SECTOR_SIZE
     block_size_mult = disk_get_sector_multiplier(IF_MD(lun));
+    /* Zero for a drive index the disk layer does not recognise, which divides
+     * into block_count below. */
+    if(block_size_mult == 0)
+        block_size_mult = 1;
 #endif
 
     uint32_t bsize = block_size*block_size_mult;
@@ -1077,6 +1173,15 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
                 }
             }
             send_csw(UMS_STATUS_GOOD);
+#ifndef BOOTLOADER
+            /* Every drive ejected: the disk goes back to the player now. */
+            if(usb_exclusive_storage()) {
+                int i;
+                for(i=0;i<storage_num_drives() && ejected[i];i++);
+                if(i==storage_num_drives())
+                    usb_storage_ejected();
+            }
+#endif
             break;
 
         case SCSI_ALLOW_MEDIUM_REMOVAL:
@@ -1213,25 +1318,18 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
             cur_cmd.data[0] = tb.transfer_buffer;
             cur_cmd.data[1] = &tb.transfer_buffer[READ_BUFFER_SIZE];
             cur_cmd.data_select=0;
-            cur_cmd.sector = block_size_mult *
-                (cbw->command_block[2] << 24 |
-                 cbw->command_block[3] << 16 |
-                 cbw->command_block[4] << 8  |
-                 cbw->command_block[5] );
-            cur_cmd.count = block_size_mult *
-                (cbw->command_block[7] << 8 |
-                 cbw->command_block[8]);
             cur_cmd.block_size = block_size;
 
-            logf("scsi read %llu %d", cur_cmd.sector, cur_cmd.count);
-
-            if((cur_cmd.sector + cur_cmd.count) > block_count) {
+            if(!set_transfer_range(load_be32(&cbw->command_block[2]),
+                                   load_be16(&cbw->command_block[7]),
+                                   block_size_mult, block_count)) {
                 send_csw(UMS_STATUS_FAIL);
                 cur_sense_data.sense_key=SENSE_ILLEGAL_REQUEST;
                 cur_sense_data.asc=ASC_LBA_OUT_OF_RANGE;
                 cur_sense_data.ascq=0;
             }
             else {
+                logf("scsi read %llu %d", cur_cmd.sector, cur_cmd.count);
 #ifdef USB_USE_RAMDISK
                 memcpy(cur_cmd.data[cur_cmd.data_select],
                         ramdisk_buffer + cur_cmd.sector*cur_cmd.block_size,
@@ -1258,31 +1356,18 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
             cur_cmd.data[0] = tb.transfer_buffer;
             cur_cmd.data[1] = &tb.transfer_buffer[READ_BUFFER_SIZE];
             cur_cmd.data_select=0;
-            cur_cmd.sector = block_size_mult *
-                 ((uint64_t)cbw->command_block[2] << 56 |
-                 (uint64_t)cbw->command_block[3] << 48 |
-                 (uint64_t)cbw->command_block[4] << 40 |
-                 (uint64_t)cbw->command_block[5] << 32 |
-                 cbw->command_block[6] << 24 |
-                 cbw->command_block[7] << 16 |
-                 cbw->command_block[8] << 8  |
-                 cbw->command_block[9]);
-            cur_cmd.count = block_size_mult *
-                (cbw->command_block[10] << 24 |
-                 cbw->command_block[11] << 16 |
-                 cbw->command_block[12] << 8 |
-                 cbw->command_block[13]);
             cur_cmd.block_size = block_size;
 
-            logf("scsi read %llu %d", cur_cmd.sector, cur_cmd.count);
-
-            if((cur_cmd.sector + cur_cmd.count) > block_count) {
+            if(!set_transfer_range(load_be64(&cbw->command_block[2]),
+                                   load_be32(&cbw->command_block[10]),
+                                   block_size_mult, block_count)) {
                 send_csw(UMS_STATUS_FAIL);
                 cur_sense_data.sense_key=SENSE_ILLEGAL_REQUEST;
                 cur_sense_data.asc=ASC_LBA_OUT_OF_RANGE;
                 cur_sense_data.ascq=0;
             }
             else {
+                logf("scsi read %llu %d", cur_cmd.sector, cur_cmd.count);
 #ifdef USB_USE_RAMDISK
                 memcpy(cur_cmd.data[cur_cmd.data_select],
                         ramdisk_buffer + cur_cmd.sector*cur_cmd.block_size,
@@ -1299,6 +1384,7 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
 #endif
         case SCSI_WRITE_10:
             logf("scsi write10 %d",lun);
+            host_wrote = true;
             if(!lun_present) {
                 send_csw(UMS_STATUS_FAIL);
                 cur_sense_data.sense_key=SENSE_NOT_READY;
@@ -1316,18 +1402,12 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
             cur_cmd.data[0] = tb.transfer_buffer;
             cur_cmd.data[1] = &tb.transfer_buffer[WRITE_BUFFER_SIZE];
             cur_cmd.data_select=0;
-            cur_cmd.sector = block_size_mult *
-                (cbw->command_block[2] << 24 |
-                 cbw->command_block[3] << 16 |
-                 cbw->command_block[4] << 8  |
-                 cbw->command_block[5] );
-            cur_cmd.count = block_size_mult *
-                (cbw->command_block[7] << 8 |
-                 cbw->command_block[8]);
             cur_cmd.block_size = block_size;
 
             /* expect data */
-            if((cur_cmd.sector + cur_cmd.count) > block_count) {
+            if(!set_transfer_range(load_be32(&cbw->command_block[2]),
+                                   load_be16(&cbw->command_block[7]),
+                                   block_size_mult, block_count)) {
                 send_csw(UMS_STATUS_FAIL);
                 cur_sense_data.sense_key=SENSE_ILLEGAL_REQUEST;
                 cur_sense_data.asc=ASC_LBA_OUT_OF_RANGE;
@@ -1341,6 +1421,7 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
 #ifdef STORAGE_64BIT_SECTOR
         case SCSI_WRITE_16:
             logf("scsi write16 %d",lun);
+            host_wrote = true;
             if(!lun_present) {
                 send_csw(UMS_STATUS_FAIL);
                 cur_sense_data.sense_key=SENSE_NOT_READY;
@@ -1358,24 +1439,12 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
             cur_cmd.data[0] = tb.transfer_buffer;
             cur_cmd.data[1] = &tb.transfer_buffer[WRITE_BUFFER_SIZE];
             cur_cmd.data_select=0;
-            cur_cmd.sector = block_size_mult *
-                ((uint64_t)cbw->command_block[2] << 56 |
-                 (uint64_t)cbw->command_block[3] << 48 |
-                 (uint64_t)cbw->command_block[4] << 40 |
-                 (uint64_t)cbw->command_block[5] << 32 |
-                 cbw->command_block[6] << 24 |
-                 cbw->command_block[7] << 16 |
-                 cbw->command_block[8] << 8  |
-                 cbw->command_block[9]);
-            cur_cmd.count = block_size_mult *
-                (cbw->command_block[10] << 24 |
-                 cbw->command_block[11] << 16 |
-                 cbw->command_block[12] << 8 |
-                 cbw->command_block[13]);
             cur_cmd.block_size = block_size;
 
             /* expect data */
-            if((cur_cmd.sector + cur_cmd.count) > block_count) {
+            if(!set_transfer_range(load_be64(&cbw->command_block[2]),
+                                   load_be32(&cbw->command_block[10]),
+                                   block_size_mult, block_count)) {
                 send_csw(UMS_STATUS_FAIL);
                 cur_sense_data.sense_key=SENSE_ILLEGAL_REQUEST;
                 cur_sense_data.asc=ASC_LBA_OUT_OF_RANGE;
@@ -1420,7 +1489,7 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
                     usb_storage_send_ata_identify();
                     break;
 #ifdef HAVE_ATA_SMART
-                } else if (cbw->command_block[9] == 0xb0) {
+                } else if (cbw->command_block[9] == 0xb0 && lun_present) {
                     usb_storage_send_smart(cbw->command_block[3]);
                     break;
 #endif
@@ -1440,7 +1509,7 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
                     usb_storage_send_ata_identify();
                     break;
 #ifdef HAVE_ATA_SMART
-                } else if (cbw->command_block[14] == 0xb0) {
+                } else if (cbw->command_block[14] == 0xb0 && lun_present) {
                     usb_storage_send_smart(cbw->command_block[4]);
                     break;
 #endif
@@ -1466,7 +1535,13 @@ static void handle_scsi_ready(struct command_block_wrapper* cbw)
  * OUT endpoint is not rearmed until this CBW has received its CSW. */
 static void handle_scsi(struct command_block_wrapper* cbw)
 {
-    if(!usb_exclusive_storage()) {
+    /* After an eject the player owns the disk and every drive answers
+     * "medium not present" without touching it, so nothing is held back. */
+    if(!usb_exclusive_storage()
+#ifndef BOOTLOADER
+       && !usb_storage_is_ejected()
+#endif
+       ) {
         state = WAITING_FOR_STORAGE;
         return;
     }

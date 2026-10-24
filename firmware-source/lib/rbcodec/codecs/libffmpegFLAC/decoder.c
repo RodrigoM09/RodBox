@@ -288,6 +288,34 @@ static void flac_lpc_32_c(int32_t *decoded, int coeffs[],
 
 }
 
+/* flac_decode_frame()'s yield, for the filter below. */
+static void (*flac_yield)(void);
+
+/* Samples the wide filter makes between yields. A frame's channel is
+ * otherwise one run of the decoder: at 24 bits that is tens of milliseconds
+ * on a PP502x, during which nothing else on the core can draw. */
+#define FLAC_LPC_STEP 1024
+
+static void flac_lpc_32(int32_t *decoded, int coeffs[],
+                        int pred_order, int qlevel, int len)
+{
+    int i, n;
+
+    for (i = pred_order; i < len; i += n)
+    {
+        n = MIN(FLAC_LPC_STEP, len - i);
+#if defined(FLAC_LPC32_ASM)
+        flac_lpc_32_arm(decoded + i - pred_order, coeffs, pred_order, qlevel,
+                        pred_order + n);
+#else
+        flac_lpc_32_c(decoded + i - pred_order, coeffs, pred_order, qlevel,
+                      pred_order + n);
+#endif
+        if (i + n < len && flac_yield)
+            flac_yield();
+    }
+}
+
 static void lpc_analyze_remodulate(int32_t *decoded, int coeffs[],
                                    int order, int qlevel, int len, int bps)
 {
@@ -376,20 +404,7 @@ static int decode_subframe_lpc(FLACContext *s, int32_t* decoded, int pred_order,
         lpc_decode_emac_wide(s->blocksize - pred_order, qlevel, pred_order,
                              decoded + pred_order, coeffs);
         #else
-        #if defined(FLAC_LPC32_ASM)
-        /* The 16-bit multiply kernel needs every history sample to fit a
-           signed halfword, which bps <= 16 guarantees, and checks its other
-           precondition itself. */
-        #if (ARM_ARCH >= 5) && defined(FLAC_LPC32_NARROW_ASM)
-        if (bps <= 16)
-            flac_lpc_32_arm_narrow(decoded, coeffs, pred_order, qlevel,
-                                   s->blocksize);
-        else
-        #endif
-        flac_lpc_32_arm(decoded, coeffs, pred_order, qlevel, s->blocksize);
-        #else
-        flac_lpc_32_c(decoded, coeffs, pred_order, qlevel, s->blocksize);
-        #endif
+        flac_lpc_32(decoded, coeffs, pred_order, qlevel, s->blocksize);
 
         if (s->bps <= 16)
             lpc_analyze_remodulate(decoded, coeffs, pred_order, qlevel, s->blocksize, bps);
@@ -686,6 +701,7 @@ int flac_decode_frame(FLACContext *s,
     int framesize;
     int scale;
 
+    flac_yield = yield;
     /* check that there is at least the smallest decodable amount of data.
        this amount corresponds to the smallest valid FLAC frame possible.
        this amount corresponds to the smallest valid FLAC frame possible.

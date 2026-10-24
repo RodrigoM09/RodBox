@@ -1,0 +1,991 @@
+/***************************************************************************
+ * Original code from RockBox
+ * was: apps/plugins/pictureflow/pictureflow.c
+ * Copyright (C) 2007 Jonas Hurrelmann (j@outpo.st)
+ * Copyright (C) 2007 Nicolas Pennequin
+ * Copyright (C) 2007 Ariya Hidayat (ariya@kde.org) (original Qt Version)
+ * GNU General Public License (version 2+)
+ *
+ * Original code: http://code.google.com/p/pictureflow/
+ *
+ * Cover-flow album browser built on carousel.c. Supplies the slide model
+ * -- album list, artwork key, sort order -- and what
+ * happens on select.
+ *
+ * carousel.c owns the rendering and the input loop; this file only answers
+ * its questions. The link is album_model at the bottom, a struct of function
+ * pointers the carousel calls to ask how many slides there are, what a slide
+ * looks like, and what to do when one is chosen. artist_portraits.c is the
+ * other implementation of the same model.
+ *
+ * The album list comes from the database index (database/db_summary.c), which
+ * is built once and read back from disk on later opens. Cover art is the
+ * shared thumbnail cache's (metadata/art_cache.c); this file only says which
+ * folder a slide's art lives in, through art_key().
+ *
+ * Parts, in order:
+ *   - reading names by the index's seeks, and the letter/year jumps over it
+ *   - resolving a track to a slide, and a slide to its artwork key
+ *   - the display order: the sort comparators and re-sorting in place
+ *   - the text drawn under the slides
+ *   - the maintenance task, the in-screen menu, and select
+ *   - album_model itself, and album_covers() which runs the carousel with it
+ ****************************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>            /* qsort */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include "string-extra.h"
+#include "config.h"
+#include "system.h"          /* MIN/MAX/ALIGN_BUFFER/ALIGN_DOWN */
+#include "rbpaths.h"
+#include "input/action.h"           /* get_action/get_custom_action/button_mapping */
+#include "draw/screen_access.h"    /* FOR_NB_SCREENS, screens[] */
+#include "kernel.h"           /* threads, mutex, queue, current_tick */
+#include "core_alloc.h"       /* buflib types for buf_ctx (see init()) */
+#include "database/tagcache.h"
+#include "database/db_summary.h"   /* the album/artist index, and playing one */
+#include "database/db_spoken.h"    /* whether the track playing is a book */
+#include "playlist/playlist.h"
+#include "playlist/catalog.h"
+#include "settings/settings.h"
+#include "lang.h"
+#include "widgets/splash.h"
+#include "draw/viewport.h"
+#include "system/activity.h"
+#include "system/app_util.h"
+#include "system/shutdown.h"
+#include "system/strutil.h"
+#include "screens/context_menu.h"           /* a cover's menu */
+#include "metadata/albumart.h"         /* find_albumart / search_albumart_files */
+#include "metadata/art_cache.h"   /* shared database-driven thumbnail cache */
+#include "metadata.h"         /* struct mp3entry, get_metadata */
+#include "dir.h"
+#include "file.h"
+#include "widgets/yesno.h"            /* gui_syncyesno_run */
+#include "root_menu.h"
+#include "screens/browse/browser.h"
+#include "screens/browse/browser_db.h"
+#include "screens/playback/track_info.h"          /* browse_id3 */
+#include "audio.h"            /* audio_status, audio_current_track */
+#include "lcd.h"
+#include "font.h"
+#include "draw/icon_bitmaps.h"
+#include "widgets/menu.h"             /* do_menu */
+#include "screens/settings/exported_settings.h" /* album_covers_menu (shared settings menu) */
+#include "draw/bmp.h"              /* read_bmp_file */
+#include "draw/jpeg_load.h"        /* read_jpeg_file */
+#include "power.h"
+#include "backlight.h"        /* backlight_set_timeout(_plugged) */
+#include "cpu.h"
+#include "skin/skin_engine.h"  /* skin_inhibit_flush */
+#include "skin/skin_albumart_color.h" /* dynamic_colors_resolve */
+#include "skin/statusbar_skinned.h" /* sb_set_persistent_title */
+#include "album_covers.h"
+#include "speech/talk.h"
+#include "carousel.h"     /* the shared engine: carousel_idx, the model */
+#include "draw/line.h"              /* TEXT_FIT_BUF */
+
+/** Globals **/
+
+/* The engine's shared constants -- PFreal, the slide cache size and the
+ * on-disk cache paths -- come from carousel.h. Only what is specific to the
+ * album model is defined here. */
+
+/* Not theme-controlled: layout is fixed/proportional (see init()) and
+ * colours come from the theme's normal fg/bg + the dynamic (album-art
+ * derived) colour scheme, same as everywhere else -- or, for the background,
+ * from Carousel Background's Custom colour, which the album never changes.
+ *
+ * It cannot be themed further while it draws the way it does. This screen
+ * repaints its own pixels every frame, straight to the framebuffer, outside
+ * the SBS's render cycle -- so anything routed through the skin engine at
+ * runtime fights it: colours arrive inherited from ambient, SBS viewport
+ * state is non-deterministic, skin_update()-rendered text races this
+ * screen's own lcd_update(), and %Vd()'d content left "shown" by whatever
+ * screen preceded this one bleeds through. Themeable layout means giving up
+ * the per-frame raw redraw first. */
+
+/* Scratch id3 used to resolve the currently playing/selected track into an
+ * album index (id3_get_index()) and to look up album art (retrieve_id3()).
+ */
+static struct mp3entry id3;
+
+enum ePFS{ePFS_ARTIST = 0, ePFS_ALBUM};
+
+/*
+ * States: pf_idle <-> pf_scrolling (browsing covers); SELECT on a cover
+ * jumps straight into the core database's track list for that album (see
+ * browser_db_enter_artist_album_tracks_on_next_load(), called from
+ * album_covers_loop()). There is no in-house cover-zoom or track-list
+ * browsing state; the database browser is the track list.
+ */
+enum pf_states {
+    pf_idle = 0,
+    pf_scrolling
+};
+
+/* struct carousel_model (the engine<->data seam) is declared in carousel.h. */
+
+static int  album_count(void);
+static unsigned int album_art_key(int slide_index);
+static int  album_enter(int index);
+static int  jmp_idx_prev(void);
+static int  jmp_idx_next(void);
+static void draw_album_text(void);
+static void album_sort_next(void);
+static void album_sort_prev(void);
+static void set_initial_slide(const char *selected_file);
+static int  album_on_menu(void);
+static int  album_on_context(int index);
+static void album_prepare(void);
+static int  album_build_index(void);
+static void album_speak(int index);
+
+static const struct carousel_model album_model = {
+    .build_index = album_build_index,
+    .count       = album_count,
+    .art_key     = album_art_key,
+    .enter       = album_enter,
+    .jump_prev   = jmp_idx_prev,
+    .jump_next   = jmp_idx_next,
+    .draw_text   = draw_album_text,
+    .sort_next   = album_sort_next,
+    .sort_prev   = album_sort_prev,
+    .set_initial = set_initial_slide,
+    .on_menu     = album_on_menu,
+    .on_context  = album_on_context,
+    .prepare     = album_prepare,
+    .speak       = album_speak,
+    .owns_cache_version = true,
+    .title       = (const char *)ID2P(LANG_ALBUM_COVERS),
+};
+
+/**
+ The album name of the given slide_index, into buf
+ */
+static char* get_album_name(const int slide_index, char *buf, size_t size)
+{
+    return db_summary_name(&carousel_idx, tag_album,
+                           carousel_idx.album_index[slide_index].seek,
+                           buf, size);
+}
+
+/**
+ The album artist of the given slide_index, into buf
+ */
+static char* get_album_artist(const int slide_index, char *buf, size_t size)
+{
+    if (slide_index < carousel_idx.album_ct && slide_index >= 0)
+        return db_summary_name(&carousel_idx, tag_albumartist,
+                               carousel_idx.album_index[slide_index].artist_seek,
+                               buf, size);
+    strmemccpy(buf, "?", size);
+    return buf;
+}
+
+
+/* The album, then its artist */
+static void album_speak(int index)
+{
+    char album[TAGCACHE_BUFSZ], artist[TAGCACHE_BUFSZ];
+    char text[2 * TAGCACHE_BUFSZ + 2];
+    snprintf(text, sizeof(text), "%s, %s",
+             get_album_name(index, album, sizeof(album)),
+             get_album_artist(index, artist, sizeof(artist)));
+    talk_name(text, false);
+}
+
+int carousel_album_order(void)
+{
+    int order;
+
+    if (!global_settings.album_covers_sort_same_as_music)
+        return global_settings.album_covers_sort_albums_by;
+    order = browser_db_album_sort_get(DB_ALBUM_CTX_ROOT);
+    return order >= 0 ? order : global_settings.database_sort_albums_by;
+}
+
+int carousel_artist_order(void)
+{
+    return global_settings.album_covers_sort_same_as_music
+        ? global_settings.database_sort_artists_by
+        : global_settings.album_covers_sort_artists_by;
+}
+
+bool carousel_skips_articles(void)
+{
+    return global_settings.album_covers_sort_same_as_music
+        ? global_settings.sort_ignore_articles
+        : global_settings.album_covers_sort_ignore_articles;
+}
+
+const char *carousel_sort_name(const char *name)
+{
+    return carousel_skips_articles() ? tagcache_skip_article(name) : name;
+}
+
+/* The first letter of the name a slide sorts by, which is what the letter
+ * jumps compare. */
+static char get_slide_initial(const int slide_index, bool artist)
+{
+    char name[TAGCACHE_BUFSZ];
+
+    if (artist)
+        get_album_artist(slide_index, name, sizeof(name));
+    else
+        get_album_name(slide_index, name, sizeof(name));
+    return carousel_sort_name(name)[0];
+}
+
+/* Whether the slides run in year order alone, which is what the jumps step
+ * through instead of initials. */
+static bool sorted_by_year(void)
+{
+    return carousel_album_order() == SORT_BY_YEAR
+        || carousel_album_order() == SORT_BY_YEAR_DESC;
+}
+
+static int jmp_idx_prev(void)
+{
+    /* Step back to the first slide of a run.
+     *
+     * Two cases, and one walk covers both: back to the first slide sharing the
+     * key of the slide before us. Standing part-way into a run, that slide
+     * shares our key, so the walk ends at our run's start. Standing on a run's
+     * first slide, it belongs to the previous run, so the walk ends at that
+     * run's start instead.
+     *
+     * Upstream (pictureflow) writes this as a `for` loop whose body always
+     * returns, i.e. a disguised `if`. Unwound here, and in artist_jump_prev(),
+     * which is the same walk over the artist list. */
+    int i = center_index - 1;
+
+    if (i <= 0)
+        return 0;
+
+    if (sorted_by_year())
+    {
+        int year = carousel_idx.album_index[i].year;
+
+        while (i > 0 && carousel_idx.album_index[i - 1].year == year)
+            i--;
+    }
+    else
+    {
+        bool by_artist = carousel_album_order() != SORT_BY_NAME;
+        char initial = get_slide_initial(i, by_artist);
+
+        while (i > 0 && get_slide_initial(i - 1, by_artist) == initial)
+            i--;
+    }
+
+    return i;
+}
+
+static int jmp_idx_next(void)
+{
+    if (sorted_by_year())
+    {
+        int current_year = carousel_idx.album_index[center_index].year;
+        for (int i = center_index + 1; i < carousel_idx.album_ct; i++ )
+            if(carousel_idx.album_index[i].year != current_year)
+                return i;
+    }
+    else
+    {
+        bool by_artist = carousel_album_order() != SORT_BY_NAME;
+        char current_selection = get_slide_initial(center_index, by_artist);
+        for (int i = center_index + 1; i < carousel_idx.album_ct; i++ )
+            if(get_slide_initial(i, by_artist) != current_selection)
+                return i;
+    }
+    return carousel_idx.album_ct - 1;
+}
+
+/* The display index of the album the track described by `id3` belongs to, or
+ * the last album viewed if it belongs to none.
+ *
+ * The index files an album under its *album artist*: build_artist_index()
+ * (database/db_summary.c) enumerates tag_albumartist, and tagcache stores a
+ * missing one as UNTAGGED. A track with no albumartist tag therefore belongs
+ * to an album filed under that literal, and looking for its track artist
+ * instead finds nothing.
+ *
+ * Both names are matched case-insensitively, because tagcache deduplicates
+ * unique tags that way and keeps whichever spelling it met first -- so the
+ * index's spelling of an album need not be the one in the file playing.
+ *
+ * The album alone is the fallback, for the albums no one artist name
+ * describes: a compilation whose tracks carry different album artists still
+ * gets a single index entry, under the first of them. The index holds one
+ * entry per distinct album name, so this can only land on the wrong album
+ * where two of them share a name.
+ */
+static int id3_get_index(struct mp3entry *id3)
+{
+    const char *want_album  = UNTAGGED;
+    const char *want_artist = UNTAGGED;
+    char name[TAGCACHE_BUFSZ];
+    int by_album = -1;
+    int i;
+
+    if (id3)
+    {
+        if (id3->album && id3->album[0])
+            want_album = id3->album;
+        if (id3->albumartist && id3->albumartist[0])
+            want_artist = id3->albumartist;
+
+        for (i = 0; i < carousel_idx.album_ct; i++ )
+        {
+            if (strcasecmp(get_album_name(i, name, sizeof(name)), want_album))
+                continue;
+
+            if (!strcasecmp(get_album_artist(i, name, sizeof(name)),
+                            want_artist))
+                return i;
+
+            if (by_album < 0)
+                by_album = i;
+        }
+
+        if (by_album >= 0)
+            return by_album;
+
+        /* Segregate Audiobooks leaves books out of the index, so a book not
+         * being in it is expected and not worth a splash. */
+        if (db_spoken_is_spoken_genre(id3->genre_string))
+            return pf_cfg.last_album;
+    }
+
+    splash(HZ * 2, ID2P(LANG_ALBUM_NOT_FOUND));
+    return pf_cfg.last_album;
+}
+
+bool retrieve_id3(struct mp3entry *id3, const char* file)
+{
+    if (tagcache_fill_tags(id3, file))
+    {
+        strlcpy(id3->path, file, sizeof(id3->path));
+        return true;
+    }
+
+    return get_metadata(id3, -1, file);
+}
+
+/**
+  Draw a progress popup using the shared firmware progress widget, so
+  index-building looks like every other long-running operation (e.g. the
+  Album art cache builder) instead of a bespoke full-screen bar.
+ */
+/* Index building shows the theme's generic "working" indicator (the %lw
+ * virtual LED / %la spinner, gated on ui_working()) instead of a covering
+ * progress splash. Forcing a status-bar refresh here advances the spinner as
+ * the build progresses. The step/count/msg args are unused, kept because the
+ * callback signature is shared with the other progress reporters. */
+
+/* carousel_model.art_key for the album model: the shared cache's key for the
+ * folder this album's tracks live in, resolved when the index was built. */
+static unsigned int album_art_key(int slide_index)
+{
+    return carousel_idx.album_index[slide_index].art_hash;
+}
+
+/* The order the slides appear in, from this screen's two sort settings.
+ *
+ * Here rather than in the index builder because it is a display order and
+ * nothing else: it reads settings this screen owns, and no other reader of the
+ * index wants it. The charts rank the same albums their own way, and Random
+ * album picks by number. */
+/* Two names of a tag in the order the setting asks for: by seek, which is name
+ * order because a tag file is written alphabetically, or by the names
+ * themselves past a leading article. Only the second reads the names. */
+static int name_order(int tag, long a, long b)
+{
+    char an[TAGCACHE_BUFSZ], bn[TAGCACHE_BUFSZ];
+
+    if (a == b || !carousel_skips_articles())
+        return (int)(a - b);
+
+    int res = strcasecmp(
+        tagcache_skip_article(db_summary_name(&carousel_idx, tag, a,
+                                              an, sizeof(an))),
+        tagcache_skip_article(db_summary_name(&carousel_idx, tag, b,
+                                              bn, sizeof(bn))));
+    return res != 0 ? res : (int)(a - b);
+}
+
+static int compare_albums(const void *a_v, const void *b_v)
+{
+    long artist_a = ((struct album_data *)a_v)->artist_seek;
+    long artist_b = ((struct album_data *)b_v)->artist_seek;
+
+    long album_a = ((struct album_data *)a_v)->seek;
+    long album_b = ((struct album_data *)b_v)->seek;
+
+    int year_a = ((struct album_data *)a_v)->year;
+    int year_b = ((struct album_data *)b_v)->year;
+
+    switch (carousel_album_order())
+    {
+        case SORT_BY_ARTIST_AND_NAME:
+            if (artist_a - artist_b == 0)
+                return name_order(tag_album, album_a, album_b);
+            break;
+        case SORT_BY_ARTIST_AND_YEAR:
+            if (artist_a - artist_b == 0)
+                return year_a - year_b;
+            break;
+        case SORT_BY_ARTIST_AND_YEAR_DESC:
+            if (artist_a - artist_b == 0)
+                return year_b - year_a;
+            break;
+        case SORT_BY_YEAR:
+            if (year_a - year_b != 0)
+                return year_a - year_b;
+            break;
+        case SORT_BY_YEAR_DESC:
+            if (year_a - year_b != 0)
+                return year_b - year_a;
+            break;
+        case SORT_BY_NAME:
+            if (album_a - album_b != 0)
+                return name_order(tag_album, album_a, album_b);
+            break;
+    }
+
+    return name_order(tag_albumartist, artist_a, artist_b);
+}
+
+/* carousel_model.build_index for the album model: the whole index, into the
+ * engine's own struct and the buffer it has already claimed, then into this
+ * screen's display order.
+ *
+ * The database module builds into whichever index it is handed and leaves it
+ * in its own order; choosing that it is this one, and how the slides are
+ * arranged, is the model's business. */
+static int album_build_index(void)
+{
+    int res = db_summary_build_into(&carousel_idx, carousel_idx.buf,
+                                    carousel_idx.buf_sz);
+
+    if (res >= SUCCESS)
+        qsort(carousel_idx.album_index, carousel_idx.album_ct,
+              sizeof(struct album_data), compare_albums);
+
+    return res;
+}
+
+/* carousel_model.count for the album model. */
+static int album_count(void)
+{
+    return carousel_idx.album_ct;
+}
+
+static void set_initial_slide(const char* selected_file)
+{
+    if (pf_resume_last_album)
+    {
+        pf_resume_last_album = false;
+        set_current_slide(pf_resume_album_index);
+        return;
+    }
+
+    if (selected_file)
+        set_current_slide(retrieve_id3(&id3, selected_file) ?
+                            id3_get_index(&id3) :
+                            pf_cfg.last_album);
+    else
+        set_current_slide(audio_status() ?
+                            id3_get_index(audio_current_track()) :
+                            pf_cfg.last_album);
+
+}
+
+static void reselect(long album_seek, long artist_seek)
+{
+    int i;
+    for (i = 0; i < carousel_idx.album_ct; i++ )
+    {
+        if (carousel_idx.album_index[i].seek == album_seek
+            && carousel_idx.album_index[i].artist_seek == artist_seek)
+        {
+            set_current_slide(i);
+            pf_cfg.last_album = i;
+            return;
+        }
+    }
+    set_initial_slide(NULL);
+}
+
+static bool sort_albums(int new_sorting, bool from_settings)
+{
+    long album_seek, artist_seek;
+    static const char* sort_options[] = {
+        ID2P(LANG_NAME),
+        ID2P(LANG_SORT_BY_YEAR_ASC),
+        ID2P(LANG_SORT_BY_YEAR_DESC),
+        ID2P(LANG_ARTIST_PLUS_NAME),
+        ID2P(LANG_ARTIST_PLUS_YEAR),
+        ID2P(LANG_ARTIST_PLUS_YEAR_DESC)
+    };
+
+    carousel_settle();
+
+    /* Choosing an order here makes it the carousel's own, so it leaves Sort
+     * Same as Music, keeping the other two orders it was taking from Music. */
+    if (!from_settings)
+    {
+        if (global_settings.album_covers_sort_same_as_music)
+        {
+            global_settings.album_covers_sort_artists_by =
+                carousel_artist_order();
+            global_settings.album_covers_sort_ignore_articles =
+                carousel_skips_articles();
+            global_settings.album_covers_sort_same_as_music = false;
+        }
+        global_settings.album_covers_sort_albums_by = new_sorting;
+        splash(HZ, sort_options[new_sorting]);
+    }
+
+    /* After a commit the index's seeks and names are stale. The screen's loop
+     * rebuilds it, already in the new order, before it uses a seek. */
+    if (!db_summary_current(&carousel_idx))
+        return true;
+
+    album_seek = carousel_idx.album_index[center_index].seek;
+    artist_seek = carousel_idx.album_index[center_index].artist_seek;
+
+    carousel_reload(compare_albums);
+
+    reselect(album_seek, artist_seek); /* splash if not found */
+
+    return true;
+}
+
+/* carousel_model.sort_next/sort_prev for the album model: cycle through the
+ * album sort orders and re-sort. */
+static void album_sort_next(void)
+{
+    sort_albums((carousel_album_order() + 1) % SORT_VALUES_SIZE, false);
+}
+
+static void album_sort_prev(void)
+{
+    sort_albums((carousel_album_order() + (SORT_VALUES_SIZE - 1))
+                % SORT_VALUES_SIZE, false);
+}
+
+/* bg_task.request: the carousel drives itself, so this is a task only in the
+ * sense that the menu can reach it the same way as the others. It drops the
+ * carousel's own on-disk state, which the next opening makes again.
+ * `rebuild` is ignored: there is nothing an update would keep. */
+static void album_covers_request(bool rebuild)
+{
+    (void)rebuild;
+    pf_cfg.cache_version = CACHE_REBUILD;
+    remove(EMPTY_SLIDE);
+    pf_config_save();
+}
+
+struct bg_task album_covers_task =
+{
+    .name    = "album covers",
+    .request = album_covers_request,
+};
+
+/* Drawn directly inside pf_vp -- the same viewport the coverflow itself uses,
+ * not a separate panel -- overlaid near the top or bottom of that area, in
+ * pf_fg_color, so the now-playing dynamic colour fade applies here as it does
+ * everywhere else. Always center_index: there is no mid-scroll transition to
+ * track. The album name uses pf_bold_font, a genuinely separate bold font file
+ * where the theme configured one (global_settings.bold_font_file, settings.h)
+ * -- not a double-drawn faux bold, which does not look right. */
+static void draw_album_text(void)
+{
+    char album_and_year[MAX_PATH];
+    char albumtxt[TAGCACHE_BUFSZ], artisttxt[TAGCACHE_BUFSZ];
+    char album_fit[TEXT_FIT_BUF], artist_fit[TEXT_FIT_BUF];
+    const char *album_line, *artist_line;
+    struct pf_caption cap;
+    int albumtxt_x, albumtxt_y, artisttxt_x;
+    bool show_artist;
+
+    if (global_settings.album_covers_show_album_name == ALBUM_NAME_HIDE)
+        return;
+
+    show_artist = (global_settings.album_covers_show_album_name == ALBUM_AND_ARTIST_TOP
+                || global_settings.album_covers_show_album_name == ALBUM_AND_ARTIST_BOTTOM);
+
+    get_album_name(center_index, albumtxt, sizeof(albumtxt));
+    if (global_settings.album_covers_show_year == ALBUM_YEAR_BEFORE
+        && carousel_idx.album_index[center_index].year > 0)
+    {
+        snprintf(album_and_year, sizeof(album_and_year), "%d \xe2\x80\x93 %s",
+                  carousel_idx.album_index[center_index].year, albumtxt);
+    }
+    else if (global_settings.album_covers_show_year == ALBUM_YEAR_AFTER
+        && carousel_idx.album_index[center_index].year > 0)
+    {
+        snprintf(album_and_year, sizeof(album_and_year), "%s \xe2\x80\x93 %d",
+                  albumtxt, carousel_idx.album_index[center_index].year);
+    }
+    else
+        snprintf(album_and_year, sizeof(album_and_year), "%s", albumtxt);
+
+    struct viewport *saved_vp = carousel_text_begin();
+    lcd_set_foreground(pf_fg_color);
+
+    /* The year is the caption's other input: moving it changes the string
+     * without moving the selection. */
+    bool album_changed = carousel_caption_changed(
+                             center_index, global_settings.album_covers_show_year);
+
+    /* Switched to pf_bold_font (plain FONT_UI, a no-op, if no bold font is
+     * configured -- see its declaration) *before* set_scroll_line() below:
+     * that measures the string's pixel width against whatever font is
+     * currently active, to center/scroll it, so it has to see the album
+     * name's *actual* rendering font, not FONT_UI, or a bold font with a
+     * different average glyph width would end up mis-centered. */
+    lcd_setfont(pf_bold_font);
+    album_line = carousel_caption_fit(album_and_year, album_fit,
+                                      sizeof(album_fit));
+    if (album_changed)
+        set_scroll_line(album_line, PF_SCROLL_ALBUM);
+
+    /* The engine measures both fonts and centres the block for us, so top and
+     * bottom captions need no separate arithmetic here. */
+    carousel_caption_layout(show_artist, &cap);
+    albumtxt_y = cap.y1;
+
+    albumtxt_x = get_scroll_line_offset(PF_SCROLL_ALBUM);
+
+    if (show_artist)
+    {
+        if (carousel_idx.album_index[center_index].seek
+            != carousel_idx.album_untagged_seek)
+            lcd_putsxy(albumtxt_x, albumtxt_y, album_line);
+        /* Restored before the artist line: render_all_slides()/the FPS
+         * overlay/etc all assume pf_vp's font is the real UI font, and the
+         * artist name itself is never bold. screens[SCREEN_MAIN].getuifont(),
+         * not the FONT_UI constant -- see init()'s comment on pf_bold_font. */
+        lcd_setfont(screens[SCREEN_MAIN].getuifont());
+
+        get_album_artist(center_index, artisttxt, sizeof(artisttxt));
+        artist_line = carousel_caption_fit(artisttxt, artist_fit,
+                                           sizeof(artist_fit));
+        if (album_changed)
+            set_scroll_line(artist_line, PF_SCROLL_ARTIST);
+        artisttxt_x = get_scroll_line_offset(PF_SCROLL_ARTIST);
+        lcd_putsxy(artisttxt_x, cap.y2, artist_line);
+    }
+    else
+    {
+        lcd_putsxy(albumtxt_x, albumtxt_y, album_line);
+        lcd_setfont(screens[SCREEN_MAIN].getuifont());
+    }
+    carousel_text_end(saved_vp);
+}
+
+/* Rebuild the album carousel in place (after a settings change or cache
+ * rebuild), restoring the same album across the rebuild by its seeks. Only the
+ * album model reaches this (via album_on_menu). */
+static bool reinit(void)
+{
+    long album_seek, artist_seek;
+    int32_t commitid = carousel_idx.commitid;
+    uint32_t generation = carousel_idx.generation;
+
+    carousel_settle();
+
+    album_seek = carousel_idx.album_index[center_index].seek;
+    artist_seek = carousel_idx.album_index[center_index].artist_seek;
+
+    if (carousel_reinit())
+    {
+        /* The seeks name the same album only within one commit */
+        if (carousel_idx.commitid == commitid
+            && carousel_idx.generation == generation)
+            reselect(album_seek, artist_seek); /* splash if not found */
+        else
+            set_initial_slide(NULL);
+        return true;
+    }
+    return false;
+}
+
+/* carousel_model.enter for the album model: either drill into the selected
+ * album's track list or play it, per "On album select". Identifies the album by
+ * its own tagcache seek, not by name -- browser_db.c and db_summary.c both
+ * filter directly on this, so there's no name/sort matching involved (the
+ * earlier, much more fragile design that this replaced).
+ *
+ * Playing does not happen here. It needs the app buffer to put the album in
+ * order, and this screen is still holding a claim on it -- so the album is
+ * recorded and album_covers() plays it once carousel_run() has returned. */
+static int album_enter(int index)
+{
+    char album[TAGCACHE_BUFSZ];
+    long album_seek = carousel_idx.album_index[index].seek;
+
+    pf_cfg.last_album = index;
+
+    if (global_settings.album_covers_on_select == ON_SELECT_PLAY_ALBUM)
+    {
+        db_summary_play_album_on_exit(&carousel_idx.album_index[index]);
+        return CAROUSEL_PLAY_ALBUM;
+    }
+
+    /* The drill-in only. The token says "the track list on screen is this
+     * album's, and backing out of it comes straight back here", which playing
+     * does not: that leaves for the WPS with no track list to return from, and
+     * a token left armed there is honoured by whichever carousel open comes
+     * next -- landing on this album however long afterwards, and whatever is
+     * playing by then. album_covers_cancel_resume() covers the track list
+     * being left any other way. */
+    pf_resume_album_index = index;
+    pf_resume_last_album = true;
+
+    browser_db_enter_artist_album_tracks_on_next_load(album_seek,
+        carousel_idx.album_index[index].artist_seek,
+        get_album_name(index, album, sizeof(album)));
+    return GO_TO_ALBUM_COVERS_TRACKS;
+}
+
+/* Open the shared Carousel settings menu (the same one under General Settings)
+ * over a running carousel, and hand back do_menu()'s raw result. Both models'
+ * on_menu hooks go through this; what differs is only what each does with the
+ * settings afterwards, so that part stays with the model.
+ *
+ * Exported (album_covers.h) so artist_portraits.c gets the same menu without
+ * duplicating the theme/activity plumbing. */
+int carousel_settings_menu(void)
+{
+    int selected = 0;
+    int ret;
+
+    FOR_NB_SCREENS(i)
+        viewportmanager_theme_enable(i, true, NULL);
+    /* do_menu() only auto-switches to a menu-styling activity for
+     * ACTIVITY_PLUGIN; the carousel runs as ACTIVITY_ALBUMCOVERS, which the
+     * theme's SBS likewise excludes from menu chrome -- switch it ourselves so
+     * the menu is themed the same as it is from Settings. */
+    push_current_activity(ACTIVITY_CONTEXTMENU);
+    ret = do_menu(&album_covers_menu, &selected, NULL, false);
+    pop_current_activity();
+    FOR_NB_SCREENS(i)
+        viewportmanager_theme_undo(i, false);
+
+    return ret;
+}
+
+/* carousel_model.on_menu: open the shared Carousel settings menu and apply
+ * whatever changed on the way out. Returns a GO_TO_* to exit the carousel, or a
+ * CAROUSEL_MENU_* sentinel to stay (the engine loop restores the display).
+ *
+ * (The old hand-rolled menu's navigation items are gone: Go-To-WPS is the Play
+ * button, and Go-To-Last-Album was dropped.) */
+static int album_on_menu(void)
+{
+    /* Snapshot the settings whose change needs more than a cheap layout redraw. */
+    int old_sort       = carousel_album_order();
+    bool old_articles  = carousel_skips_articles();
+    int old_show_name  = global_settings.album_covers_show_album_name;
+    int old_cache_ver  = pf_cfg.cache_version;
+    bool old_statusbar = global_settings.album_covers_statusbar;
+    int old_filter[CAROUSEL_FILTER_SLOTS];
+    char old_chain[CAROUSEL_FILTER_MAX];
+
+    memcpy(old_filter, global_settings.album_covers_filter, sizeof(old_filter));
+    strmemccpy(old_chain, global_settings.album_covers_filter_chain,
+               sizeof(old_chain));
+
+    if (carousel_settings_menu() == MENU_ATTACHED_USB)
+        return GO_TO_ROOT;
+
+    /* A cache rebuild/update (those items bump cache_version), a caption-layout
+     * change or a status-bar change needs a full rebuild -- init() recomputes
+     * the text margin and the viewport and, when the cache was invalidated,
+     * regenerates the index. */
+    if (pf_cfg.cache_version != old_cache_ver
+        || global_settings.album_covers_show_album_name != old_show_name
+        || global_settings.album_covers_statusbar != old_statusbar)
+    {
+        if (!reinit())
+            return GO_TO_PREVIOUS;
+    }
+
+    /* A sort-order change must be applied explicitly: reinit()'s normal path
+     * reloads the cached index in its saved order, so it wouldn't re-sort. */
+    if (carousel_album_order() != old_sort
+        || carousel_skips_articles() != old_articles)
+        sort_albums(carousel_album_order(), true);
+
+    /* A treatment reaches a slide only as it is loaded, so the ones already
+     * decoded have to go -- otherwise the new look arrives a screen at a time
+     * as the user scrolls past them. Both halves are compared: the written-out
+     * chain overrides the three slots, so either changing changes the picture.
+     */
+    if (memcmp(old_filter, global_settings.album_covers_filter,
+               sizeof(old_filter))
+        || strcmp(old_chain, global_settings.album_covers_filter_chain))
+        carousel_drop_slides();
+
+    /* Re-apply the live geometry settings (zoom / margins / tilt). Cheap and
+     * keeps the current slide; harmless after the above. */
+    carousel_refresh();
+    return CAROUSEL_MENU_RELOADED;
+}
+
+/* carousel_model.prepare: after init(), mark this cache format as current so
+ * create_empty_slide()'s force-regenerate (gated on cache_version) only fires
+ * on the first launch following a format change, not every launch. */
+static void album_prepare(void)
+{
+    if (pf_cfg.cache_version != CACHE_VERSION)
+    {
+        pf_cfg.cache_version = CACHE_VERSION;
+        pf_config_save();
+    }
+}
+
+/* ---- a cover's context menu --------------------------------------------- */
+
+/* The album the menu is about, a seek of -1 standing for an artist's every
+ * album. Copied: the carousel's index goes when the carousel does. */
+static struct album_data cover_album;
+static char cover_name[TAGCACHE_BUFSZ + 1];
+
+static bool cover_insert_sink(const char *path, void *data)
+{
+    return playlist_insert_context_add(data, path) >= 0;
+}
+
+static bool cover_insert(int position, bool queue, bool create_new)
+{
+    struct playlist_insert_context ctx;
+    int added;
+
+    (void)create_new;
+    if (playlist_insert_context_create(NULL, &ctx, position, queue, false) < 0)
+    {
+        playlist_insert_context_release(&ctx);
+        return false;
+    }
+    added = db_summary_album_tracks(&cover_album, cover_insert_sink, &ctx);
+    playlist_insert_context_release(&ctx);
+    return added > 0;
+}
+
+static bool cover_write_sink(const char *path, void *data)
+{
+    return fdprintf(*(int *)data, "%s\n", path) > 0;
+}
+
+static int cover_write(const char *playlist, bool new_playlist)
+{
+    int fd = new_playlist ? open_utf8(playlist, O_CREAT | O_WRONLY | O_TRUNC)
+                          : open(playlist, O_CREAT | O_WRONLY | O_APPEND, 0666);
+    int n;
+
+    if (fd < 0)
+        return -1;
+    n = db_summary_album_tracks(&cover_album, cover_write_sink, &fd);
+    close(fd);
+    return n > 0 ? 0 : -1;
+}
+
+static int cover_go_to_artist(void)
+{
+    char name[TAGCACHE_BUFSZ];
+
+    if (!tagcache_seek_string(tag_albumartist, cover_album.artist_seek,
+                              name, sizeof(name)))
+        name[0] = '\0';
+    browser_db_enter_artist_albums_on_next_load(cover_album.artist_seek, name);
+    return ONPLAY_GO_TO_LIBRARY;
+}
+
+void carousel_cover_arm(const struct album_data *album, const char *name)
+{
+    cover_album = *album;
+    snprintf(cover_name, sizeof(cover_name), "/%s", name);
+}
+
+int carousel_cover_menu(void)
+{
+    static const struct context_menu_row rows[] = {
+        { LANG_GO_TO_ARTIST, cover_go_to_artist, false },
+    };
+
+    /* An artist's own cover opens their albums already */
+    switch (context_menu_show_item(cover_name, ATTR_DIRECTORY, false, false,
+                                   cover_insert, cover_write, rows,
+                                   cover_album.seek >= 0 ? 1 : 0))
+    {
+        case ONPLAY_START_PLAY:
+            return GO_TO_WPS;
+        case ONPLAY_MAINMENU:
+            return GO_TO_ROOT;
+        case ONPLAY_GO_TO_LIBRARY:
+            return GO_TO_ALBUM_COVERS_TRACKS;
+        default:
+            return GO_TO_PREVIOUS;
+    }
+}
+
+/* carousel_model.on_context for the album model: the menu runs once the
+ * carousel is down, and opens it again on this album after */
+static int album_on_context(int index)
+{
+    char album[TAGCACHE_BUFSZ];
+
+    pf_cfg.last_album = index;
+    pf_resume_album_index = index;
+    pf_resume_last_album = true;
+    carousel_cover_arm(&carousel_idx.album_index[index],
+                       get_album_name(index, album, sizeof(album)));
+    return CAROUSEL_CONTEXT;
+}
+
+void album_covers_cancel_resume(void)
+{
+    pf_resume_last_album = false;
+}
+
+int album_covers(const char *selected_file)
+{
+    int ret;
+
+    while (1)
+    {
+        ret = carousel_run(&album_model, selected_file);
+
+        /* "On album select" = Play album. Deliberately here and not in
+         * album_enter(): carousel_run()'s cleanup() has released the app
+         * buffer by now, and putting the album in track order needs it. Doing
+         * it here rather than in root_menu.c also means every way into this
+         * screen gets it -- the WPS select action and the playlist viewer
+         * call this directly, and would not know what to do with a sentinel
+         * escaping to them. The context menu is here for the same reason. */
+        if (ret == CAROUSEL_PLAY_ALBUM)
+            ret = db_summary_play_pending() > 0 ? GO_TO_WPS : GO_TO_PREVIOUS;
+        if (ret != CAROUSEL_CONTEXT)
+            break;
+
+        ret = carousel_cover_menu();
+        if (ret != GO_TO_PREVIOUS)
+        {
+            /* Back from Go to Artist's albums comes back to this album */
+            if (ret != GO_TO_ALBUM_COVERS_TRACKS)
+                album_covers_cancel_resume();
+            break;
+        }
+        selected_file = NULL;
+    }
+
+    return ret;
+}

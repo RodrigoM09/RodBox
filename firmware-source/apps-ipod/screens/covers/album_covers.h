@@ -1,0 +1,120 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * Interface to album_covers.c and the album-name display setting values.
+ ****************************************************************************/
+#ifndef _ALBUM_COVERS_H_
+#define _ALBUM_COVERS_H_
+
+#include "system/bg_task.h"
+
+/* Values for global_settings.album_covers_show_album_name */
+enum show_album_name_values {
+    ALBUM_NAME_HIDE = 0,
+    ALBUM_NAME_BOTTOM,
+    ALBUM_NAME_TOP,
+    ALBUM_AND_ARTIST_TOP,
+    ALBUM_AND_ARTIST_BOTTOM
+};
+
+/* Values for global_settings.album_covers_view_mode: how the carousel lays its
+ * covers out. 3D is the tilted cover flow; flat lays them face-on in two piles
+ * against the screen edges, the current one on top in the middle. */
+enum carousel_view_mode_values {
+    CAROUSEL_VIEW_3D = 0,
+    CAROUSEL_VIEW_FLAT
+};
+
+/* Values for global_settings.album_covers_on_select */
+enum on_album_select_values {
+    ON_SELECT_SHOW_TRACKS = 0,
+    ON_SELECT_PLAY_ALBUM
+};
+
+/* Values for global_settings.album_covers_sort_albums_by: the database
+ * browser's DB_SORT_ALBUMS_* choices, in the same order. */
+enum sort_albums_by_values {
+    SORT_BY_NAME = 0,
+    SORT_BY_YEAR,
+    SORT_BY_YEAR_DESC,
+    SORT_BY_ARTIST_AND_NAME,
+    SORT_BY_ARTIST_AND_YEAR,
+    SORT_BY_ARTIST_AND_YEAR_DESC,
+
+    SORT_VALUES_SIZE
+};
+
+/* Values for global_settings.album_covers_sort_artists_by. Ordering by plays
+ * needs figures the artist list does not otherwise carry, so it costs a pass
+ * over the database when the carousel opens -- which is why it is opt-in
+ * rather than simply offered as another order. */
+enum sort_artists_by_values {
+    SORT_ARTISTS_BY_NAME = 0,
+    SORT_ARTISTS_BY_PLAYS,
+};
+
+/* Values for global_settings.album_covers_year_sort_order, which is read only
+ * to carry an old "descending" into the sort list above. */
+enum year_sort_order_values {
+    ASCENDING = 0,
+    DESCENDING
+};
+
+/* Values for global_settings.album_covers_background: which of the theme's two
+ * colours fills the carousel, the other drawing the captions. Both resolve
+ * through dynamic colours. A custom colour does not, and its captions are
+ * black or white, whichever reads. */
+enum carousel_background_values {
+    CAROUSEL_BG_FOREGROUND = 0,  /* the status bar's colour */
+    CAROUSEL_BG_BACKGROUND,      /* the same background as every other screen */
+    CAROUSEL_BG_CUSTOM           /* album_covers_custom_color */
+};
+
+/* selected_file: jump to this file's album on open; NULL for the normal entry
+ * paths (main menu, WPS shortcuts) -- falls back to the currently playing
+ * track's album, or wherever was last viewed. */
+int album_covers(const char *selected_file);
+
+/* Drop the "come back to the album whose track list you just opened" signal
+ * album_enter() arms. For whoever ends that track list somewhere other than
+ * back at the carousel: the signal outranks the playing track on the next
+ * open, so left standing it lands the carousel on a stale album. */
+void album_covers_cancel_resume(void);
+
+/* The same carousel over the album-artist list, showing artist photos
+ * (<artist>/folder.jpg). Selecting an artist opens that album-artist's album
+ * listing in the database browser. selected_file is currently unused (always
+ * starts at the first artist). */
+int artist_portraits(const char *selected_file);
+
+/* Opens the shared Carousel settings menu over a running carousel (theme and
+ * activity switched so it is styled like the same menu reached from Settings),
+ * and returns do_menu()'s result -- MENU_ATTACHED_USB included, which the
+ * caller must handle. Applying whatever changed is the caller's job, since the
+ * album and artist models care about different settings. */
+int carousel_settings_menu(void);
+
+/* A cover's context menu, for both carousels. carousel_cover_arm() records
+ * the album -- or, with a seek of -1, the album artist -- while the carousel
+ * is up; carousel_cover_menu() shows the menu once carousel_run() has
+ * returned CAROUSEL_CONTEXT, and answers a GO_TO_* to leave for, or
+ * GO_TO_PREVIOUS to open the carousel again. */
+struct album_data;
+void carousel_cover_arm(const struct album_data *album, const char *name);
+int carousel_cover_menu(void);
+
+/* The orders the carousels sort by: their own settings, or under Sort Same as
+ * Music the Music lists' -- All Albums' order for the albums. */
+int carousel_album_order(void);         /* SORT_BY_* */
+int carousel_artist_order(void);        /* SORT_ARTISTS_BY_* */
+bool carousel_skips_articles(void);
+/* 'name' past a leading article when carousel_skips_articles() */
+const char *carousel_sort_name(const char *name);
+
+/* The carousel's own cached state, for the standard triggers.
+ *
+ * bg_task_rebuild() forces it to be built again the next time Album covers
+ * opens; bg_task_update() fills in what is missing instead. */
+extern struct bg_task album_covers_task;
+
+#endif

@@ -35,6 +35,7 @@
 #include "usb_drv.h"
 #include "usb_ch9.h"
 #include "usb_core.h"
+#include "usb_log.h"
 
 /* Define LOGF_ENABLE to enable logf output in this file */
 /*#define LOGF_ENABLE*/
@@ -692,6 +693,17 @@ static void usb_dw_reset_endpoints(void)
 #endif
 }
 
+/* Isochronous transfers logged per endpoint since it was set up: the first
+ * few starts, and errors, each up to ISO_LOG_MAX. */
+#define ISO_LOG_MAX 8
+static uint8_t iso_starts_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
+static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
+
+static int usb_dw_log_ep(int epnum, enum usb_dw_epdir epdir)
+{
+    return epnum | (epdir == USB_DW_EPDIR_IN ? USB_DIR_IN : 0);
+}
+
 static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
                            void* buf, uint32_t size)
 {
@@ -755,6 +767,16 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
         else
             DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD1PIDOF;
+
+        /* The raw interrupt status carries the incomplete-isochronous bits,
+         * which are not enabled as interrupts. */
+        if (iso_starts_logged[epnum][epdir] < ISO_LOG_MAX)
+        {
+            iso_starts_logged[epnum][epdir]++;
+            usb_log(USB_LOG_ISO_XFER, usb_dw_log_ep(epnum, epdir),
+                    usb_drv_get_frame_number(), DWC_EPCTL(epnum, epdir),
+                    DWC_GINTSTS);
+        }
     }
     else
     {
@@ -886,6 +908,14 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
     dw_ep->status = 0;
 
   complete:
+    if (dw_ep->status != 0 && epnum != 0 &&
+        ((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS &&
+        iso_errors_logged[epnum][epdir] < ISO_LOG_MAX)
+    {
+        iso_errors_logged[epnum][epdir]++;
+        usb_log(USB_LOG_ISO_ERROR, usb_dw_log_ep(epnum, epdir), 0,
+                dw_ep->status, transferred);
+    }
     dw_ep->busy = false;
     semaphore_release(&dw_ep->complete);
 
@@ -1363,6 +1393,19 @@ void usb_drv_cancel_all_transfers()
     usb_dw_target_enable_irq();
 }
 
+/* Drops a queued transfer without completing it, as the ARC's ENDPTFLUSH
+ * does. Not for use from the USB interrupt. */
+void usb_drv_reset_endpoint(int endpoint, bool send)
+{
+    int epnum = EP_NUM(endpoint);
+    enum usb_dw_epdir epdir = send ? USB_DW_EPDIR_IN : USB_DW_EPDIR_OUT;
+
+    usb_dw_target_disable_irq();
+    if (usb_dw_get_ep(epnum, epdir)->busy)
+        usb_dw_flush_endpoint(epnum, epdir);
+    usb_dw_target_enable_irq();
+}
+
 bool usb_drv_stalled(int endpoint, bool in)
 {
     return usb_dw_get_stall(EP_NUM(endpoint),
@@ -1392,9 +1435,832 @@ void usb_attach(void)
 {
 }
 
+static struct usb_drv_hw_info hw_info;
+
+const struct usb_drv_hw_info *usb_drv_get_hw_info(void)
+{
+    return &hw_info;
+}
+
+/* GHWCFG2 bits 2:0 are the core's OTG mode: 0-2 are OTG (either role),
+ * 3-4 device only, 5-6 host only. Bits 17:14 are host channels - 1. */
+static void usb_dw_read_hw_info(void)
+{
+    uint32_t mode;
+
+    hw_info.regs[0].name = "GSNPSID";
+    hw_info.regs[0].val = DWC_GSNPSID;
+    hw_info.regs[1].name = "GHWCFG2";
+    hw_info.regs[1].val = DWC_GHWCFG2;
+    hw_info.regs[2].name = "GHWCFG3";
+    hw_info.regs[2].val = DWC_GHWCFG3;
+    hw_info.regs[3].name = "GHWCFG4";
+    hw_info.regs[3].val = DWC_GHWCFG4;
+    mode = hw_info.regs[1].val & 7;
+    hw_info.host_capable = mode <= 2 || mode == 5 || mode == 6;
+    hw_info.host_units = ((hw_info.regs[1].val >> 14) & 0xf) + 1;
+    hw_info.nregs = 4;
+}
+
 void usb_drv_init(void)
 {
     usb_dw_init();
+    usb_dw_read_hw_info();
+}
+
+/* Host probe. HPRT's change bits clear when written as 1, and so does its
+ * enable bit, so every write masks all four. Interrupts stay off: the
+ * device-mode handler must never see a host-mode core. */
+#define HPRT_CONN_STS   (1<<0)
+#define HPRT_ENA        (1<<2)
+#define HPRT_RST        (1<<8)
+#define HPRT_PWR        (1<<12)
+#define HPRT_WRITE_MASK ((1<<1)|(1<<2)|(1<<3)|(1<<5))
+#define GOTGCTL_SESVLD  ((1<<18)|(1<<19))
+
+static bool host_active;
+static bool host_reset_done;
+static int host_resets;
+/* Held by whoever drives channel 0 or the port, as these may sleep and the
+ * USB, UI and audio threads all reach them; recursive, as the poll
+ * enumerates through usb_drv_host_control() */
+static struct mutex host_mtx;
+static bool host_mtx_ready;
+
+/* One wait between reads of the core: 100 us for the first millisecond,
+ * which is all a transfer usually takes, then a tick at a time, so a slow
+ * or refusing device lets the other threads run */
+static void host_wait(int polls)
+{
+    if (polls < 10)
+        udelay(100);
+    else
+        sleep(1);
+}
+
+/* Host channel registers */
+#define HCCHAR_MPS(x)       (x)
+#define HCCHAR_EPNUM(x)     ((x) << 11)
+#define HCCHAR_EPDIR_IN     (1 << 15)
+#define HCCHAR_EPTYPE(x)    ((x) << 18)     /* 0 control, 1 iso */
+#define HCCHAR_MC(x)        ((x) << 20)
+#define HCCHAR_DEVADDR(x)   ((x) << 22)
+#define HCCHAR_ODDFRM       (1 << 29)
+#define HCCHAR_CHDIS        (1 << 30)
+#define HCCHAR_CHENA        (1u << 31)
+#define HCTSIZ_PKTCNT(x)    ((x) << 19)
+#define HCTSIZ_PKTS_LEFT(v) (((v) >> 19) & 0x3ff)
+#define HCTSIZ_PID(x)       ((x) << 29)
+#define HCTSIZ_DOPNG        (1u << 31)
+#define PID_DATA0           0
+#define PID_DATA1           2
+#define PID_SETUP           3
+#define HCSPLT_PRTADDR(x)   (x)
+#define HCSPLT_HUBADDR(x)   ((x) << 7)
+#define HCSPLT_MID          (0 << 14)
+#define HCSPLT_END          (1 << 14)
+#define HCSPLT_BEGIN        (2 << 14)
+#define HCSPLT_ALL          (3 << 14)
+#define HCSPLT_COMPSPLT     (1 << 16)
+#define HCSPLT_SPLTENA      (1u << 31)
+#define HCINT_XFERC         (1 << 0)
+#define HCINT_CHH           (1 << 1)
+#define HCINT_NAK           (1 << 4)
+#define HCINT_ACK           (1 << 5)
+#define HCINT_NYET          (1 << 6)
+#define HFNUM_UFRAMES       0x3fff
+#define HCINT_ALL           0x7ff
+/* AHB error, STALL, transaction, babble, frame overrun, data toggle */
+#define HCINT_ERRORS        ((1 << 2) | (1 << 3) | (1 << 7) | (1 << 8) | \
+                             (1 << 9) | (1 << 10))
+
+/* Host-mode FIFOs, in words, from the core's 0x820 */
+#define HOST_RXFIFO         0x300
+#define HOST_NPTXFIFO       0x100
+#define HOST_PTXFIFO        0x200
+
+/* Everything the core's DMA touches. The CPU reaches it only through its
+ * uncached alias; the core is given the plain address, which is physical.
+ * The type's alignment pads it to whole cache lines. */
+struct host_dw_dma {
+    struct usb_ctrlrequest setup;
+    uint8_t pad[24];
+    uint8_t data[1024];
+} __attribute__((aligned(32)));
+
+static struct host_dw_dma host_dw_mem;
+static struct host_dw_dma *hdw;
+static uint32_t host_last_status;
+static struct usb_drv_host_route host_routes[USB_DRV_HOST_ADDRS];
+
+void usb_drv_host_set_route(int addr, const struct usb_drv_host_route *r)
+{
+    if (addr >= 0 && addr < USB_DRV_HOST_ADDRS)
+        host_routes[addr] = *r;
+}
+
+static const struct usb_drv_host_route *host_route(int addr)
+{
+    return &host_routes[addr >= 0 && addr < USB_DRV_HOST_ADDRS ? addr : 0];
+}
+
+/* Start splits to the device's port on the hub r names */
+static uint32_t host_split_bits(const struct usb_drv_host_route *r)
+{
+    return HCSPLT_SPLTENA | HCSPLT_HUBADDR(r->tt_hub) |
+           HCSPLT_PRTADDR(r->tt_port);
+}
+
+bool usb_drv_host_high_speed(void)
+{
+    return ((DWC_HPRT >> 17) & 3) == 0;
+}
+
+#define HOST_PHYS(p) \
+    USB_DW_PHYSADDR((uint32_t)&host_dw_mem + \
+                    ((uint32_t)(p) - (uint32_t)hdw))
+
+uint32_t usb_drv_host_last_status(void)
+{
+    return host_last_status;
+}
+
+/* One transaction or transfer on channel 0, waited for until the channel
+ * halts. Returns its interrupt bits, with bit 31 set if it never halted, in
+ * which case the channel has been disabled. */
+static uint32_t host_run(int addr, int mps, bool in, uint32_t hcsplt,
+                         uint32_t hctsiz, void *buf)
+{
+    uint32_t hcint;
+    long end = current_tick + HZ / 2;
+
+    DWC_HCINT(0) = HCINT_ALL;
+    DWC_HCSPLT(0) = hcsplt;
+    DWC_HCTSIZ(0) = hctsiz;
+    DWC_HCDMA(0) = HOST_PHYS(buf);
+    DWC_HCCHAR(0) = HCCHAR_MPS(mps) | HCCHAR_EPNUM(0) |
+                    (in ? HCCHAR_EPDIR_IN : 0) | HCCHAR_EPTYPE(0) |
+                    HCCHAR_MC(1) | HCCHAR_DEVADDR(addr) | HCCHAR_CHENA;
+    for (int t = 0; ; t++)
+    {
+        hcint = DWC_HCINT(0);
+        if ((hcint & HCINT_CHH) || TIME_AFTER(current_tick, end))
+            break;
+        host_wait(t);
+    }
+    if (hcint & HCINT_CHH)
+        return hcint;
+    DWC_HCCHAR(0) |= HCCHAR_CHDIS | HCCHAR_CHENA;
+    for (int t = 0; t < 100 && !(DWC_HCINT(0) & HCINT_CHH); t++)
+        udelay(100);
+    return hcint | (1u << 31);
+}
+
+/* Until n microframes have begun, or 2 ms at most */
+static void host_wait_uframes(unsigned int n)
+{
+    unsigned int start = DWC_HFNUM & HFNUM_UFRAMES;
+
+    for (int t = 0; t < 200 &&
+         ((DWC_HFNUM - start) & HFNUM_UFRAMES) < n; t++)
+        udelay(10);
+}
+
+/* One stage of a control transfer to a full-speed device behind a
+ * high-speed hub, a packet at a time: a start split the hub acknowledges,
+ * then complete splits, answered NYET until the device's own answer is
+ * back. A complete split goes in a later microframe than its start split.
+ * The device's NAK sends the packet again from its start split, a frame
+ * later. The data toggle is kept here, as each packet is a transfer of its
+ * own. An OUT packet's complete split carries no data, so it is sized 0.
+ * NAKs are retried for a second: a Fosi DAC-Q4 behind a hub answers its
+ * first requests after a reset only after hundreds of milliseconds. */
+static int host_split_stage(int addr, const struct usb_drv_host_route *r,
+                            int pid, bool in, uint8_t *buf, int len)
+{
+    long naks_end = current_tick + HZ;
+    uint32_t hcint = 0;
+    int done = 0;
+
+    do
+    {
+        int bytes = in ? r->mps : MIN(r->mps, len - done);
+        bool complete = false;
+        long end = current_tick + HZ / 2;
+        int got;
+
+        for (int attempt = 0; ; attempt++)
+        {
+            if (complete)
+                host_wait_uframes(2);
+            hcint = host_run(addr, r->mps, in, host_split_bits(r) |
+                             HCSPLT_ALL | (complete ? HCSPLT_COMPSPLT : 0),
+                             (complete && !in ? 0 : bytes) |
+                             HCTSIZ_PKTCNT(1) | HCTSIZ_PID(pid),
+                             buf + done);
+            if (attempt < 16 || (hcint & (HCINT_ERRORS | (1u << 31))))
+                usb_log(USB_LOG_HOST_STAGE, addr, pid | in << 8 |
+                        (complete ? 0x400 : 0x200) |
+                        MIN(attempt, 15) << 12, hcint, DWC_HCTSIZ(0));
+            if (hcint & (HCINT_ERRORS | (1u << 31)))
+                goto fail;
+            if (complete && (hcint & (HCINT_XFERC | HCINT_ACK)))
+                break;
+            if (!complete && (hcint & HCINT_ACK))
+                complete = true;
+            else if (complete && (hcint & HCINT_NYET))
+            {
+                if (TIME_AFTER(current_tick, end))
+                    goto fail;
+            }
+            else if (hcint & HCINT_NAK)
+            {
+                complete = false;
+                if (TIME_AFTER(current_tick, naks_end))
+                    goto fail;
+                if (attempt < 32)
+                    host_wait_uframes(8);
+                else
+                    sleep(1);
+            }
+            else
+                goto fail;
+        }
+        got = in ? bytes - (int)(DWC_HCTSIZ(0) & 0x7ffff) : bytes;
+        done += got;
+        pid = pid == PID_DATA1 ? PID_DATA0 : PID_DATA1;
+        if (in && got < r->mps)
+            break;
+    } while (done < len);
+    return done;
+
+fail:
+    host_last_status = hcint;
+    return -1;
+}
+
+/* One stage of a control transfer on channel 0. The channel halts when the
+ * stage ends, one way or the other. XFERC says it ended well, and so does a
+ * halt with no packets left: a high-speed OUT answered NYET, "taken, not
+ * ready for more", halts without XFERC. A halt on NAK or NYET with packets
+ * still to go is sent again, pinging first if it is a high-speed OUT. An IN
+ * stage is sized in whole packets and a short one ends it, so buf must hold
+ * len rounded up to 64. Returns the bytes moved, or -1 with
+ * host_last_status the channel's interrupt bits (bit 31 set if it never
+ * halted). */
+static int host_stage(int addr, int pid, bool in, void *buf, int len)
+{
+    const struct usb_drv_host_route *r = host_route(addr);
+    const int mps = r->mps;
+    int pkts = len ? (len + mps - 1) / mps : 1;
+    int size = in ? pkts * mps : len;
+    uint32_t hcint = 0;
+    /* About a quarter of a second of NAKs: a DAC can refuse the rate's
+     * data stage for a while after its interface is selected */
+    long naks_end = current_tick + HZ / 4;
+
+    if (r->tt_hub)
+        return host_split_stage(addr, r, pid, in, buf, len);
+    for (int attempt = 0; ; attempt++)
+    {
+        /* PING is high speed only */
+        hcint = host_run(addr, mps, in, 0, size | HCTSIZ_PKTCNT(pkts) |
+                         HCTSIZ_PID(pid) | (attempt && !in && r->high_speed ?
+                                            HCTSIZ_DOPNG : 0), buf);
+        if (attempt < 2 || (hcint & (HCINT_XFERC | HCINT_ERRORS)) ||
+            (hcint & (1u << 31)))
+            usb_log(USB_LOG_HOST_STAGE, addr,
+                    pid | in << 8 | MIN(attempt, 15) << 12, hcint,
+                    DWC_HCTSIZ(0));
+        if (hcint & (1u << 31))
+        {
+            host_last_status = hcint;
+            return -1;
+        }
+        if ((hcint & HCINT_XFERC) ||
+            (!(hcint & HCINT_ERRORS) &&
+             HCTSIZ_PKTS_LEFT(DWC_HCTSIZ(0)) == 0))
+            return in ? size - (int)(DWC_HCTSIZ(0) & 0x7ffff) : len;
+        if ((hcint & HCINT_ERRORS) || TIME_AFTER(current_tick, naks_end))
+            break;
+        sleep(1);
+    }
+    host_last_status = hcint;
+    return -1;
+}
+
+static int host_control(int addr, int reqtype, int req, int value,
+                        int index, void *data, int len)
+{
+    bool in = reqtype & USB_DIR_IN;
+    int n = 0;
+
+    if (!host_active || len > (int)sizeof hdw->data)
+        return -1;
+    hdw->setup.bRequestType = reqtype;
+    hdw->setup.bRequest = req;
+    hdw->setup.wValue = value;
+    hdw->setup.wIndex = index;
+    hdw->setup.wLength = len;
+    if (!in && len)
+        memcpy(hdw->data, data, len);
+
+    if (host_stage(addr, PID_SETUP, false, &hdw->setup, 8) != 8)
+        return -1;
+    if (len)
+    {
+        n = host_stage(addr, PID_DATA1, in, hdw->data, len);
+        if (n < 0)
+            return -1;
+    }
+    /* The status stage runs opposite to the data stage, and IN if none */
+    if (host_stage(addr, PID_DATA1, !(len && in), hdw->data, 0) < 0)
+        return -1;
+    if (in && n > 0)
+        memcpy(data, hdw->data, MIN(n, len));
+    return MIN(n, len);
+}
+
+int usb_drv_host_control(int addr, int reqtype, int req, int value,
+                         int index, void *data, int len)
+{
+    int n = -1;
+
+    if (!host_active)
+        return -1;
+    mutex_lock(&host_mtx);
+    /* again under the lock: the USB thread may have stopped the core while
+     * this call waited */
+    if (host_active)
+        n = host_control(addr, reqtype, req, value, index, data, len);
+    mutex_unlock(&host_mtx);
+    return n;
+}
+
+/* The isochronous stream. This core in buffer DMA mode has no schedule of
+ * its own: a periodic channel carries one packet, in the next microframe
+ * whose parity its ODDFRM bit names, and must be set up again after. So the
+ * start-of-microframe interrupt sets up the next microframe's packet, one
+ * per service interval of the endpoint (every microframe, for the DACs that
+ * want one, as every desktop host sends), on two OUT channels that take the
+ * even and the odd microframes in turn. The interrupt is locked to the bus,
+ * so no microframe gets two packets or none. Feedback is read on a third
+ * channel at its endpoint's interval.
+ *
+ * A full-speed device behind a high-speed hub takes one packet a frame,
+ * sent to the hub's translator as start splits of at most 188 bytes, one a
+ * microframe from the frame's first, on the same two channels. Its feedback
+ * is not read: the stream runs at the nominal rate. */
+#define ISO_CH_FB       2
+#define ISO_BUF_BYTES   512
+#define HCINT_FRMOR     (1 << 9)
+#define SPLIT_BYTES     188
+
+static const int iso_ch_out[2] = { 1, 3 };  /* even, odd microframes */
+
+struct host_dw_iso_dma {
+    uint8_t buf[2][ISO_BUF_BYTES];
+    uint32_t fb[8];
+} __attribute__((aligned(32)));
+
+static struct host_dw_iso_dma host_dw_iso_mem;
+static struct host_dw_iso_dma *iso_dma;
+static struct usb_drv_host_iso iso_cfg;
+static struct usb_drv_host_iso_stats iso_stats;
+static uint32_t iso_acc;                /* samples owed, 16.16 */
+static uint32_t iso_fb_ceiling;         /* the most a packet carries, 16.16 */
+static bool iso_out_armed[2], iso_fb_armed;
+static bool iso_split;                  /* behind a hub's translator */
+static int split_bytes, split_off;      /* this frame's packet, and sent */
+static int split_buf;                   /* the buffer it is in */
+static int split_ready;                 /* the next frame's bytes, or -1 */
+
+#define ISO_PHYS(p) \
+    USB_DW_PHYSADDR((uint32_t)&host_dw_iso_mem + \
+                    ((uint32_t)(p) - (uint32_t)iso_dma))
+
+/* One packet in the next microframe of parity odd */
+static void iso_arm(int ch, int odd, bool in, int ep, int mps, void *buf,
+                    int bytes, uint32_t hcsplt)
+{
+    DWC_HCINT(ch) = HCINT_ALL;
+    DWC_HCSPLT(ch) = hcsplt;
+    DWC_HCTSIZ(ch) = bytes | HCTSIZ_PKTCNT(1) | HCTSIZ_PID(PID_DATA0);
+    DWC_HCDMA(ch) = ISO_PHYS(buf);
+    DWC_HCCHAR(ch) = HCCHAR_MPS(mps) | HCCHAR_EPNUM(ep) |
+                     (in ? HCCHAR_EPDIR_IN : 0) | HCCHAR_EPTYPE(1) |
+                     HCCHAR_MC(1) | HCCHAR_DEVADDR(iso_cfg.addr) |
+                     (odd ? HCCHAR_ODDFRM : 0) | HCCHAR_CHENA;
+}
+
+static void iso_halt(int ch)
+{
+    if (!(DWC_HCCHAR(ch) & HCCHAR_CHENA))
+        return;
+    DWC_HCCHAR(ch) |= HCCHAR_CHDIS | HCCHAR_CHENA;
+    for (int t = 0; t < 20 && !(DWC_HCINT(ch) & HCINT_CHH); t++)
+        udelay(100);
+}
+
+/* A feedback value is 16.16 samples per microframe. One more than an
+ * eighth away from nominal is taken as noise, not a rate, and one above what
+ * the packets carry is held at that, or the owed samples grow unbounded. */
+static void iso_take_feedback(uint32_t v)
+{
+    uint32_t nom = iso_cfg.nominal;
+
+    iso_stats.fb_raw = v;
+    if (v > nom - nom / 8 && v < nom + nom / 8)
+    {
+        iso_stats.feedback = MIN(v, iso_fb_ceiling);
+        iso_stats.fb_ok++;
+    }
+    else
+        iso_stats.fb_bad++;
+}
+
+static void iso_feedback(unsigned int next)
+{
+    uint32_t hcint;
+
+    if (iso_fb_armed)
+    {
+        if (DWC_HCCHAR(ISO_CH_FB) & HCCHAR_CHENA)
+            return;                     /* not answered yet */
+        iso_fb_armed = false;
+        hcint = DWC_HCINT(ISO_CH_FB);
+        if (hcint & HCINT_XFERC)
+        {
+            int got = iso_cfg.mps_fb - (int)(DWC_HCTSIZ(ISO_CH_FB) & 0x7ffff);
+            if (got >= 3)
+                iso_take_feedback(iso_dma->fb[0]);
+        }
+        else if (!(hcint & HCINT_FRMOR))
+            iso_stats.errors++;
+    }
+    if (next % iso_cfg.interval_fb == 0)
+    {
+        iso_dma->fb[0] = 0;
+        iso_arm(ISO_CH_FB, next & 1, true, iso_cfg.ep_fb & 0xf,
+                iso_cfg.mps_fb, iso_dma->fb, iso_cfg.mps_fb, 0);
+        iso_fb_armed = true;
+    }
+}
+
+/* Tick and USB interrupts. The tick is the one that notices: a port with
+ * nothing on it may raise no start-of-microframe interrupt at all. */
+static bool iso_check_lost(void)
+{
+    if (DWC_HPRT & HPRT_CONN_STS)
+        return false;
+    if (!iso_stats.lost)
+    {
+        iso_stats.lost = true;
+        if (iso_cfg.lost)
+            iso_cfg.lost();
+    }
+    return true;
+}
+
+static void iso_tick(void)
+{
+    iso_check_lost();
+}
+
+/* The next start split of this frame's packet. A split set going after its
+ * microframe has begun goes two later, behind the part after it, and the
+ * translator drops the packet without a word to the host. So the packet is
+ * filled at microframe 4 of the frame before, as the fill can wait on the
+ * mixer, and a part that still misses its microframe ends the packet there,
+ * counted as an underrun. */
+static void iso_split_sof(unsigned int next, int odd, int ch)
+{
+    int max, n, chunk;
+    uint32_t pos;
+
+    if ((next & 7) == 4)
+    {
+        if (iso_cfg.begin && !iso_cfg.begin())
+            return;
+        iso_acc += iso_stats.feedback;
+        max = MIN(iso_cfg.mps_out, ISO_BUF_BYTES) / iso_cfg.frame_bytes;
+        n = MIN((int)(iso_acc >> 16), max);
+        iso_acc -= (uint32_t)n << 16;
+        iso_cfg.fill(iso_dma->buf[!split_buf], n);
+        split_ready = n * iso_cfg.frame_bytes;
+        iso_stats.frames++;
+        if (iso_stats.frames % 1000 == 0)
+            usb_log(USB_LOG_HOST_ISO, 1, n, iso_stats.frames,
+                    iso_stats.underruns | iso_stats.errors << 16);
+        return;
+    }
+    if ((next & 7) == 0)
+    {
+        split_bytes = split_off = 0;
+        if (split_ready < 0)
+            return;
+        split_buf = !split_buf;
+        split_bytes = split_ready;
+        split_ready = -1;
+    }
+    else if (split_off >= split_bytes)
+        return;
+
+    chunk = MIN(SPLIT_BYTES, split_bytes - split_off);
+    pos = split_bytes <= SPLIT_BYTES ? HCSPLT_ALL :
+          split_off == 0 ? HCSPLT_BEGIN :
+          split_off + chunk == split_bytes ? HCSPLT_END : HCSPLT_MID;
+    iso_arm(ch, odd, false, iso_cfg.ep_out, iso_cfg.mps_out,
+            iso_dma->buf[split_buf] + split_off, chunk,
+            host_split_bits(host_route(iso_cfg.addr)) | pos);
+    iso_out_armed[odd] = true;
+    /* past the end even for an empty packet, so it goes once */
+    split_off += MAX(chunk, 1);
+    if (((DWC_HFNUM - next) & HFNUM_UFRAMES) < 8)
+    {
+        split_off = split_bytes;
+        iso_stats.underruns++;
+    }
+}
+
+/* USB interrupt, at the start of each microframe */
+static void iso_sof(void)
+{
+    unsigned int next = ((DWC_HFNUM & HFNUM_UFRAMES) + 1) & HFNUM_UFRAMES;
+    int odd = next & 1;
+    int ch = iso_ch_out[odd];
+    uint32_t hcint;
+    int max, n;
+
+    DWC_GINTSTS = SOF;
+    if (iso_check_lost())
+        return;
+    if (iso_cfg.ep_fb)
+        iso_feedback(next);
+
+    /* this channel carried the packet two microframes ago */
+    if (iso_out_armed[odd])
+    {
+        if (DWC_HCCHAR(ch) & HCCHAR_CHENA)
+        {
+            /* still not sent: skip a turn, and the rest of a split
+             * packet, whose parts must go in consecutive microframes. A
+             * split frame due to start now is dropped and counted; the
+             * next one is still filled. */
+            split_off = split_bytes;
+            if (iso_split && (next & 7) == 4)
+                iso_split_sof(next, odd, ch);
+            else if (iso_split && (next & 7) == 0 && split_ready >= 0)
+            {
+                split_ready = -1;
+                iso_stats.underruns++;
+            }
+            return;
+        }
+        iso_out_armed[odd] = false;
+        hcint = DWC_HCINT(ch);
+        if (iso_stats.frames < 8)
+            usb_log(USB_LOG_HOST_ISO, 0, odd, hcint, DWC_HCTSIZ(ch));
+        if (hcint & HCINT_FRMOR)
+            iso_stats.underruns++;      /* its microframe went empty */
+        /* a start split is answered ACK, by the hub */
+        else if (!(hcint & (HCINT_XFERC | HCINT_ACK)))
+            iso_stats.errors++;
+    }
+
+    if (iso_split)
+    {
+        iso_split_sof(next, odd, ch);
+        return;
+    }
+
+    /* owed even if this microframe is skipped: the next packet carries it */
+    iso_acc += iso_stats.feedback;
+    if (next % iso_cfg.interval_out != 0)
+        return;                         /* not the endpoint's microframe */
+    if (iso_cfg.begin && !iso_cfg.begin())
+        return;
+
+    max = MIN(iso_cfg.mps_out, ISO_BUF_BYTES) / iso_cfg.frame_bytes;
+    n = MIN((int)(iso_acc >> 16), max);
+    iso_acc -= (uint32_t)n << 16;
+
+    iso_cfg.fill(iso_dma->buf[odd], n);
+    iso_arm(ch, odd, false, iso_cfg.ep_out, iso_cfg.mps_out,
+            iso_dma->buf[odd], n * iso_cfg.frame_bytes, 0);
+    iso_out_armed[odd] = true;
+    iso_stats.frames++;
+    if (iso_stats.frames % 1000 == 0)
+        usb_log(USB_LOG_HOST_ISO, 1, n, iso_stats.frames,
+                iso_stats.underruns | iso_stats.errors << 16);
+}
+
+bool usb_drv_host_iso_start(const struct usb_drv_host_iso *iso)
+{
+    if (!host_active || iso_stats.running || iso->frame_bytes <= 0 ||
+        iso->interval_out < 1 || iso->interval_out > 8)
+        return false;
+
+    commit_discard_dcache_range(&host_dw_iso_mem, sizeof host_dw_iso_mem);
+    iso_dma = USB_DW_UNCACHEDADDR(&host_dw_iso_mem);
+    iso_cfg = *iso;
+    iso_split = host_route(iso->addr)->tt_hub != 0;
+    if (iso_split)
+        iso_cfg.ep_fb = 0;
+    if (iso_cfg.interval_fb < 1)
+        iso_cfg.interval_fb = 8;
+    /* A longer feedback packet is then babble, not a DMA past fb[] */
+    iso_cfg.mps_fb = MIN(iso->mps_fb, (int)sizeof iso_dma->fb);
+    memset(&iso_stats, 0, sizeof iso_stats);
+    iso_stats.feedback = iso->nominal;
+    iso_fb_ceiling = (uint32_t)(MIN(iso->mps_out, ISO_BUF_BYTES) /
+                                iso->frame_bytes << 16) / iso->interval_out;
+    iso_acc = 0;
+    iso_out_armed[0] = iso_out_armed[1] = iso_fb_armed = false;
+    split_bytes = split_off = split_buf = 0;
+    split_ready = -1;
+    iso_stats.running = true;
+    tick_add_task(iso_tick);
+
+    DWC_GINTSTS = SOF;
+    DWC_GINTMSK = SOF;
+    DWC_GAHBCFG |= GINT;
+    usb_dw_target_clear_irq();
+    usb_dw_target_enable_irq();
+    return true;
+}
+
+void usb_drv_host_iso_stop(void)
+{
+    if (!iso_stats.running)
+        return;
+    tick_remove_task(iso_tick);
+    usb_dw_target_disable_irq();
+    DWC_GAHBCFG &= ~GINT;
+    DWC_GINTMSK = 0;
+    iso_stats.running = false;
+    iso_halt(iso_ch_out[0]);
+    iso_halt(iso_ch_out[1]);
+    iso_halt(ISO_CH_FB);
+}
+
+void usb_drv_host_iso_set_nominal(uint32_t nominal)
+{
+    int oldlevel = disable_irq_save();
+    iso_cfg.nominal = nominal;
+    iso_stats.feedback = nominal;
+    restore_irq(oldlevel);
+}
+
+int usb_drv_host_iso_max_packet(bool high_speed, int interval_out)
+{
+    (void)high_speed;
+    (void)interval_out;
+    return ISO_BUF_BYTES;
+}
+
+void usb_drv_host_iso_get_stats(struct usb_drv_host_iso_stats *st)
+{
+    *st = iso_stats;
+}
+
+void usb_drv_host_start(void)
+{
+#ifndef USB_DW_TURNAROUND
+    int USB_DW_TURNAROUND =
+        (usb_dw_config.phytype == DWC_PHYTYPE_UTMI_16) ? 5 : 9;
+#endif
+    uint32_t gusbcfg = usb_dw_config.phytype | TRDT(USB_DW_TURNAROUND) |
+                       USB_DW_TOUTCAL;
+
+    if (!host_mtx_ready)
+    {
+        mutex_init(&host_mtx);
+        host_mtx_ready = true;
+    }
+    mutex_lock(&host_mtx);
+    usb_dw_target_disable_irq();
+    usb_dw_target_enable_clocks();
+    DWC_PCGCCTL = 0;
+
+    /* PHY type before the core reset, force-host after it */
+    DWC_GUSBCFG = gusbcfg;
+    udelay(100);
+    usb_dw_wait_for_ahb_idle();
+    DWC_GRSTCTL = CSRST;
+    while (DWC_GRSTCTL & CSRST);
+    usb_dw_wait_for_ahb_idle();
+    DWC_GUSBCFG = gusbcfg | FHMOD;
+    for (int i = 0; i < 100 && !(DWC_GINTSTS & CMOD); i++)
+        udelay(1000);
+
+    commit_discard_dcache_range(&host_dw_mem, sizeof host_dw_mem);
+    hdw = USB_DW_UNCACHEDADDR(&host_dw_mem);
+#ifdef HAVE_USB_HOST
+    usb_host_enum_clear();
+#endif
+
+    /* DMA on, interrupts off: everything is polled */
+    DWC_GAHBCFG = HBSTLEN(usb_dw_config.ahb_burst_len) | DMAEN;
+    DWC_GINTMSK = 0;
+    DWC_GRXFSIZ = HOST_RXFIFO;
+    DWC_TX0FSIZ = (HOST_NPTXFIFO << 16) | HOST_RXFIFO;
+    DWC_HPTXFSIZ = (HOST_PTXFIFO << 16) | (HOST_RXFIFO + HOST_NPTXFIFO);
+    usb_dw_flush_fifo(TXFFLSH | RXFFLSH, 0x10);
+    DWC_HCFG = 0;       /* 30/60 MHz PHY clock, high speed allowed */
+    DWC_HPRT = HPRT_PWR;
+
+    host_reset_done = false;
+    host_resets = 0;
+    host_active = true;
+    mutex_unlock(&host_mtx);
+}
+
+void usb_drv_host_stop(void)
+{
+    mutex_lock(&host_mtx);
+    usb_drv_host_iso_stop();
+    host_active = false;
+    DWC_HPRT = 0;
+    DWC_GUSBCFG &= ~FHMOD;
+    DWC_PCGCCTL = 1;
+    usb_dw_target_disable_clocks();
+    mutex_unlock(&host_mtx);
+}
+
+void usb_drv_host_poll(struct usb_drv_host_status *st)
+{
+    static const char * const speeds[] = { "high", "full", "low", "?" };
+    uint32_t hprt;
+
+    st->active = host_active;
+    if (!host_active)
+        return;
+    mutex_lock(&host_mtx);
+    st->active = host_active;
+    if (!host_active)
+    {
+        mutex_unlock(&host_mtx);
+        return;
+    }
+
+    hprt = DWC_HPRT;
+    if (!(hprt & HPRT_CONN_STS))
+    {
+        usb_drv_host_iso_stop();
+        host_reset_done = false;
+#ifdef HAVE_USB_HOST
+        usb_host_enum_clear();
+#endif
+    }
+    else if (!host_reset_done)
+    {
+        /* 100 ms connect debounce, then a 60 ms root-port reset, which
+         * this core leaves to software to end. A device that is not ready,
+         * or drops off the bus once while it starts, gets two more tries,
+         * each from a fresh reset. */
+        host_reset_done = true;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            host_resets++;
+            sleep(HZ / 10);
+            DWC_HPRT = (DWC_HPRT & ~HPRT_WRITE_MASK) | HPRT_RST;
+            sleep(HZ * 60 / 1000);
+            DWC_HPRT = DWC_HPRT & ~(HPRT_WRITE_MASK | HPRT_RST);
+            sleep(HZ / 50);
+            hprt = DWC_HPRT;
+            usb_log(USB_LOG_HOST_PORT, attempt, 0, hprt, DWC_HFIR);
+#ifdef HAVE_USB_HOST
+            if (hprt & HPRT_ENA)
+            {
+                usb_host_enumerate();
+                hprt = DWC_HPRT;
+                if (usb_host_get_enum()->result == 1)
+                    break;
+            }
+#else
+            break;
+#endif
+        }
+    }
+
+    st->host_mode = DWC_GINTSTS & CMOD;
+    st->vbus = DWC_GOTGCTL & GOTGCTL_SESVLD;
+    st->connected = hprt & HPRT_CONN_STS;
+    st->enabled = hprt & HPRT_ENA;
+    st->line = (hprt >> 10) & 3;
+    st->speed = st->enabled ? speeds[(hprt >> 17) & 3] : "-";
+    st->resets = host_resets;
+    st->regs[0].name = "HPRT";
+    st->regs[0].val = hprt;
+    st->regs[1].name = "GOTGCTL";
+    st->regs[1].val = DWC_GOTGCTL;
+    st->regs[2].name = "GINTSTS";
+    st->regs[2].val = DWC_GINTSTS;
+    st->regs[3].name = "GUSBCFG";
+    st->regs[3].val = DWC_GUSBCFG;
+    st->nregs = 4;
+    mutex_unlock(&host_mtx);
 }
 
 void usb_drv_exit(void)
@@ -1402,9 +2268,14 @@ void usb_drv_exit(void)
     usb_dw_exit();
 }
 
+/* While the host probe streams, the one interrupt taken is its
+ * start-of-microframe; the device-mode handler must never see a host core. */
 void INT_USB_FUNC(void)
 {
-    usb_dw_irq();
+    if (iso_stats.running)
+        iso_sof();
+    else
+        usb_dw_irq();
 }
 
 void usb_drv_ep_reset_alloc_ctx(struct usb_drv_ep_alloc_ctx* ctx)
@@ -1481,6 +2352,10 @@ void usb_drv_ep_init(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
     usb_dw_target_disable_irq();
     usb_dw_configure_ep(ctx, epnum, epdir, type, mps);
     usb_dw_target_enable_irq();
+
+    iso_starts_logged[epnum][epdir] = 0;
+    iso_errors_logged[epnum][epdir] = 0;
+    usb_log(USB_LOG_EP_INIT, ep, type, mps, DWC_EPCTL(epnum, epdir));
 
     dw_ep->active = true;
 }

@@ -35,9 +35,15 @@ struct Platform {
     struct IAPAllocResult            malloc_results[4]; /* allow up to 4 mallocs */
     struct IAPPlatformPendingControl pending_control;
     bool                             control_pending;
+    long                             pending_tick;
 
     int aa_slot;
 };
+
+void iap_platform_seek_tick(struct IAPContext* ctx);
+void iap_platform_seek_stop(struct IAPContext* ctx);
+/* Playback moves to the iAP sink, from the rates the sink offers */
+bool iap_platform_take_sink(void);
 
 /* helper functions */
 uint8_t _iap_convert_play_status(int rb_audio_status);
@@ -47,3 +53,7 @@ uint8_t _iap_convert_repeat_state(int rb_state);
 uint8_t _iap_convert_battery_level(int rb_battery_level);
 uint8_t _iap_convert_charge_status(enum charge_state_type rb_charge_state);
 void    _iap_convert_datetime(struct tm* rb_time, struct IAPDateTime* time);
+
+/* Answers a play held back once playback starts, or once the library has
+ * built the Queue; true while one is still held. Called every tick. */
+bool    iap_platform_control_waits(struct IAPContext* ctx);

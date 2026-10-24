@@ -1,0 +1,281 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * Runs the offline sound probe over one track and prints what it measured.
+ *
+ * The verification screen for track_decode.c and beat_probe.c, and the way
+ * to compare the offline reading against the live one: play a track, look at
+ * Debug > Beat analysis, then come here. The two analyse the same audio
+ * through the same hop machine and should report the same tempo.
+ *
+ * Playback is stopped before the decode, because only one codec may be
+ * loaded at a time.
+ ****************************************************************************/
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include "config.h"
+#include "core_alloc.h"
+#include "kernel.h"
+#include "lcd.h"
+#include "audio.h"
+#include "file.h"
+#include "metadata.h"
+#include "string-extra.h"
+#include "audio/beat_probe.h"
+#include "audio/track_decode.h"
+#include "database/path_key.h"
+#include "database/sound_index.h"
+#include "screens/system/probe_debug.h"
+#include "draw/screen_access.h"
+#include "draw/viewport.h"
+#include "widgets/list.h"
+#include "widgets/splash.h"
+#include "input/action.h"
+#include "api/misc.h"
+
+/* The window, as the library scan will take it: past the intro, and long
+ * enough to fill the tempo envelope and then hold. */
+#define PD_START_PCT     15
+#define PD_START_MIN_MS  5000
+#define PD_START_MAX_MS  30000
+/* The ceiling. A settled measurement stops well short of it -- the tempo
+ * envelope fills at 17.8s and that is what the stop waits for. */
+#define PD_WINDOW_MS     40000
+
+/* The codec's view of the file. Large enough that an ordinary frame read
+ * never straddles the end of it. */
+#define PD_WINDOW_BYTES  (256 * 1024)
+
+static unsigned long pd_last_draw;
+static unsigned long pd_analysed;
+static int pd_event;        /* System event pd_abort() took, or 0 */
+
+/* Called from inside the codec, often. Doubles as the progress display,
+ * since nothing else is running to draw one. */
+static bool pd_abort(void)
+{
+    int button;
+
+    if (TIME_AFTER(current_tick, pd_last_draw + HZ / 2))
+    {
+        char line[32];
+
+        pd_last_draw = current_tick;
+        snprintf(line, sizeof (line), "Analysing %ld.%lds",
+                 pd_analysed / 1000, (pd_analysed % 1000) / 100);
+        splash(0, line);
+    }
+
+    /* On the decode thread: a USB connect, power-off or reboot is noted and
+     * left to the screen, since its handler would run on the codec's stack. */
+    switch (button = get_action(CONTEXT_STD, TIMEOUT_NOBLOCK))
+    {
+        case ACTION_STD_CANCEL:
+            return true;
+        case SYS_USB_CONNECTED:
+        case SYS_POWEROFF:
+        case SYS_REBOOT:
+            pd_event = button;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void pd_sink(const void *ch1, const void *ch2, int count,
+                    const struct track_pcm *fmt, unsigned long track_ms)
+{
+    pd_analysed = track_ms;
+    beat_probe_sink(ch1, ch2, count, fmt, track_ms);
+}
+
+
+bool probe_debug_screen(void)
+{
+    struct simplelist_info info;
+    struct track_sound s;
+    struct mp3entry *id3;
+    char path[MAX_PATH];
+    char genre[64];
+    int year;
+    unsigned long start_ms, length_ms, analysed = 0;
+    long tick;
+    int handle, rc;
+
+    id3 = audio_current_track();
+    if (id3 == NULL || id3->path[0] == '\0')
+    {
+        splash(HZ * 2, "Play a track first");
+        return false;
+    }
+
+    /* The id3 belongs to playback and does not survive stopping it. */
+    strlcpy(path, id3->path, sizeof (path));
+    strlcpy(genre, id3->genre_string ? id3->genre_string : "", sizeof (genre));
+    year = id3->year;
+    length_ms = id3->length;
+
+    audio_stop();
+
+    start_ms = (length_ms / 100) * PD_START_PCT;
+    if (start_ms < PD_START_MIN_MS)
+        start_ms = PD_START_MIN_MS;
+    if (start_ms > PD_START_MAX_MS)
+        start_ms = PD_START_MAX_MS;
+
+    if (length_ms < start_ms + 5000)
+        start_ms = 0;
+
+    /* Immovable: track_decode.c holds the window's address for the whole
+     * decode. */
+    handle = core_alloc_ex(PD_WINDOW_BYTES, &buflib_ops_locked);
+    if (handle <= 0)
+    {
+        splash(HZ * 2, "No memory");
+        return false;
+    }
+
+    pd_last_draw = current_tick;
+    pd_analysed = 0;
+    pd_event = 0;
+    beat_probe_start();
+
+    /* Off for the decode: the theme's status bar would otherwise be drawn
+     * from pd_abort(), on the codec's stack. */
+    FOR_NB_SCREENS(i)
+        viewportmanager_theme_enable(i, false, NULL);
+    tick = current_tick;
+    rc = track_decode_run(path, start_ms, PD_WINDOW_MS,
+                          core_get_data(handle), PD_WINDOW_BYTES,
+                          pd_sink, beat_probe_settled, pd_abort,
+                          &analysed);
+    tick = current_tick - tick;
+    FOR_NB_SCREENS(i)
+        viewportmanager_theme_undo(i, true);
+
+    beat_probe_result(&s);
+    core_free(handle);
+
+    if (pd_event)
+    {
+        default_event_handler(pd_event);
+        return true;
+    }
+
+    simplelist_info_init(&info, "Sound probe", 0, NULL);
+    info.scroll_all = true;
+    simplelist_reset_lines();
+
+    simplelist_addline("rc %d  %ldms wall  %ldms audio", rc,
+                       tick * 1000 / HZ, analysed);
+    simplelist_addline("from %ldms  %dHz  %s", start_ms, s.samplerate,
+                       s.settled ? "settled" : "NOT settled");
+    simplelist_addline(" ");
+
+    if (s.period_ms > 0)
+    {
+        simplelist_addline("tempo %d bpm  (%dms)", 60000 / s.period_ms,
+                           s.period_ms);
+        simplelist_addline("conf %d  spread %dms", s.confidence,
+                           s.tempo_spread);
+    }
+    else
+    {
+        simplelist_addline("tempo: never locked");
+    }
+
+    simplelist_addline(" ");
+    simplelist_addline("loud %d.%d dB  crest %d.%d dB",
+                       s.loudness_db10 / 10,
+                       (s.loudness_db10 < 0 ? -s.loudness_db10 : s.loudness_db10) % 10,
+                       s.crest_db10 / 10, s.crest_db10 % 10);
+    simplelist_addline("width %d  spread %d", s.width, s.level_spread);
+    simplelist_addline(" ");
+    simplelist_addline("level  lo %d  mid %d  hi %d",
+                       s.level[BEAT_LOW], s.level[BEAT_MID],
+                       s.level[BEAT_HIGH]);
+    simplelist_addline("onsets lo %d.%d mid %d.%d hi %d.%d /s",
+                       s.rate10[BEAT_LOW] / 10, s.rate10[BEAT_LOW] % 10,
+                       s.rate10[BEAT_MID] / 10, s.rate10[BEAT_MID] % 10,
+                       s.rate10[BEAT_HIGH] / 10, s.rate10[BEAT_HIGH] % 10);
+    simplelist_addline("hit %d  peak %d", s.strength, s.peakiness);
+    {
+        static const char *nm[12] = { "C", "C#", "D", "D#", "E", "F",
+                                      "F#", "G", "G#", "A", "A#", "B" };
+
+        if (s.chroma.margin >= CHROMA_MARGIN_MIN)
+            simplelist_addline("key %s %s  margin %d", nm[s.chroma.key],
+                               s.chroma.minor ? "minor" : "major",
+                               s.chroma.margin);
+        else
+            simplelist_addline("key: ambiguous (margin %d)",
+                               s.chroma.margin);
+
+        simplelist_addline("clarity %d  chg %d  frames %d",
+                           s.chroma.clarity, s.chroma.change,
+                           s.chroma.frames);
+    }
+    simplelist_addline("windows %d", s.windows);
+
+    {
+        struct track_decode_stats st;
+
+        track_decode_get_stats(&st);
+        simplelist_addline(" ");
+        simplelist_addline("codec status %d", st.codec_status);
+        simplelist_addline("req %u  short %u  refill %u  seek %u",
+                           st.requests, st.short_answers, st.refills,
+                           st.seeks);
+        simplelist_addline("pos %lu of %lu", st.last_pos, st.file_len);
+        simplelist_addline("boost %d  cmds %u", st.boost, st.commands);
+    }
+
+    /* What the measurement becomes in a record, and what the index already
+     * says about this track. Both read-only: this screen writes nothing.
+     *
+     * The packing is the part worth seeing, because it is lossy -- the fields
+     * are narrowed and capped on the way in, and a reading that looks right
+     * above can still arrive at the index wrong.
+     *
+     * No byte comparison against the stored record is offered: it would need
+     * the file's mtime and size, which the scan supplies and this does not,
+     * so every track would report a difference in fields nothing measured. */
+    {
+        struct sound_record rec, have;
+        struct sound_index_reader rd;
+        uint64_t key = path_key(path);
+
+        sound_index_fill(&rec, key, 0, 0, sound_index_genre_key(genre),
+                         year, &s, rc);
+
+        simplelist_addline(" ");
+        simplelist_addline("record %d bytes  flags %02x",
+                           (int)sizeof (rec), rec.flags);
+        simplelist_addline("  %dms  %ddb  crest %d  yr %d  %ds",
+                           rec.period_ms, rec.loudness_db10 / 10,
+                           rec.crest_db, rec.year, rec.analysed_s);
+        simplelist_addline("  lvl %d/%d/%d  rate %d/%d/%d",
+                           rec.level[0], rec.level[1], rec.level[2],
+                           rec.rate10[0], rec.rate10[1], rec.rate10[2]);
+
+        if (sound_index_reader_open(&rd) == SOUND_OK)
+        {
+            if (sound_index_find(&rd, key, &have))
+                simplelist_addline("in index: %dms  %ddb  flags %02x",
+                                   have.period_ms, have.loudness_db10 / 10,
+                                   have.flags);
+            else
+                simplelist_addline("in index: this track is not in it");
+
+            sound_index_reader_close(&rd);
+        }
+        else
+        {
+            simplelist_addline("in index: there is no index");
+        }
+    }
+
+    return simplelist_show_list(&info);
+}

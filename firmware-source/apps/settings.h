@@ -953,9 +953,6 @@ struct user_settings
     unsigned char rwrs_file[MAX_FILENAME+1];  /* last remote-wrs */
 #endif
 #endif
-#ifdef HAVE_DISK_STORAGE
-    int storage_mode; /* 0=auto, 1=HDD, 2=SSD */
-#endif
 };
 
 /* global settings */

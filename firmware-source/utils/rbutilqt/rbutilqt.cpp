@@ -384,8 +384,7 @@ void RbUtilQt::updateSettings()
                 " or review your settings."));
         configDialog();
     }
-    else if(chkConfig(nullptr,
-                !BootloaderInstallHelper::mountpointOptional())) {
+    else if(chkConfig(nullptr)) {
         QApplication::processEvents();
         QMessageBox::critical(this, tr("Configuration error"),
             tr("Your configuration is invalid. This is most likely due "
@@ -411,11 +410,8 @@ void RbUtilQt::updateDevice()
     ui.buttonRemoveBootloader->setEnabled(canUninstall);
     ui.actionRemove_bootloader->setEnabled(canUninstall);
 
-    /* Disable the whole tab widget if configuration is invalid. A player
-     * whose bootloader installs without its drive needs no mountpoint
-     * yet: the drive only appears once that bootloader runs. */
-    bool configurationValid = !chkConfig(nullptr,
-            !(bootloaderCapabilities & BootloaderInstallBase::NoMountpoint));
+    /* Disable the whole tab widget if configuration is invalid */
+    bool configurationValid = !chkConfig(nullptr);
     ui.tabWidget->setEnabled(configurationValid);
     ui.menuA_ctions->setEnabled(configurationValid);
 
@@ -613,13 +609,12 @@ QUrl RbUtilQt::proxy()
 }
 
 
-bool RbUtilQt::chkConfig(QWidget *parent, bool needMountpoint)
+bool RbUtilQt::chkConfig(QWidget *parent)
 {
     bool error = false;
-    QString mountpoint = RbSettings::value(RbSettings::Mountpoint).toString();
     if(RbSettings::value(RbSettings::Platform).toString().isEmpty()
-        || (needMountpoint && (mountpoint.isEmpty()
-                || !QFileInfo(mountpoint).isWritable()))) {
+        || RbSettings::value(RbSettings::Mountpoint).toString().isEmpty()
+        || !QFileInfo(RbSettings::value(RbSettings::Mountpoint).toString()).isWritable()) {
         error = true;
 
         if(parent) QMessageBox::critical(parent, tr("Configuration error"),

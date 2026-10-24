@@ -1,0 +1,540 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * The database index: the flat album and artist list, for the screens that
+ * want one -- Album covers, Artist portraits, the charts, Random album, and
+ * the browser's year and artist orders.
+ *
+ * tagcache keeps the album and artist tables with the database in RAM (see
+ * tagcache_album_get()), current with every commit and every play. This
+ * copies them out into a caller's buffer as the records the screens read,
+ * leaving out spoken word when Segregate Audiobooks keeps it apart. Names stay
+ * in the database and are read by seek, which holds only for one commit.
+ * Nothing is built in the background or kept on disk; the lists exist while
+ * the database is in RAM.
+ *
+ * Parts, in order:
+ *   - what is left out, and reading names
+ *   - the artist and album lists
+ *   - single albums, for a caller with no buffer
+ *   - the order table for album lists
+ *   - playing an album
+ ****************************************************************************/
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include "string-extra.h"
+#include "config.h"
+#include "system.h"          /* ALIGN_BUFFER */
+#include "kernel.h"
+#include "lang.h"
+#include "settings/settings.h"
+#include "database/tagcache.h"
+#include "widgets/splash.h"
+#include "system/app_buffer.h"        /* scratch for ordering an album */
+#include "system/app_util.h"          /* warn_on_pl_erase */
+#include "playlist/playlist.h"
+#include "db_summary.h"
+
+/* ---- what is left out, and reading names ------------------------------- */
+
+/* Spoken word, when Segregate Audiobooks keeps it out of the music: an album
+ * all of whose tracks are spoken, and an artist all of whose albums are */
+static bool album_hidden(const struct tagcache_album *a)
+{
+    return global_settings.segregate_audiobooks && a->tracks > 0
+           && a->spoken == a->tracks;
+}
+
+static bool artist_hidden(const struct tagcache_artist *r)
+{
+    return global_settings.segregate_audiobooks && r->albums > 0
+           && r->spoken_albums == r->albums;
+}
+
+bool db_summary_current(const struct db_summary_t *t)
+{
+    return tagcache_is_in_ram() && t->commitid == tagcache_commit_id()
+           && t->generation == tagcache_generation();
+}
+
+char *db_summary_name(const struct db_summary_t *t, int tag, long seek,
+                      char *buf, size_t size)
+{
+    if (!db_summary_current(t))
+        buf[0] = '\0';
+    else if (!tagcache_seek_string(tag, seek, buf, size))
+        strmemccpy(buf, UNTAGGED, size);
+    return buf;
+}
+
+/* ---- the artist and album lists ---------------------------------------- */
+
+/* The artist half into *buf, advancing it */
+static int fill_artists(struct db_summary_t *t, char **buf, size_t *bufsz)
+{
+    struct tagcache_artist r;
+    int nr = tagcache_artist_count(), n = 0;
+    char *p = ALIGN_UP(*buf, sizeof(long));
+    size_t left = *bufsz - (p - *buf);
+
+    for (int i = 0; i < nr; i++)
+        if (tagcache_artist_get(i, &r) && !artist_hidden(&r))
+            n++;
+    if (n == 0)
+        return ERROR_NO_ARTISTS;
+    if (left < n * sizeof(struct artist_data))
+        return ERROR_BUFFER_FULL;
+
+    t->artist_index = (struct artist_data *)p;
+
+    n = 0;
+    for (int i = 0; i < nr; i++)
+    {
+        struct artist_data *d = &t->artist_index[n];
+
+        if (!tagcache_artist_get(i, &r) || artist_hidden(&r))
+            continue;
+        d->playcount = r.playcount;
+        d->lastplayed = r.lastplayed;
+        d->seek = r.seek;
+        d->art_hash = r.art_hash;
+        n++;
+    }
+    t->artist_ct = n;
+    p += n * sizeof(struct artist_data);
+    *bufsz -= p - *buf;
+    *buf = p;
+    return SUCCESS;
+}
+
+/* The index's own order: by artist, then by album name. A tag file is in name
+ * order, so seek order is name order. */
+static int compare_index_order(const void *a_v, const void *b_v)
+{
+    const struct album_data *a = a_v, *b = b_v;
+
+    if (a->artist_seek != b->artist_seek)
+        return a->artist_seek < b->artist_seek ? -1 : 1;
+    if (a->seek != b->seek)
+        return a->seek < b->seek ? -1 : 1;
+    return 0;
+}
+
+static void stamp(struct db_summary_t *t)
+{
+    struct tagcache_marks marks;
+
+    tagcache_get_marks(&marks);
+    t->commitid = marks.commitid;
+    t->serial = marks.serial;
+    t->deleted = marks.deleted_ct;
+    t->generation = marks.generation;
+}
+
+static int visible_album_count(void)
+{
+    struct tagcache_album a;
+    int na = tagcache_album_count(), n = 0;
+
+    for (int i = 0; i < na; i++)
+        if (tagcache_album_get(i, &a) && !album_hidden(&a))
+            n++;
+    return n;
+}
+
+static void album_record(struct album_data *d, const struct tagcache_album *a)
+{
+    d->year = a->year;
+    d->playcount = a->playcount;
+    d->lastplayed = a->lastplayed;
+    d->artist_seek = a->artist_seek;
+    d->seek = a->album_seek;
+    d->art_hash = a->art_hash;
+    d->artist_art_hash = a->artist_art_hash;
+}
+
+int db_summary_build_into(struct db_summary_t *t, void *buf, size_t buf_sz)
+{
+    struct tagcache_album a;
+    char *p = buf;
+    size_t left = buf_sz;
+    int na = tagcache_album_count(), n = 0, ret;
+
+    memset(t, 0, sizeof(*t));
+    t->album_untagged_seek = -1;
+    if (na == 0)
+        return ERROR_NO_ALBUMS;
+    stamp(t);
+
+    ret = fill_artists(t, &p, &left);
+    if (ret == ERROR_BUFFER_FULL)
+        return ret;
+    if (ret != SUCCESS)
+        t->artist_ct = 0;
+
+    n = visible_album_count();
+    if (n == 0)
+        return ERROR_NO_ALBUMS;
+
+    p = ALIGN_UP(p, sizeof(long));
+    left = buf_sz - (p - (char *)buf);
+    if (left < n * sizeof(struct album_data))
+        return ERROR_BUFFER_FULL;
+    t->album_index = (struct album_data *)p;
+
+    n = 0;
+    for (int i = 0; i < na; i++)
+    {
+        struct album_data *d = &t->album_index[n];
+        char c[2];
+
+        if (!tagcache_album_get(i, &a) || album_hidden(&a))
+            continue;
+        album_record(d, &a);
+        /* False only for <Untagged>: the RAM copy is up while the table is */
+        if (t->album_untagged_seek < 0
+            && !tagcache_seek_string(tag_album, a.album_seek, c, sizeof(c)))
+            t->album_untagged_seek = a.album_seek;
+        n++;
+    }
+    t->album_ct = n;
+    qsort(t->album_index, n, sizeof(*t->album_index), compare_index_order);
+
+    t->buf = p + n * sizeof(struct album_data);
+    t->buf_sz = buf_sz - ((char *)t->buf - (char *)buf);
+    return SUCCESS;
+}
+
+int db_summary_load_artists(struct db_summary_t *t, void **buf,
+                            size_t *bufsz)
+{
+    char *p = *buf;
+    int ret;
+
+    memset(t, 0, sizeof(*t));
+    if (tagcache_artist_count() == 0)
+        return ERROR_NO_ARTISTS;
+    stamp(t);
+    ret = fill_artists(t, &p, bufsz);
+    if (ret == SUCCESS)
+        *buf = p;
+    return ret;
+}
+
+/* ---- single albums, for a caller with no buffer ------------------------ */
+
+int db_summary_reader_open(struct db_summary_reader *r)
+{
+    r->album_ct = visible_album_count();
+    return r->album_ct ? SUCCESS : ERROR_NO_ALBUMS;
+}
+
+void db_summary_reader_close(struct db_summary_reader *r)
+{
+    r->album_ct = 0;
+}
+
+bool db_summary_read_album(struct db_summary_reader *r, int n,
+                           struct album_data *out)
+{
+    struct tagcache_album a;
+    int na = tagcache_album_count();
+
+    if (n < 0 || n >= r->album_ct)
+        return false;
+    for (int i = 0; i < na; i++)
+    {
+        if (!tagcache_album_get(i, &a) || album_hidden(&a) || n-- > 0)
+            continue;
+        memset(out, 0, sizeof(*out));
+        album_record(out, &a);
+        return true;
+    }
+    return false;
+}
+
+/* ---- the order table for album lists ----------------------------------- */
+
+/* Artist rows by name, while the ranks are worked out */
+static bool order_articles;
+
+static int compare_artist_rows(const void *a_v, const void *b_v)
+{
+    struct tagcache_artist a, b;
+    char an[TAGCACHE_BUFSZ], bn[TAGCACHE_BUFSZ];
+    int ra = *(const int *)a_v, rb = *(const int *)b_v;
+
+    if (!tagcache_artist_get(ra, &a) || !tagcache_artist_get(rb, &b)
+        || !tagcache_seek_string(tag_albumartist, a.seek, an, sizeof(an))
+        || !tagcache_seek_string(tag_albumartist, b.seek, bn, sizeof(bn)))
+        return ra - rb;
+    int res = order_articles ? strcasecmp(tagcache_sort_name(an),
+                                          tagcache_sort_name(bn))
+                             : 0;
+    return res ? res : ra - rb;
+}
+
+int db_summary_read_order_table(struct db_summary_order *out, int max,
+                                bool ignore_articles)
+{
+    struct tagcache_album a;
+    int na = tagcache_album_count(), nr = tagcache_artist_count();
+    int n = 0;
+    int *rank = NULL;
+
+    if (na == 0)
+        return ERROR_NO_ALBUMS;
+
+    /* One entry an album name, the albums under it sharing their name's: the
+     * latest year among them, and the first artist's place */
+    for (int i = 0; i < na; i++)
+    {
+        if (!tagcache_album_get(i, &a) || album_hidden(&a))
+            continue;
+        if (n > 0 && out[n - 1].seek == a.album_seek)
+        {
+            if (a.year > out[n - 1].year)
+                out[n - 1].year = a.year;
+            continue;
+        }
+        if (n == max)
+            return ERROR_BUFFER_FULL;
+        out[n].seek = a.album_seek;
+        out[n].year = a.year;
+        out[n].artist = tagcache_artist_find(a.artist_seek);
+        n++;
+    }
+
+    /* Artists are in name order already, articles and all, being in seek
+     * order. Stepping past articles needs them sorted again, in the space the
+     * table does not use; without room they keep the database's order. */
+    if (ignore_articles && nr > 0
+        && (size_t)(max - n) * sizeof(*out) >= 2 * nr * sizeof(int))
+    {
+        int *order = (int *)&out[n];
+
+        rank = order + nr;
+        for (int i = 0; i < nr; i++)
+            order[i] = i;
+        order_articles = true;
+        qsort(order, nr, sizeof(*order), compare_artist_rows);
+        for (int i = 0; i < nr; i++)
+            rank[order[i]] = i;
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        int r = out[i].artist;
+
+        if (r < 0)
+            out[i].artist = DB_SUMMARY_NO_ARTIST;
+        else
+            out[i].artist = MIN(rank ? rank[r] : r, DB_SUMMARY_NO_ARTIST - 1);
+    }
+    return n;
+}
+
+/* ---- playing an album -------------------------------------------------- */
+
+/* One track, while the album is being put in order. Only the index id is kept,
+ * not the path: a path is MAX_PATH and there is no reason to hold every one of
+ * them when tagcache_retrieve() can fetch each again in the order wanted. */
+struct album_track {
+    int32_t idx_id;
+    int32_t key;
+};
+
+static int compare_album_tracks(const void *a_v, const void *b_v)
+{
+    const struct album_track *a = a_v;
+    const struct album_track *b = b_v;
+    return a->key - b->key;
+}
+
+/* The album's tracks: its name and its artist. An album with no seek stands
+ * for every album by the artist. */
+static void filter_album(struct tagcache_search *tcs,
+                         const struct album_data *album)
+{
+    if (album->seek >= 0)
+        tagcache_search_add_filter(tcs, tag_album, album->seek);
+    tagcache_search_add_filter(tcs, tag_albumartist, album->artist_seek);
+}
+
+/* The search on the album's tracks, boosted, or false when the database
+ * would not be searched */
+static bool album_search(struct tagcache_search *tcs,
+                         const struct album_data *album)
+{
+    cpu_boost(true);
+    if (!tagcache_search(tcs, tag_filename))
+    {
+        cpu_boost(false);
+        splash(HZ, ID2P(LANG_TAGCACHE_BUSY));
+        return false;
+    }
+    filter_album(tcs, album);
+    return true;
+}
+
+/* db_summary_album_tracks() from a search album_search() opened, which this
+ * finishes */
+static int album_tracks_from(struct tagcache_search *tcs,
+                             const struct album_data *album,
+                             bool (*sink)(const char *path, void *data),
+                             void *data)
+{
+    char buf[MAX_PATH];
+    struct album_track *list;
+    size_t list_sz = 0;
+    int cap, found = 0, added = 0;
+    bool sorted;
+
+    /* A search returns entries in master-index order -- the order the files
+     * were scanned, which is close to track order for most rips and wrong for
+     * the rest. The browser's track list is sorted by tagnavi's
+     * "%02d%04d%s" discnum/tracknum format, and playing an album has to come
+     * out in the order that list shows, so collect the album first and sort it
+     * before any of it is handed on. An artist's albums go in search order:
+     * disc and track number say nothing across albums. */
+    list = album->seek >= 0 ? app_get_buffer(&list_sz, "album play") : NULL;
+    cap = list ? (int)(list_sz / sizeof(*list)) : 0;
+    sorted = (cap > 0);
+
+    while (sorted && tagcache_get_next(tcs, buf, sizeof(buf)))
+    {
+        int disc, track;
+
+        if (found >= cap)
+        {
+            /* Nowhere to put the rest of the album, so it cannot be ordered
+             * as a whole. Play it in search order rather than not at all. */
+            sorted = false;
+            break;
+        }
+        disc  = tagcache_get_numeric(tcs, tag_discnumber);
+        track = tagcache_get_numeric(tcs, tag_tracknumber);
+        if (disc < 0)
+            disc = 0;
+        if (track < 0)
+            track = 0;
+        list[found].idx_id = tcs->idx_id;
+        /* Disc above track, so disc 2's track 1 follows disc 1's last. An
+         * untagged disc or track sorts as 0, which puts it first -- the same
+         * place the browser's format string puts it. Both are masked: these
+         * come from file tags, so a nonsense value must not shift into the
+         * sign bit and sort the track to the front. */
+        list[found].key = ((disc & 0x7fff) << 16) | (track & 0xffff);
+        found++;
+    }
+
+    if (sorted)
+    {
+        qsort(list, found, sizeof(*list), compare_album_tracks);
+        for (int i = 0; i < found; i++)
+        {
+            if (!tagcache_retrieve(tcs, list[i].idx_id, tag_filename,
+                                   buf, sizeof(buf)))
+                continue;
+            if (!sink(buf, data))
+                break;
+            added++;
+        }
+    }
+    else
+    {
+        /* Restart: the walk above may have consumed part of the search. */
+        tagcache_search_finish(tcs);
+        if (tagcache_search(tcs, tag_filename))
+        {
+            filter_album(tcs, album);
+            while (tagcache_get_next(tcs, buf, sizeof(buf)))
+            {
+                if (!sink(buf, data))
+                    break;
+                added++;
+            }
+        }
+    }
+
+    tagcache_search_finish(tcs);
+    cpu_boost(false);
+    return added;
+}
+
+int db_summary_album_tracks(const struct album_data *album,
+                            bool (*sink)(const char *path, void *data),
+                            void *data)
+{
+    struct tagcache_search tcs;
+
+    if (!album_search(&tcs, album))
+        return -1;
+    return album_tracks_from(&tcs, album, sink, data);
+}
+
+static bool insert_sink(const char *path, void *data)
+{
+    return playlist_insert_context_add(data, path) >= 0;
+}
+
+int db_summary_play_album(const struct album_data *album)
+{
+    struct playlist_insert_context context;
+    struct tagcache_search tcs;
+    int added;
+
+    if (!warn_on_pl_erase())
+        return -1;
+
+    /* The search first: refused while a commit runs, and the playlist is
+     * not to be emptied for nothing. */
+    if (!album_search(&tcs, album))
+        return -1;
+    if (playlist_create(NULL, NULL) < 0)
+    {
+        tagcache_search_finish(&tcs);
+        cpu_boost(false);
+        return -1;
+    }
+    if (playlist_insert_context_create(NULL, &context, PLAYLIST_INSERT_LAST,
+                                       false, false) < 0)
+    {
+        /* create() keeps the playlist lock even when it fails; release()
+         * is the only thing that gives it back. */
+        playlist_insert_context_release(&context);
+        tagcache_search_finish(&tcs);
+        cpu_boost(false);
+        return -1;
+    }
+
+    added = album_tracks_from(&tcs, album, insert_sink, &context);
+    playlist_insert_context_release(&context);
+
+    if (added <= 0)
+        return -1;
+
+    playlist_start(0, 0, 0);
+    return added;
+}
+
+/* The album the carousel asked for, held across its teardown. */
+static struct album_data pending_play;
+static bool pending_play_armed;
+
+void db_summary_play_album_on_exit(const struct album_data *album)
+{
+    pending_play = *album;
+    pending_play_armed = true;
+}
+
+int db_summary_play_pending(void)
+{
+    if (!pending_play_armed)
+        return -1;
+    pending_play_armed = false;
+    return db_summary_play_album(&pending_play);
+}

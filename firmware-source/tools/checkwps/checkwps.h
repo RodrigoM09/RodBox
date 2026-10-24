@@ -24,6 +24,12 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#define SYSFONT_HEIGHT 8
+struct viewport;
+
+/* The UI viewport of the last .sbs this run loaded. stubs.c returns it from
+ * sb_skin_get_info_vp(), so a .wps named after an .sbs on the command line
+ * inherits its colours the way it does on the player. */
+extern struct viewport checkwps_sbs_info_vp;
+extern bool checkwps_have_sbs_info_vp;
 
 #endif

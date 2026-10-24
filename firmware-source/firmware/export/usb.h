@@ -119,6 +119,15 @@ enum
     USB_NOTIFY_SET_CONFIG,   /* Event */
     USB_NOTIFY_BUS_RESET,    /* Event */
     USB_NOTIFY_CLASS_DRIVER, /* Event - notify_event() of specified class driver */
+    USB_HOST_PROBE,          /* Event - data: port to the host probe or back */
+#ifdef HAVE_USB_HOST_AUDIO
+    USB_HOST_AUTO,           /* Event - the next step of looking for a DAC */
+    USB_HOST_DAC,            /* Event - data: DAC output on now, or off */
+    USB_HOST_HUB,            /* Event - read the hub port a DAC is on */
+#endif
+#ifdef USB_ENABLE_IAP
+    USB_CAR_RECONNECT,       /* Event - a car: again without the sound card */
+#endif
 #endif
 #ifdef USB_FIREWIRE_HANDLING
     USB_REQUEST_REBOOT,      /* Event */
@@ -139,6 +148,14 @@ enum
     USB_MODE_CHARGE,
     USB_MODE_ADB
 };
+
+#ifndef HAVE_USB_ADB
+/* Drive Only: mass storage and nothing else -- one configuration, the
+ * player's own product ID, no accessory, audio or HID interface. The USB
+ * Mode setting stores its place in the list, which is ADB's value; a target
+ * with ADB has no Drive Only. */
+#define USB_MODE_DRIVE_ONLY USB_MODE_ADB
+#endif
 
 #ifdef HAVE_USB_POWER
 /*allow people to define this in config-target.h if they need it*/
@@ -185,6 +202,10 @@ struct usb_transfer_completion_event_data;
 void usb_init(void) INIT_ATTR;
 /* target must implement this to enable/disable the usb transceiver/core */
 void usb_enable(bool on);
+#ifdef HAVE_USBSTACK
+/* target: clock the controller for the host probe, and start or stop it */
+void usb_host_probe_enable(bool on);
+#endif
 /* called after host has been detected */
 void usb_attach(void);
 /* enable usb detection monitoring; before this function is called, all usb
@@ -200,8 +221,106 @@ int usb_wait_for_disconnect_w_tmo(struct event_queue *q, int ticks);
 /* check whether USB is plugged, note that this is the official value which has
  * been reported to the thread */
 bool usb_inserted(void);
+
+/* True only once a host has issued a request, where the target can tell --
+ * unlike usb_inserted(), which a charger also satisfies. Use this to decide
+ * whether to stand work down for an enumeration that is about to happen. */
+bool usb_host_is_present(void);
+/* Whether the host may yet take the disk: a host is present and has either
+ * asked for storage or not settled on a configuration. False through a
+ * session with a car, a dock or Charge Only, which usb_host_is_present()
+ * spans whole. Work that would hold the disk or the CPU waits on this. */
+bool usb_host_wants_storage(void);
+/* USB Mode is Drive Only, and this connection is not charge only */
+bool usb_drive_only(void);
 /* check whether USB is plugged, note that this is the raw hardware value */
 int usb_detect(void);
+
+#ifndef BOOTLOADER
+/* What the last cable insertion decided, and how far the handover got.
+ *
+ * Diagnostic only. A connect that appears to do nothing is either charging-only
+ * (no broadcast, the UI stays live) or a handover waiting on a thread that has
+ * not acknowledged -- and nothing on screen tells those apart. Read by the
+ * debug menu's "USB info". */
+struct usb_insert_record
+{
+    long tick;               /* current_tick at insertion */
+    long broadcast_tick;     /* ...and when SYS_USB_CONNECTED went out */
+    int  btn_status;         /* button_status() at insertion */
+    int  btn_ignore;         /* the mask it is tested against; nonzero AND
+                              * inverts the mass-storage/charge decision */
+    int  usb_mode;           /* USB_MODE_* the settings asked for */
+    bool power_only;         /* charging only: no broadcast, no mass storage */
+    int  acks_expected;      /* threads owing an ack at broadcast, -1 = none sent */
+    int  acks_remaining;     /* still owed -- nonzero here is a stuck handover */
+    bool storage_handed_over;/* disk_unmount_all() ran; the host has the disk */
+
+    /* Enumeration waypoints, counted since insertion. Which of these stops
+     * moving says where the connection died:
+     *   set_addr 0            -> never enumerated at all
+     *   set_config 0          -> descriptors rejected; never configured
+     *   drv_active no storage -> the driver was not enabled or not in this
+     *                            config
+     *   drv_error has storage -> its init_connection() failed
+     *   exclusive_required 0  -> nothing asked for the disk, hence no broadcast
+     *   bus_resets climbing   -> the host keeps giving up and retrying */
+    int  bus_resets;
+    int  setups;             /* control requests received from the host */
+    int  last_setup;         /* bRequest of the last one */
+    int  set_addr;           /* SET_ADDRESS handled */
+    int  set_config;         /* SET_CONFIGURATION handled */
+    int  last_config;        /* value of the last one (0 = deconfigured) */
+    int  drv_active;         /* bitmask by USB_DRIVER_*, at last set_config */
+    int  drv_error;          /* ...those whose init_connection() failed */
+    bool exclusive_required; /* a driver asked for the disk */
+};
+
+enum usb_waypoint
+{
+    USB_WP_BUS_RESET,
+    USB_WP_SETUP,        /* a = bRequest */
+    USB_WP_SET_ADDR,
+    USB_WP_SET_CONFIG,   /* a = config value */
+    USB_WP_DRIVERS,      /* a = active mask, b = errored mask */
+    USB_WP_EXCLUSIVE,    /* a = require_exclusive */
+};
+
+void usb_record_waypoint(enum usb_waypoint w, int a, int b);
+const struct usb_insert_record *usb_get_insert_record(void);
+#ifdef HAVE_USBSTACK
+/* Give the port to the USB host probe (true) or back to the device stack.
+ * While the probe has it, an insertion is ignored and a removal only re-arms
+ * the DAC check. */
+void usb_set_host_probe(bool on);
+bool usb_host_probe_active(void);
+#endif
+#ifdef HAVE_USB_HOST_AUDIO
+/* Whether a cable that no computer answers is tried as a USB DAC:
+ * 0 off, 1 auto */
+void usb_set_dac_output(int mode);
+
+/* Play through a USB DAC now, or stop: the automatic check's search without
+ * its conditions, for a DAC on its own power that puts no 5V on the cable
+ * to start one. Whether a search is still running, and whether playback is
+ * on a DAC. */
+void usb_set_dac_active(bool on);
+bool usb_dac_searching(void);
+bool usb_dac_playing(void);
+/* While a DAC behind a hub plays, read its hub port once a second: taking
+ * the DAC off the hub leaves the player's own port connected. */
+void usb_host_hub_watch(bool on);
+
+/* Diagnostic only: what the automatic DAC check last decided, and why */
+struct usb_dac_auto_record {
+    const char *step;
+    long tick;
+    int bus_resets;         /* counted when the wait ended */
+    int polls;
+};
+const struct usb_dac_auto_record *usb_get_dac_auto_record(void);
+#endif
+#endif /* !BOOTLOADER */
 #ifdef USB_STATUS_BY_EVENT
 /* Notify USB insertion state (USB_INSERTED or USB_EXTRACTED) */
 void usb_status_event(int current_status);
@@ -255,12 +374,17 @@ static inline void usb_signal_class_notify(int8_t class_num, uint32_t data) {
 bool usb_driver_enabled(int driver);
 /* returns whether exclusive storage is available for USB */
 bool usb_exclusive_storage(void);
+/* the host ejected the disk: give it back to the player until unplug */
+void usb_storage_ejected(void);
 #endif /* HAVE_USBSTACK */
 
 /* broadcast usb insertion event to enable exclusive storage */
 void usb_request_exclusive_storage(void);
 /* finish exclusive storage access if enabled and mount volumes */
 void usb_release_exclusive_storage(void);
+/* whether the host ejected the disk since the cable went in; it stays with the
+ * player, and the cable is only charging it, until unplug */
+bool usb_storage_is_ejected(void);
 
 #ifdef USB_FIREWIRE_HANDLING
 bool firewire_detect(void);
@@ -270,6 +394,29 @@ void usb_firewire_connect_event(void);
 #ifdef USB_ENABLE_HID
 /* enable or disable the HID driver */
 void usb_set_hid(bool enable);
+#endif
+#ifdef USB_ENABLE_IAP
+/* enable or disable USB iAP, from the next connection */
+void usb_set_iap(bool enable);
+/* Support iPhone Accessories: 0 off, 1 auto, 2 on (USB_IAP2_MODE_*) */
+void usb_set_iap2_mode(int mode);
+/* The host has sent Apple's 0x53, as a car does; from the USB stack */
+void usb_car_found(void);
+
+/* Identify As: what an accessory is told the player is -- the USB product ID
+ * from the next connection, and the iAP model number over USB and serial */
+enum {
+    USB_IDENTITY_OWN,           /* the player's own product ID */
+    USB_IDENTITY_IPOD_CLASSIC,
+    USB_IDENTITY_IPHONE_4,
+};
+struct usb_identity {
+    uint16_t    product_id;     /* 0 for the player's own */
+    uint32_t    model_id;       /* ReturniPodModelNum's */
+    const char* model;
+};
+void usb_set_identity(int identity);
+const struct usb_identity* usb_identity(void);
 #endif
 
 #ifdef USB_ENABLE_SERIAL
@@ -286,6 +433,16 @@ void usb_set_audio(int value);
 
 /* true while host-PCM (USB-DAC) playback is active */
 bool usb_audio_get_active(void);
+
+/* Claim the USB-DAC receive and DSP buffers, ~129K. Call once at boot, after
+ * the settings are loaded -- so the setting can be consulted -- and before
+ * audio_init(), so nothing has to be shrunk to make room. It must not happen
+ * on the USB thread: see the definition in usbstack/usb_audio.c. Idempotent. */
+int usb_audio_alloc_buffers(void);
+
+/* Whether that call has happened and succeeded. False until the player is
+ * restarted with the setting on, and the driver stays inactive while it is. */
+bool usb_audio_buffers_ready(void);
 #endif
 
 #if defined(USB_ENABLE_STORAGE) && defined(HAVE_MULTIDRIVE)

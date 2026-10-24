@@ -1,0 +1,287 @@
+/***************************************************************************
+ *             __________               __   ___.
+ *   Open      \______   \ ____   ____ |  | _\_ |__   _______  ___
+ *   Source     |       _//  _ \_/ ___\|  |/ /| __ \ /  _ \  \/  /
+ *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
+ *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
+ *                     \/            \/     \/    \/            \/
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
+ * KIND, either express or implied.
+ *
+ ****************************************************************************/
+#ifndef USB_LOG_H
+#define USB_LOG_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* The device side of a USB connection, event by event: every control request
+ * and how it was answered, endpoint allocation, the controller's endpoint
+ * setup, and the audio stream. Callable from IRQ and FIQ context. The debug
+ * menu's USB Log screen shows it; the application appends it to a file while
+ * that screen is open or its Write Debug Log setting is on.
+ *
+ * What a, b, c and d carry, per type: */
+enum usb_log_type
+{
+    USB_LOG_INSERT,      /* a = charge only */
+    USB_LOG_BUS_RESET,   /* a = high speed */
+    USB_LOG_SETUP,       /* a = bmRequestType, b = bRequest,
+                          * c = wValue | wIndex << 16,
+                          * d = wLength | USB_LOG_SETUP_* << 16 */
+    USB_LOG_RESPONSE,    /* a = USB_LOG_RESP_*, b = bRequest, c = bytes,
+                          * d = product ID for a device descriptor, else 0 */
+    USB_LOG_SET_ADDR,    /* a = address, b = core state before it */
+    USB_LOG_SET_CONFIG,  /* a = configuration, b = high speed */
+    USB_LOG_DRIVERS,     /* a = active mask, b = errored mask */
+    USB_LOG_EP_ALLOC,    /* a = driver, b = endpoint or 0 for none,
+                          * c = transfer type, d = optional */
+    USB_LOG_DRV_DROPPED, /* a = driver, left out for want of endpoints */
+    USB_LOG_INTERFACES,  /* a = driver, b = first, c = one past its last */
+    USB_LOG_EP_INIT,     /* a = endpoint, b = type, c = max packet size,
+                          * d = the controller register it wrote */
+    USB_LOG_ISO_XFER,    /* an isochronous transfer started: a = endpoint,
+                          * b = frame, c, d = controller registers */
+    USB_LOG_XFER_FAIL,   /* a transfer the controller would not start:
+                          * a = endpoint, b = error, c, d = registers */
+    USB_LOG_ISO_ERROR,   /* a = endpoint, c = status, d = length */
+    USB_LOG_ALT,         /* a = interface, b = alternate, c = result */
+    USB_LOG_RATE,        /* c = rate asked for, d = rate set */
+    USB_LOG_AUDIO,       /* a = USB_LOG_AUDIO_*, c, d as named there */
+    USB_LOG_STREAM,      /* a = frames dropped, b = errored packets,
+                          * c = packets, d = shortest | longest << 16 */
+    USB_LOG_FEEDBACK,    /* c = value as sent, d = bytes */
+    USB_LOG_SYNC,        /* a = timed out, c = microseconds waited */
+    /* The player as a USB host */
+    USB_LOG_HOST_PORT,   /* port reset: a = attempt, c = HPRT or PORTSC,
+                          * d = HFIR, or the ARC's translator port */
+    USB_LOG_HOST_STAGE,  /* one try at a control stage: a = address,
+                          * b = pid | in << 8 | try << 12, 0x200 a start
+                          * split, 0x400 a complete split,
+                          * c = channel interrupts, bit 31 if it never
+                          * halted, d = HCTSIZ after */
+    USB_LOG_HOST_ENUM,   /* an enumeration step: a = passed,
+                          * c = its name (a static string), d = status */
+    USB_LOG_HOST_DEVICE, /* what enumerated, once a boot per device and
+                          * configuration length: a = class, b =
+                          * wTotalLength, c = VID << 16 | PID, d = subclass
+                          * | protocol << 8 | configurations << 16 | 1 << 24
+                          * if the configuration was cut short */
+    USB_LOG_HOST_IFACE,  /* one of its interface settings: a = interface,
+                          * b = alternate | endpoints << 8, c = class |
+                          * subclass << 8 | protocol << 16 */
+    USB_LOG_HOST_EP,     /* one of that setting's endpoints: a = address,
+                          * b = bmAttributes, c = wMaxPacketSize,
+                          * d = bInterval */
+    USB_LOG_HOST_SETTING, /* the DAC driver's verdict on a streaming
+                           * setting: a = interface, b = alternate, c =
+                           * USB_LOG_HOST_SETTING_* reasons, 0 if usable,
+                           * d = channels | subslot << 8 | bits << 16 |
+                           * audio class << 24 */
+    USB_LOG_HOST_EHCI,  /* an ARC control transfer: a = address,
+                          * b = request | translator port << 8,
+                          * c = token that failed, d = bytes or -1 */
+    USB_LOG_HOST_STREAM, /* the DAC's stream starting: a = interface,
+                          * b = alternate, c = samples per (micro)frame,
+                          * 16.16, d = max packet | interval << 16 |
+                          * high speed << 24 */
+    USB_LOG_HOST_ISO,    /* the stream: a = 0, one of the first packets:
+                          * b = parity, c = channel interrupts, d = HCTSIZ;
+                          * a = 1, every 1000th: b = frames in it,
+                          * c = packets sent, d = underruns | errors << 16 */
+    USB_LOG_HOST_MODE,   /* the port turned host (a = 1) or back (a = 0) */
+    USB_LOG_HOST_DAC,    /* the DAC search's decision: a = polls,
+                          * b = the last poll's port, bit 0 VBUS,
+                          * 1 connected, 2 enabled, USB_LOG_HOST_PORT_READ
+                          * if there was one, c = the decision (a static
+                          * string), d = HPRT or PORTSC1 */
+    USB_LOG_HOST_HUB,    /* a hub port's status: a = port, b = 0 looking
+                          * for a device, 1 resetting, 2 watching,
+                          * c = wPortStatus | wPortChange << 16 */
+    USB_LOG_ALLOC,       /* interfaces and endpoints being assigned:
+                          * a = enabled drivers, b = core state */
+    /* USB iAP, configuration 2 */
+    USB_LOG_IAP,         /* a packet: a = lingo | USB_LOG_IAP_FROM_PLAYER,
+                          * b = command, c = payload bytes | transaction
+                          * << 16 (0xffff for none), d = the payload's
+                          * first four bytes, big-endian, zero-padded */
+    USB_LOG_IAP_RATE,    /* the host set a rate: a = ignored as not the one
+                          * announced, c = rate, d = rate announced or 0;
+                          * or b = 1, it set none and c, announced, plays;
+                          * or b = 2, no rate list came and c, set, plays,
+                          * d = 1 if the accessory was still talking */
+    USB_LOG_IAP_STREAM,  /* what the stream now carries: a =
+                          * USB_LOG_IAP_STREAM_* */
+    USB_LOG_IAP_IDENTIFY, /* IdentifyDeviceLingoes: c = lingoes,
+                           * d = options */
+    USB_LOG_IAP_ART,     /* the playing track's art: a = USB_LOG_IAP_ART_*
+                          * what happened, b = track index, c = the art
+                          * cache's answer, USB_LOG_IAP_ART_CACHE_*, d = 1
+                          * where playback's art served instead */
+    USB_LOG_IAP2,        /* an iAP2 report, raw: a = offset into it from
+                          * the link-control byte | USB_LOG_IAP_FROM_PLAYER,
+                          * b = report bytes, c, d = eight bytes from the
+                          * offset, big-endian, zero-padded */
+    USB_LOG_IAP2_SENT,   /* the player's iAP2 report left: c = status,
+                          * d = bytes */
+    USB_LOG_IAP2_PACKET, /* an iAP2 link packet: a = USB_LOG_IAP2_* status
+                          * | USB_LOG_IAP_FROM_PLAYER, b = bytes, c =
+                          * control, sequence, acknowledgement and session,
+                          * a byte each from the top */
+    USB_LOG_IAP2_MSG,    /* an iAP2 control message: a =
+                          * USB_LOG_IAP_FROM_PLAYER or 0, b = bytes, c = ID */
+    USB_LOG_IAP2_PARAMS, /* a received message's parameters, raw: a = bytes
+                          * valid, b = offset, c, d = eight bytes from it */
+    USB_LOG_IAP2_EVENT,  /* a = USB_LOG_IAP2_* event, c, d as it says */
+    USB_LOG_IAP_RATES,   /* RetAccessorySampleRateCaps: a = accepted,
+                          * b = rates listed, c = which of 48, 44.1 and
+                          * 32 kHz, bits 0 to 2 */
+    USB_LOG_IAP_ERROR,   /* USB iAP's error report: b = line, c = function,
+                          * d = format, both static strings; the format's
+                          * arguments are not kept */
+    USB_LOG_OUTPUT,      /* Pause on Unplug: a = USB_LOG_OUTPUT_*, b = the
+                          * output, 0 the jack, 1 a DAC, 2 an accessory,
+                          * c = 1 if it paused or resumed, d = the setting |
+                          * audio_status() << 8; for a serial reset, b = the
+                          * line said it departed, c = lingoes, d = the
+                          * interface state */
+};
+
+#define USB_LOG_OUTPUT_GONE    0
+#define USB_LOG_OUTPUT_BACK    1
+#define USB_LOG_OUTPUT_RESUME  2 /* the UI, acting on BACK */
+#define USB_LOG_OUTPUT_SERIAL  3 /* a serial accessory's session reset */
+
+/* An error report from USB iAP. The arguments go to a call that never runs,
+ * so a variable kept only for the message stays used. */
+static inline void usb_log_iap_error_args(int unused, ...)
+{
+    (void)unused;
+}
+#define USB_LOG_IAP_ERROR_AT(fmt, ...)                                      \
+    do {                                                                    \
+        if (0)                                                              \
+            usb_log_iap_error_args(0 __VA_OPT__(, __VA_ARGS__));            \
+        usb_log(USB_LOG_IAP_ERROR, 0, __LINE__,                             \
+                (uint32_t)(uintptr_t)__func__, (uint32_t)(uintptr_t)(fmt)); \
+    } while (0)
+
+#define USB_LOG_SETUP_DROPPED  1 /* arrived during a bus reset; ignored */
+#define USB_LOG_SETUP_QUEUED   2 /* arrived mid-request; handled after it */
+
+#define USB_LOG_RESP_ACK       0
+#define USB_LOG_RESP_STALL     1
+#define USB_LOG_RESP_TOO_LONG  2 /* data stage larger than the buffer */
+
+#define USB_LOG_AUDIO_NO_BUFFERS  0
+#define USB_LOG_AUDIO_START       1 /* c = rate */
+#define USB_LOG_AUDIO_STOP        2
+#define USB_LOG_AUDIO_FIRST_RX    3 /* c = length, d = status */
+#define USB_LOG_AUDIO_PREBUFFERED 4 /* playback started */
+#define USB_LOG_AUDIO_UNDERFLOW   5
+#define USB_LOG_AUDIO_OVERFLOW    6
+#define USB_LOG_AUDIO_THREAD_START 7 /* playback started on the USB thread */
+
+#define USB_LOG_HOST_PORT_READ 0x80
+
+#define USB_LOG_HOST_SETTING_NO_OUT      0x01 /* no isochronous OUT endpoint */
+#define USB_LOG_HOST_SETTING_NOT_TYPE_I  0x02
+#define USB_LOG_HOST_SETTING_NOT_PCM     0x04
+#define USB_LOG_HOST_SETTING_NO_CHANNELS 0x08
+#define USB_LOG_HOST_SETTING_SUBSLOT     0x10 /* not 2 to 4 bytes */
+#define USB_LOG_HOST_SETTING_INTERVAL    0x20 /* longer than 8 microframes */
+#define USB_LOG_HOST_SETTING_NO_RATE     0x40 /* neither 44.1 nor 48 kHz */
+
+#define USB_LOG_IAP_FROM_PLAYER 0x80
+
+#define USB_LOG_IAP2_OK       0
+#define USB_LOG_IAP2_CHECKSUM 1 /* the payload's checksum is wrong */
+#define USB_LOG_IAP2_TOO_LONG 2 /* longer than the player offered */
+#define USB_LOG_IAP2_AGAIN    3 /* the player's, sent again */
+
+#define USB_LOG_IAP2_LINK_UP     0 /* c = control session, d = window */
+#define USB_LOG_IAP2_LINK_LOST   1 /* c = sequence never acknowledged,
+                                    * d = sends */
+#define USB_LOG_IAP2_CERTIFICATE 2 /* c = its bytes, d = challenge bytes */
+#define USB_LOG_IAP2_IDENTIFIED  3 /* c = messages the car sends, d = takes */
+#define USB_LOG_IAP2_RATE        4 /* c = rate announced, d = index sent */
+#define USB_LOG_IAP2_NOW_PLAYING 5 /* c = track key, d = state << 24 | s */
+#define USB_LOG_IAP2_SEEK        6 /* c = ms */
+#define USB_LOG_IAP2_HID         7 /* c = controls found, d = descriptor
+                                    * bytes */
+#define USB_LOG_IAP2_BUTTON      8 /* c = usage, d = 1 when acted on */
+#define USB_LOG_IAP2_DROPPED     9 /* c = message ID not sent, d = bytes */
+#define USB_LOG_IAP2_POWER      10 /* c = 0 empty, 1 attributes; d = mask
+                                    * the car asked for */
+#define USB_LOG_IAP2_COVER      11 /* c = AA_SOURCE_* << 24 | bytes, d = ms
+                                    * to find it, and encode a cache one */
+#define USB_LOG_IAP2_RECONNECT  13 /* a car, while the sound card is on: the
+                                    * player leaves the bus and comes back
+                                    * without it */
+#define USB_LOG_IAP2_AUDIO_START 15 /* c = the mixer's rate, d = the stream's */
+#define USB_LOG_IAP2_AUDIO_TAKEN 16 /* b = ms counted, c = bytes the stream
+                                     * took from playback, d = in chunks */
+#define USB_LOG_IAP2_AUDIO_GAPS  17 /* b = chunks not whole samples, c =
+                                     * packets of silence, d = how far the
+                                     * track's position moved, ms */
+#define USB_LOG_IAP2_AUDIO_USB   18 /* c = times the USB queue ran empty,
+                                     * d = packets that failed */
+
+#define USB_LOG_IAP_ART_REPORTED 0 /* told the accessory whether it has art */
+#define USB_LOG_IAP_ART_SENT     1 /* the accessory asked, and it is sent */
+#define USB_LOG_IAP_ART_REFUSED  2 /* the accessory asked; none to send */
+
+#define USB_LOG_IAP_ART_CACHE_OK       0 /* a usable thumbnail */
+#define USB_LOG_IAP_ART_CACHE_OFF      1 /* Accessory Artwork is off */
+#define USB_LOG_IAP_ART_CACHE_NO_TRACK 2 /* no such track, or no cache size */
+#define USB_LOG_IAP_ART_CACHE_NO_FILE  3 /* the folder has no thumbnail */
+#define USB_LOG_IAP_ART_CACHE_BAD_FILE 4 /* one the formats cannot use */
+
+#define USB_LOG_IAP_STREAM_AUDIO     0 /* the playing audio */
+#define USB_LOG_IAP_STREAM_NOTHING   1 /* silence: nothing to play */
+#define USB_LOG_IAP_STREAM_RATE_WAIT 2 /* silence: the host has not set the
+                                        * rate the player announced */
+
+struct usb_log_entry
+{
+    uint32_t us;         /* USEC_TIMER, wrapping */
+    uint8_t type, a;
+    uint16_t b;
+    uint32_t c, d;
+};
+
+#ifdef BOOTLOADER
+#define usb_log(type, a, b, c, d) do { } while (0)
+#define usb_log_sync() do { } while (0)
+#else
+void usb_log(int type, int a, int b, uint32_t c, uint32_t d);
+
+/* Thread context only. While something is writing the file, wait up to three
+ * seconds for everything logged so far to reach it, so that a step which
+ * hangs the player is on disk before it is taken. Returns at once when
+ * nothing is writing or the host has the disk. */
+void usb_log_sync(void);
+
+/* For the screen and the file. Sequence numbers count every entry since boot;
+ * the ring keeps the most recent USB_LOG_SIZE. */
+#define USB_LOG_SIZE 512
+unsigned long usb_log_head(void);
+bool usb_log_read(unsigned long seq, struct usb_log_entry *e);
+void usb_log_attach(bool on);
+void usb_log_set_written(unsigned long seq);
+unsigned long usb_log_written(void);
+
+/* Names for a USB_LOG_IAP entry, "?" for one the table does not know.
+ * Defined only where USB_ENABLE_IAP is. */
+const char *usb_log_iap_lingo(int lingo);
+const char *usb_log_iap_command(int lingo, int command);
+const char *usb_log_iap2_message(int id);
+#endif
+
+#endif /* USB_LOG_H */

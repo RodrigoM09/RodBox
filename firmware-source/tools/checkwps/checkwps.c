@@ -23,22 +23,29 @@
 #include <string.h>
 #include "config.h"
 #include "checkwps.h"
-#include "resize.h"
-#include "wps.h"
+#include "draw/resize.h"
+#include "screens/playback/wps.h"
 #include "skin_buffer.h"
 #include "skin_debug.h"
-#include "skin_engine.h"
-#include "wps_internals.h"
-#include "settings.h"
-#include "viewport.h"
+#include "skin/skin_engine.h"
+#include "skin/wps_internals.h"
+#include "settings/settings.h"
+#include "draw/viewport.h"
+#include "draw/color.h"
 #include "file.h"
 #include "font.h"
 #include "misc.h"
+#include "rbpaths.h"
 #include "rbversion.h"
 
 bool debug_wps = false;
 int wps_verbose_level = 0;
 char *skin_buffer;
+
+/* --viewports. See dump_viewports() at the foot of the file. */
+static bool want_viewports = false;
+struct viewport checkwps_sbs_info_vp;
+bool checkwps_have_sbs_info_vp = false;
 
 #ifdef SIMULATOR
 #error beep beep
@@ -115,6 +122,12 @@ int playback_claim_aa_slot(struct dim *dim)
     return 0;
 }
 
+int playback_claim_aa_slot_keyed(struct dim *dim, uint32_t key)
+{
+    (void)key;
+    return playback_claim_aa_slot(dim);
+}
+
 void playback_release_aa_slot(int slot)
 {
     (void) slot;
@@ -162,6 +175,20 @@ static struct viewport* init_viewport(struct viewport* vp)
     return NULL;
 }
 
+/* Reached only through viewportmanager_theme_enable(), which checkwps calls to
+ * put viewport_set_defaults() on its inheriting path. Nothing is drawn, so
+ * neither needs to do anything -- but they must exist: toggle_theme() calls
+ * both unconditionally. */
+static struct viewport* set_viewport(struct viewport* vp)
+{
+    (void)vp; return NULL;
+}
+
+static void screen_backdrop_show(char *backdrop_buffer)
+{
+    (void)backdrop_buffer;
+}
+
 struct user_settings global_settings = {
     .statusbar = STATUSBAR_TOP,
 #ifdef HAVE_LCD_COLOR
@@ -180,7 +207,7 @@ int remote_getwidth(void) { return LCD_REMOTE_WIDTH; }
 int remote_getheight(void) { return LCD_REMOTE_HEIGHT; }
 #endif
 
-static inline bool backdrop_load(const char *filename, char* backdrop_buffer)
+bool backdrop_load(const char *filename, char* backdrop_buffer)
 {
  (void)filename; (void)backdrop_buffer; return true;
 }
@@ -198,6 +225,7 @@ struct screen screens[NB_SCREENS] =
         .is_color=false,
 #endif
         .init_viewport=init_viewport,
+        .set_viewport=set_viewport,
         .getwidth = getwidth,
         .getheight = getheight,
         .getuifont = getuifont,
@@ -205,6 +233,7 @@ struct screen screens[NB_SCREENS] =
         .get_foreground=dummy_func2,
         .get_background=dummy_func2,
         .backdrop_load=backdrop_load,
+        .backdrop_show=screen_backdrop_show,
 #endif
     },
 #ifdef HAVE_REMOTE_LCD
@@ -216,12 +245,14 @@ struct screen screens[NB_SCREENS] =
         .getuifont = getuifont,
         .is_color=false,/* No color remotes yet */
         .init_viewport=init_viewport,
+        .set_viewport=set_viewport,
         .getwidth=remote_getwidth,
         .getheight=remote_getheight,
 #if LCD_REMOTE_DEPTH > 1
         .get_foreground=dummy_func2,
         .get_background=dummy_func2,
         .backdrop_load=backdrop_load,
+        .backdrop_show=screen_backdrop_show,
 #endif
     }
 #endif
@@ -551,6 +582,145 @@ bool settings_load_config(const char* file, bool apply)
 /* This is no longer defined in ROCKBOX builds so just use a huge value */
 #define SKIN_BUFFER_SIZE (200*1024)
 
+/* The UI viewport a skin would end up using. A theme that declares one %Vi
+ * with no label has it chosen for it; a theme that labels them picks between
+ * them with %VI at render time, which nothing here does, so the first one
+ * declared stands in. */
+static struct skin_viewport *first_uivp(struct wps_data *data)
+{
+    struct skin_element *vp = SKINOFFSETTOPTR(skin_buffer, data->tree);
+
+    while (vp)
+    {
+        struct skin_viewport *svp = SKINOFFSETTOPTR(skin_buffer, vp->data);
+
+        if (!svp)
+            break;
+        if (svp->is_infovp)
+            return svp;
+        vp = SKINOFFSETTOPTR(skin_buffer, vp->next);
+    }
+    return NULL;
+}
+
+/* Where a viewport's colours came from.
+ *
+ * The engine keeps no record, so it is recovered by comparing: a viewport that
+ * named no colour of its own still holds whatever viewport_set_defaults() put
+ * there, and that is reproduced here. A viewport that spells out the colour it
+ * would have inherited anyway reads as inherited, which costs nothing -- the
+ * value is the same either way. */
+static const char *colour_origin(unsigned int actual, unsigned int baseline)
+{
+    if (actual != baseline)
+        return "set";
+    return checkwps_have_sbs_info_vp ? "sbs" : "cfg";
+}
+
+/* Colours are held packed for the display -- RGB565 on both targets -- so a
+ * raw print is unrecognisable next to the rrggbb a skin author wrote. Unpack
+ * back to 24-bit, and mark a colour the skin pinned with '!'. A palette word
+ * prints as the word. */
+static const char *colour_text(unsigned int c, char *buf, int len)
+{
+    static const char *const names[] = { "accent", "dominant", "vivid" };
+    const struct color_word *w = color_word(c);
+    bool fixed = (c & COLOR_FIXED) != 0;
+
+    if (w)
+    {
+        int n = snprintf(buf, len, "%s", names[w->kind]);
+
+        if (w->bound && n < len)
+            n += snprintf(buf + n, len - n, "%c%u", w->bound > 0 ? '>' : '<',
+                          w->tone);
+        if (w->shade && n < len)
+            n += snprintf(buf + n, len - n, ".%u", w->shade - 1);
+        if (w->has_fallback && n < len)
+            snprintf(buf + n, len - n, ":%02x%02x%02x",
+                     RGB_UNPACK_RED(w->fallback),
+                     RGB_UNPACK_GREEN(w->fallback),
+                     RGB_UNPACK_BLUE(w->fallback));
+        return buf;
+    }
+
+    c &= ~COLOR_FIXED;
+    snprintf(buf, len, "%s%02x%02x%02x", fixed ? "!" : "",
+             RGB_UNPACK_RED(c), RGB_UNPACK_GREEN(c), RGB_UNPACK_BLUE(c));
+    return buf;
+}
+
+static const char *viewport_label(const struct skin_viewport *svp)
+{
+    const char *label;
+
+    if (svp->label == VP_DEFAULT_LABEL)
+        return "(default)";
+    label = SKINOFFSETTOPTR(skin_buffer, svp->label);
+    return label ? label : "-";
+}
+
+/* One line per viewport: where it is, what font and colours it ended up with,
+ * and for each colour whether the skin set it or inherited it. The inherited
+ * ones are the point of the table -- a .wps viewport that names no colour
+ * silently takes the browser list's, which is invisible in the file itself. */
+static void dump_viewports(const char *name, struct wps_data *data,
+                           enum screen_type screen)
+{
+    struct skin_element *vp = SKINOFFSETTOPTR(skin_buffer, data->tree);
+    int n = 0, inherited = 0;
+
+    printf("Viewports in %s\n", name);
+    printf("  #  label            x    y     w    h  font  "
+           "fg           bg           flags\n");
+
+    while (vp)
+    {
+        struct skin_viewport *svp = SKINOFFSETTOPTR(skin_buffer, vp->data);
+        struct viewport base;
+        const char *fg_from, *bg_from;
+        char flags[48], fg_text[24], bg_text[24];
+
+        if (!svp)
+            break;
+
+        /* What this viewport would have held had it named no colour. */
+        viewport_set_defaults(&base, screen);
+        fg_from = colour_origin(svp->dc_orig_fg, base.fg_pattern);
+        bg_from = colour_origin(svp->dc_orig_bg, base.bg_pattern);
+        if (!strcmp(fg_from, "sbs") || !strcmp(bg_from, "sbs"))
+            inherited++;
+
+        flags[0] = '\0';
+        if (svp->is_infovp)
+            strcat(flags, "ui ");
+        if (svp->output_to_backdrop_buffer)
+            strcat(flags, "backdrop ");
+        if (svp->hidden_flags & VP_NEVER_VISIBLE)
+            strcat(flags, "never-visible ");
+
+        printf("  %-2d %-14s %4d %4d %5d %4d  %4d  %-7s (%s) %-7s (%s) %s\n",
+               ++n, viewport_label(svp),
+               svp->vp.x, svp->vp.y, svp->vp.width, svp->vp.height,
+               svp->parsed_fontid,
+               colour_text(svp->dc_orig_fg, fg_text, sizeof(fg_text)), fg_from,
+               colour_text(svp->dc_orig_bg, bg_text, sizeof(bg_text)), bg_from,
+               flags);
+
+        vp = SKINOFFSETTOPTR(skin_buffer, vp->next);
+    }
+
+    printf("\n  set = named on the viewport's own declaration line\n");
+    printf("  sbs = inherited from the .sbs %%Vi viewport\n");
+    printf("  cfg = neither: the theme default. That is the .cfg's foreground\n"
+           "        and background colour on the player; checkwps reads no .cfg\n"
+           "        and shows its built-in pair instead.\n");
+    if (inherited)
+        printf("\n  %d of %d viewports inherit a colour from the .sbs.\n",
+               inherited, n);
+    printf("\n");
+}
+
 int check_filetype(const char *ext, enum skinnable_screens *skin,
                     enum screen_type *screen)
 {
@@ -651,19 +821,30 @@ int main(int argc, char **argv)
         printf("\t-v\t\tverbose\n");
         printf("\t-vv\t\tmore verbose\n");
         printf("\t-vvv\t\tvery verbose\n");
+        printf("\t--viewports\tprint each skin's resolved viewport table\n");
         printf("\t-h,\t--help\tshow this message\n");
+        printf("\nName an .sbs before a .wps to resolve them together, the\n"
+               "way the player does: a .wps viewport that sets no colour of\n"
+               "its own inherits the .sbs's %%Vi viewport.\n");
         return 1;
     }
 
-    if (argv[1][0] == '-') {
-        filearg++;
-        int i = 1;
-        while (argv[1][i] && argv[1][i] == 'v') {
-            i++;
+    while (argv[filearg] && argv[filearg][0] == '-')
+    {
+        const char *opt = argv[filearg++];
+
+        if (!strcmp(opt, "--viewports"))
+        {
+            want_viewports = true;
+            continue;
+        }
+        for (int i = 1; opt[i] == 'v'; i++)
+        {
             wps_verbose_level++;
             debug_wps = true;
         }
     }
+
     skin_buffer = malloc(SKIN_BUFFER_SIZE);
     if (!skin_buffer)
     {
@@ -718,11 +899,41 @@ int main(int argc, char **argv)
         if (!res) {
             printf("%s parsing failure\n", ext);
             skin_error_format_message();
+            /* A skin can also fail after it has parsed, on a bitmap or a font
+             * it names. That leaves no error line, and the reason is a debugf
+             * which only -v shows. */
+            if (!skin_error_line() && !debug_wps)
+                printf("Run again with -v for the reason.\n");
             ret = 4;
             continue;
         }
 
         printf("%s parsed OK\n\n", ext);
+
+        if (want_viewports)
+            dump_viewports(name, &wps, screen);
+
+        /* An .sbs names the rectangle lists draw in, and every later skin
+         * resolves its own viewports against it. Keep it for the rest of the
+         * run; stubs.c hands it back from sb_skin_get_info_vp(). */
+        if (!strcmp(ext, "sbs") || !strcmp(ext, "rsbs"))
+        {
+            struct skin_viewport *info =
+                skin_find_item(VP_DEFAULT_LABEL_STRING, SKIN_FIND_UIVP, &wps);
+
+            if (!info)
+                info = first_uivp(&wps);
+            if (info)
+            {
+                checkwps_sbs_info_vp = info->vp;
+                checkwps_have_sbs_info_vp = true;
+                /* viewport_set_defaults() consults the info viewport only
+                 * while a theme is on, which is the state a loaded .sbs
+                 * represents. */
+                viewportmanager_theme_enable(screen, true, NULL);
+            }
+        }
+
         if (wps_verbose_level>2)
             skin_debug_tree(SKINOFFSETTOPTR(skin_buffer, wps.tree));
     }

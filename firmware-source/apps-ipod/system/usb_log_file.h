@@ -1,0 +1,45 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * The USB log (usb_log.h) on disk, at USB_LOG_FILE. Two things write it: the
+ * debug menu's USB Log screen while it is open, and, with the Write Debug Log
+ * setting on, a background thread that keeps the file current whenever the
+ * player has its disk. Either way a step that could hang the player waits for
+ * the file first, so the file's last line names it.
+ ****************************************************************************/
+#ifndef _USB_LOG_FILE_H
+#define _USB_LOG_FILE_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include "rbpaths.h"
+#include "system/library_files.h"
+
+#define USB_LOG_FILE LIB_USB_LOG
+
+struct usb_log_entry;
+
+/* In a USB_LOG_IAP entry's `a`, beside the lingo and
+ * USB_LOG_IAP_FROM_PLAYER: the frame came over the serial link */
+#define USB_LOG_IAP_SERIAL 0x40
+
+/* One entry as a line of text, without the newline. */
+void usb_log_file_format(const struct usb_log_entry *e, char *buf,
+                         size_t size);
+
+/* Append everything not yet in the file. */
+void usb_log_file_write(void);
+
+/* The screen opening and closing. Opening writes a header. */
+void usb_log_file_screen(bool open);
+
+/* The setting switched, after debug_log has written its part. */
+void usb_log_file_enable(bool on);
+
+/* The header lines of the log's own: the settings that decide which drivers
+ * the host is offered. */
+void usb_log_file_state(int fd, const char *mark);
+
+void usb_log_file_init(void);
+
+#endif /* _USB_LOG_FILE_H */

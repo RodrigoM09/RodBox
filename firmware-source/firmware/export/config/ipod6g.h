@@ -21,8 +21,8 @@
 /* define this if the ATA controller and method of USB access support LBA48 */
 #define HAVE_LBA48
 
-/* define this if you have recording possibility */
-#define HAVE_RECORDING
+/* Recording support removed for this DAP-only fork. */
+//#define HAVE_RECORDING
 //#define HAVE_AGC
 //#define HAVE_HISTOGRAM
 
@@ -95,10 +95,9 @@
 /* Define this if your LCD can be enabled/disabled */
 #define HAVE_LCD_ENABLE
 
-/* Define this if the target supports composite video output. */
-#ifndef SIMULATOR
+/* Define this if the target supports composite video output. NTSC only, so
+ * no HAVE_VIDEOOUT_STANDARD. */
 #define HAVE_COMPOSITE_VIDEO_OUT
-#endif
 
 /* Define this if your LCD can be put to sleep. HAVE_LCD_ENABLE
    should be defined as well. */
@@ -146,7 +145,7 @@
 #define HAVE_SW_POWEROFF
 
 /* Buffer for plugins and codecs. */
-#define PLUGIN_BUFFER_SIZE  0x200000 /* 2 MiB */
+#define PLUGIN_BUFFER_SIZE  0x300000 /* 3 MiB */
 #define CODEC_SIZE          0x100000 /* 1 MiB */
 
 /* 6g has a standard battery of 550mAh, except for the thick 6g (2007 160gb)
@@ -251,6 +250,11 @@
 #define HAVE_USB_HID_MOUSE
 #define USB_VENDOR_ID 0x05AC
 #define USB_PRODUCT_ID 0x1261
+/* While the USB sound card is on. iTunes' Apple Mobile Device driver claims
+ * 0x1261 by hardware ID, outranking Windows' composite driver, and passes on
+ * only the disk interface -- so Windows never sees the audio function. The
+ * 5G's ID is not in its list. */
+#define USB_PRODUCT_ID_AUDIO 0x1209
 #define USB_DEVBSS_ATTR __attribute__((aligned(32)))
 #define HAVE_BOOTLOADER_USB_MODE
 #ifdef BOOTLOADER
@@ -274,6 +278,14 @@
 #endif
 /* Inline earphone remote, decoded by the jack "Mikey" controller */
 #define HAVE_MIKEY_REMOTE
+/* One thread each for the iAP serial link and the remote's poller.
+ * Short by one and create_thread() returns NULL, which neither caller
+ * checks -- the feature is then simply absent. */
+#if defined(IPOD_ACCESSORY_PROTOCOL) && defined(HAVE_MIKEY_REMOTE)
+#define TARGET_EXTRA_THREADS 2
+#else
+#define TARGET_EXTRA_THREADS 1
+#endif
 #endif
 
 /* Define this if you can switch on/off the accessory power supply */

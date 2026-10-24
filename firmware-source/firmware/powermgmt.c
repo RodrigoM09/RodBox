@@ -35,6 +35,7 @@
 #include "backlight.h"
 #include "lcd.h"
 #include "rtc.h"
+#include "hang_catch.h"
 #if CONFIG_TUNER
 #include "fmradio.h"
 #endif
@@ -101,6 +102,27 @@ unsigned int power_thread_inputs;
 #if CONFIG_CHARGING >= CHARGING_MONITOR
 /* Charging state (mode) as seen by the power thread */
 enum charge_state_type charge_state = DISCHARGING;
+
+/* Charging has finished, with the charger still plugged in.
+ *
+ * Separate from charge_state, which answers a different question.
+ * charge_state follows the *debounced charger presence*: it selects the
+ * voltage-to-percentage curve, and driven from the raw !CHRG pin the reading
+ * jumps between the charge and discharge curves every time the pin
+ * oscillates -- which it does on weak USB supplies near a full battery.
+ *
+ * The 99% cap below needs the other question, "is charge still going in?".
+ * charge_state says CHARGING from the moment the cable goes in until it comes
+ * out, so a cap taken from it holds a full battery at 99% on the charger.
+ *
+ * Debounced over the same number of samples as the charger detection, then
+ * held until the charger is removed -- so a flickering pin cannot flicker the
+ * last percent with it. A pause part way up (a hot battery, say) can set this
+ * early, and costs nothing: the charge curve still governs the number, and it
+ * only reaches 100 when the voltage is genuinely at the top. */
+#define CHARGE_DONE_SAMPLES 8   /* x POWER_THREAD_STEP_TICKS = ~4s */
+static bool charge_finished;
+static int  charge_done_count;
 #endif
 #endif /* CONFIG_CHARGING */
 
@@ -361,10 +383,11 @@ static int voltage_to_battery_level(int millivolts)
         return -1;
 
 #if CONFIG_CHARGING >= CHARGING_MONITOR
-    if (charging_state()) {
-        /* battery level is defined to be < 100% until charging is finished */
+    if (charge_state > DISCHARGING) {
+        /* battery level is defined to be < 100% until charging is finished,
+         * and only until then: a full battery on the charger reads 100%. */
         level = voltage_to_percent(millivolts, percent_to_volt_charge);
-        if (level > 99)
+        if (level > 99 && !charge_finished)
             level = 99;
     }
     else
@@ -595,14 +618,22 @@ static inline void charging_algorithm_step(void)
     {
     case CHARGER_PLUGGED:
     case CHARGER:
-        if (charging_state()) {
-            charge_state = CHARGING;
-            break;
+        charge_state = CHARGING;
+        /* Follow the charger's own "still charging" pin only for the 99% cap,
+         * never for charge_state -- see charge_finished. */
+        if (!charge_finished)
+        {
+            if (charging_state())
+                charge_done_count = 0;
+            else if (++charge_done_count >= CHARGE_DONE_SAMPLES)
+                charge_finished = true;
         }
-    /* Fallthrough */
+        break;
     case CHARGER_UNPLUGGED:
     case NO_CHARGER:
         charge_state = DISCHARGING;
+        charge_finished = false;
+        charge_done_count = 0;
         break;
     }
 }
@@ -725,8 +756,10 @@ static inline void power_thread_step(void)
     if (shutdown_timeout) {
         shutdown_timeout -= POWER_THREAD_STEP_TICKS;
 
-        if (shutdown_timeout <= 0)
+        if (shutdown_timeout <= 0) {
+            hang_catch_stop();
             power_off();
+        }
     }
 
 #ifdef HAVE_RTC_ALARM
@@ -1065,6 +1098,7 @@ void shutdown_hw(enum shutdown_type sd_type)
        byte. */
     sleep(HZ/4);
 
+    hang_catch_stop();
     switch (sd_type) {
     case SHUTDOWN_POWER_OFF:
     default:

@@ -22,7 +22,39 @@
 
 /* [2] P.32 Table 2-8 USB Device Vendor Request to set available current from accessory (USB Device Mode only) */
 #define USB_REQ_APPLE_SET_AVAIL_CURRENT (0x40)
+/* Sent by a Mazda CX-30 before it selects the iAP configuration, a 4-byte
+ * read; nothing public says what it asks. */
+#define USB_REQ_APPLE_0x53 (0x53)
 
 extern struct usb_class_driver_ep_allocation usb_iap_ep_allocs[2];
 
 extern struct usb_class_driver usb_cdrv_iap;
+
+/* iAP2, by the setting: Off, the probe is refused, as an iPod refuses it.
+ * On, it is answered, and the disk is not offered. Auto, it is answered
+ * once the host has sent Apple's vendor request 0x53, as a car looking for
+ * an iPhone does, and the disk handover waits a second after the host
+ * picks a configuration that needs it: a car moves on to the iAP one within
+ * that, and is never handed the disk; a computer stays, and is. With iAP2
+ * not Off, the iAP configuration is an iPhone's: its nine rates and its
+ * name. */
+enum
+{
+    USB_IAP2_MODE_OFF,
+    USB_IAP2_MODE_AUTO,
+    USB_IAP2_MODE_ON,
+};
+void usb_iap_set_iap2_mode(int mode);
+bool usb_iap2_offered(void);
+/* The host has sent 0x53; and a new host, which has not. */
+void usb_iap2_host_is_car(void);
+void usb_iap2_host_new(void);
+
+/* Whether the probe is answered now, by the mode above. */
+bool usb_iap_answer_iap2(void);
+
+/* A bus reset keeps an iAP1 dock's sink, its track waiting where it is. The
+ * dock's rates coming back end the wait (false); another configuration or
+ * the cable going end it as an unplug would, pausing and giving playback
+ * back to the built-in output (true). */
+void usb_iap_end_reset_hold(bool give_back);

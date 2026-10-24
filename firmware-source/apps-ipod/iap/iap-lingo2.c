@@ -1,0 +1,430 @@
+/***************************************************************************
+ * Original code from RockBox
+ * was: apps/iap/iap-lingo2.c
+ * Copyright (C) 2002 by Alan Korr & Nick Robinson
+ *
+ * All files in this archive are subject to the GNU General Public License.
+ * See the file COPYING in the source tree root for full license agreement.
+ * GNU General Public License (version 2+)
+ *
+ * iAP lingo 2 (Simple Remote): basic transport commands from a remote
+ * control.
+ ****************************************************************************/
+
+/* Lingo 0x02, Simple Remote Lingo
+ *
+ * TODO:
+ * - Fix cmd 0x00 handling, there has to be a more elegant way of doing
+ *   this
+ */
+
+#include "iap-core.h"
+#include "iap-lingo.h"
+#include "system.h"
+#include "button.h"
+#include "audio.h"
+#include "settings.h"
+#include "tuner.h"
+#if CONFIG_TUNER
+#include "ipod_remote_tuner.h"
+#endif
+
+/*
+ * This macro is meant to be used inside an IAP mode message handler.
+ * It is passed the expected minimum length of the message buffer.
+ * If the buffer does not have the required lenght an ACK
+ * packet with a Bad Parameter error is generated.
+ */
+#define CHECKLEN(x) do { \
+        if (len < (x)) { \
+            cmd_ack(cmd, IAP_ACK_BAD_PARAM); \
+            return; \
+        }} while(0)
+
+static void cmd_ack(const unsigned char cmd, const unsigned char status)
+{
+    IAP_TX_INIT(0x02, 0x01);
+    IAP_TX_PUT(status);
+    IAP_TX_PUT(cmd);
+
+    iap_send_tx();
+}
+
+#define cmd_ok(cmd) cmd_ack((cmd), IAP_ACK_OK)
+
+void iap_handlepkt_mode2(const unsigned int len, const unsigned char *buf)
+{
+    static bool poweron_pressed = false;
+#if CONFIG_TUNER
+    static bool remote_mute = false;
+#endif
+    unsigned int cmd = buf[1];
+
+    /* We expect at least three bytes in the buffer, one for the
+     * lingo, one for the command, and one for the first button
+     * state bits.
+     */
+    CHECKLEN(3);
+
+    /* Lingo 0x02 must have been negotiated, except for
+     * ContextButtonStatus (0x00): simple remotes like the Apple A1018
+     * identify only once at power-up. If the remote was already
+     * powered before Rockbox started (e.g. plugged in at boot) that
+     * identification is never seen, and rejecting the button events
+     * would leave the remote dead until it is replugged. The OF
+     * accepts these events without identification, so do the same.
+     */
+    if ((cmd != 0x00) && !DEVICE_LINGO_SUPPORTED(0x02)) {
+        cmd_ack(cmd, IAP_ACK_BAD_PARAM);
+        return;
+    }
+
+    switch (cmd)
+    {
+        /* ContextButtonStatus (0x00)
+         *
+         * Transmit button events from the device to the iPod
+         *
+         * Packet format (offset in buf[]: Description)
+         * 0x00: Lingo ID: Simple Remote Lingo, always 0x02
+         * 0x01: Command, always 0x00
+         * 0x02: Button states 0:7
+         * 0x03: Button states 8:15 (optional)
+         * 0x04: Button states 16:23 (optional)
+         * 0x05: Button states 24:31 (optional)
+         *
+         * Returns: (none)
+         */
+        case 0x00:
+        {
+            unsigned long btn = BUTTON_NONE;
+
+            if(buf[2] != 0)
+            {
+                if(buf[2] & 1)
+                {
+                    btn |= BUTTON_RC_PLAY;
+#if CONFIG_TUNER
+                    if (radio_present == 1) {
+                        if (remote_mute == 0) {
+                            /* Not Muted so  radio on*/
+                            tuner_set(RADIO_MUTE,0);
+                        } else {
+                            /* Muted so  radio off*/
+                            tuner_set(RADIO_MUTE,1);
+                        }
+                        remote_mute = !remote_mute;
+                    }
+#endif
+                }
+                if(buf[2] & 2)
+                    btn |= BUTTON_RC_VOL_UP;
+                if(buf[2] & 4)
+                    btn |= BUTTON_RC_VOL_DOWN;
+                if(buf[2] & 8)
+                    btn |= BUTTON_RC_RIGHT;
+                if(buf[2] & 16)
+                    btn |= BUTTON_RC_LEFT;
+                if(buf[2] & 32)
+                    btn |= BUTTON_RC_NEXT_ALBUM;
+                if(buf[2] & 64)
+                    btn |= BUTTON_RC_PREV_ALBUM;
+                if(buf[2] & 128) /* stop */
+                {
+                    if (!iap_btnstop)
+                    {
+                        audio_stop();
+                        iap_btnstop = true;
+                    }
+                }
+            }
+            /* Each byte on its own: a remote may hold buttons from two at
+             * once, such as Volume Up with Menu */
+            if(len >= 4 && buf[3] != 0)
+            {
+                if(buf[3] & 1) /* play */
+                {
+                    if (audio_status() != AUDIO_STATUS_PLAY)
+                        btn |= BUTTON_RC_PLAY;
+#if CONFIG_TUNER
+                    if (radio_present == 1) {
+                        tuner_set(RADIO_MUTE,0);
+                    }
+#endif
+                }
+                /* pause, but not the one a dock such as Onkyo's DS-A3
+                 * sends as it connects: plugging in leaves playback alone */
+                if((buf[3] & 2) &&
+                   TIME_AFTER(current_tick, iap_connected_tick + 2*HZ))
+                {
+                    if (audio_status() == AUDIO_STATUS_PLAY)
+                        btn |= BUTTON_RC_PLAY;
+#if CONFIG_TUNER
+                    if (radio_present == 1) {
+                        tuner_set(RADIO_MUTE,1);
+                    }
+#endif
+                }
+                if(buf[3] & (8 | 16)) /* next or previous chapter */
+                {
+                    if (!iap_btnchapter)
+                        iap_skip_chapter((buf[3] & 8) ? 1 : -1);
+                    iap_btnchapter = true;
+                }
+                if(buf[3] & 32) /* next playlist */
+                    btn |= BUTTON_RC_NEXT_PLAYLIST;
+                if(buf[3] & 64) /* previous playlist */
+                    btn |= BUTTON_RC_PREV_PLAYLIST;
+                if(buf[3] & 128) /* Shuffle */
+                {
+                    if (!iap_btnshuffle)
+                    {
+                        iap_shuffle_state(!global_settings.playlist_shuffle);
+                        iap_btnshuffle = true;
+                    }
+                }
+            }
+            if(len >= 5 && buf[4] != 0)
+            {
+                if(buf[4] & 1) /* repeat */
+                {
+                    if (!iap_btnrepeat)
+                    {
+                        iap_repeat_next();
+                        iap_btnrepeat = true;
+                    }
+                }
+
+                if (buf[4] & 2) /* power on */
+                {
+                    poweron_pressed = true;
+                }
+
+                /* Power off
+                 * Not quite sure how to react to this, but stopping playback
+                 * is a good start.
+                 */
+                if (buf[4] & 0x04)
+                {
+                    if (audio_status() == AUDIO_STATUS_PLAY)
+                        btn |= BUTTON_RC_PLAY;
+                }
+
+                if(buf[4] & 16) /* ffwd */
+                    btn |= BUTTON_RC_RIGHT;
+                if(buf[4] & 32) /* frwd */
+                    btn |= BUTTON_RC_LEFT;
+                if(buf[4] & 64) /* menu */
+                    btn |= BUTTON_RC_MENU;
+                if(buf[4] & 128) /* select */
+                    btn |= BUTTON_RC_SELECT;
+            }
+            if(len >= 6 && buf[5] != 0)
+            {
+                if(buf[5] & 1) /* up */
+                    btn |= BUTTON_RC_UP;
+                if (buf[5] & 2) /* down */
+                    btn |= BUTTON_RC_DOWN;
+            }
+
+            /* Shuffle, Repeat, Stop and the chapter buttons act once a
+             * press: the latch ends when the button is let go, and only the
+             * timeout below ends it for a remote whose release was lost */
+            if (!(buf[2] & 128))
+                iap_btnstop = false;
+            if (!(len >= 4 && (buf[3] & (8 | 16))))
+                iap_btnchapter = false;
+            if (!(len >= 4 && (buf[3] & 128)))
+                iap_btnshuffle = false;
+            if (!(len >= 5 && (buf[4] & 1)))
+                iap_btnrepeat = false;
+
+            /* Commit the new button state in one go. The button driver
+             * reads iap_remotebtn from interrupt context, a transient
+             * BUTTON_NONE between two repeated button-down events would
+             * register as a spurious release/press pair.
+             */
+            if (btn != BUTTON_NONE)
+            {
+                /* Only re-arm iap_repeatbtn when the state changes. A
+                 * held button repeats its down event every 30-100ms,
+                 * re-arming on every repeat makes iap_handlepkt()
+                 * delay each following packet, so packets back up
+                 * during the hold and stale events replay as phantom
+                 * keypresses after the release.
+                 */
+                if (btn != iap_remotebtn)
+                    iap_repeatbtn = 2;
+                iap_remotebtn = btn;
+                iap_timeoutbtn = 3;
+            }
+            else
+            {
+                iap_remotebtn = BUTTON_NONE;
+                iap_timeoutbtn = (iap_btnstop || iap_btnshuffle || iap_btnrepeat
+                                  || iap_btnchapter) ? 3 : 0;
+            }
+
+            /* power on released */
+            if (poweron_pressed && len >= 5 && !(buf[4] & 2))
+            {
+                poweron_pressed = false;
+#ifdef HAVE_LINE_REC
+                /* Belkin TuneTalk microphone sends power-on press+release
+                 * events once authentication sequence is finished,
+                 * GetDevCaps command is ignored by the device when it is
+                 * sent before power-on release event is received.
+                 * XXX: It is unknown if other microphone devices are
+                 * sending the power-on events.
+                 */
+                if (DEVICE_LINGO_SUPPORTED(0x01)) {
+                    /* GetDevCaps */
+                    IAP_TX_INIT(0x01, 0x07);
+                    iap_send_tx();
+                }
+#endif
+            }
+
+            break;
+        }
+        /* ACK (0x01)
+         *
+         * Sent from the iPod to the device
+         */
+
+        /* ImageButtonStatus (0x02)
+         *
+         * Transmit image button events from the device to the iPod
+         *
+         * Packet format (offset in buf[]: Description)
+         * 0x00: Lingo ID: Simple Remote Lingo, always 0x02
+         * 0x01: Command, always 0x02
+         * 0x02: Button states 0:7
+         * 0x03: Button states 8:15 (optional)
+         * 0x04: Button states 16:23 (optional)
+         * 0x05: Button states 24:31 (optional)
+         *
+         * This command requires authentication
+         *
+         * Returns on success:
+         * IAP_ACK_OK
+         *
+         * Returns on failure:
+         * IAP_ACK_*
+         */
+        case 0x02:
+        {
+            if (!DEVICE_AUTHENTICATED) {
+                cmd_ack(cmd, IAP_ACK_NO_AUTHEN);
+                break;
+            }
+
+            cmd_ack(cmd, IAP_ACK_CMD_FAILED);
+            break;
+        }
+
+        /* VideoButtonStatus (0x03)
+         *
+         * Transmit video button events from the device to the iPod
+         *
+         * Packet format (offset in buf[]: Description)
+         * 0x00: Lingo ID: Simple Remote Lingo, always 0x02
+         * 0x01: Command, always 0x03
+         * 0x02: Button states 0:7
+         * 0x03: Button states 8:15 (optional)
+         * 0x04: Button states 16:23 (optional)
+         * 0x05: Button states 24:31 (optional)
+         *
+         * This command requires authentication
+         *
+         * Returns on success:
+         * IAP_ACK_OK
+         *
+         * Returns on failure:
+         * IAP_ACK_*
+         */
+        case 0x03:
+        {
+            if (!DEVICE_AUTHENTICATED) {
+                cmd_ack(cmd, IAP_ACK_NO_AUTHEN);
+                break;
+            }
+
+            cmd_ack(cmd, IAP_ACK_CMD_FAILED);
+            break;
+        }
+
+        /* AudioButtonStatus (0x04)
+         *
+         * Transmit audio button events from the device to the iPod
+         *
+         * Packet format (offset in buf[]: Description)
+         * 0x00: Lingo ID: Simple Remote Lingo, always 0x02
+         * 0x01: Command, always 0x04
+         * 0x02: Button states 0:7
+         * 0x03: Button states 8:15 (optional)
+         * 0x04: Button states 16:23 (optional)
+         * 0x05: Button states 24:31 (optional)
+         *
+         * This command requires authentication
+         *
+         * Returns on success:
+         * IAP_ACK_OK
+         *
+         * Returns on failure:
+         * IAP_ACK_*
+         */
+        case 0x04:
+        {
+            unsigned char repeatbuf[6];
+
+            if (!DEVICE_AUTHENTICATED) {
+                cmd_ack(cmd, IAP_ACK_NO_AUTHEN);
+                break;
+            }
+
+            /* This is basically the same command as ContextButtonStatus (0x00),
+             * with the difference that it requires authentication and that
+             * it returns an ACK packet to the device.
+             * So just route it through the handler again, with 0x00 as the
+             * command
+             */
+            {
+                /* Bytes 0 and 1 mean what ContextButtonStatus's do. Byte 2
+                 * is repeat, Begin FF, Begin REW, then record and reserved,
+                 * so it is translated; byte 3 is reserved. Only what
+                 * arrived is copied: the trailing bytes are optional. */
+                unsigned int n = (len < 6) ? len : 6;
+
+                memset(repeatbuf, 0, sizeof(repeatbuf));
+                memcpy(repeatbuf, buf, n);
+                repeatbuf[1] = 0x00;
+                if (n > 4)
+                {
+                    unsigned char a2 = buf[4], c2 = 0;
+
+                    if (a2 & 0x01) c2 |= 0x01;  /* repeat advance */
+                    if (a2 & 0x02) c2 |= 0x10;  /* Begin FF */
+                    if (a2 & 0x04) c2 |= 0x20;  /* Begin REW */
+                    repeatbuf[4] = c2;
+                }
+                if (n > 5)
+                    repeatbuf[5] = 0;
+                iap_handlepkt_mode2(n, repeatbuf);
+            }
+
+            cmd_ok(cmd);
+            break;
+        }
+
+        /* The default response is IAP_ACK_BAD_PARAM */
+        default:
+        {
+#ifdef LOGF_ENABLE
+            logf("iap: Unsupported Mode02 Command");
+#endif
+            cmd_ack(cmd, IAP_ACK_BAD_PARAM);
+            break;
+        }
+    }
+}

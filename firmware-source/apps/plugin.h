@@ -1052,10 +1052,6 @@ struct plugin_api {
     const struct hw_h264_api *hw_h264;
 #endif
 
-#ifdef HAVE_DISK_STORAGE
-    bool (*storage_get_ssd_mode)(void);
-#endif
-
     /* new stuff at the end, sort into place next time
        the API gets incompatible */
 };

@@ -5,7 +5,6 @@
  *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
  *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
  *                     \/            \/     \/    \/            \/
- * $Id$
  *
  * Copyright (C) 2007 Dave Chapman
  *
@@ -72,8 +71,16 @@ static struct semaphore ata_wakeup;
 static long ata_last_activity_value = -1;
 static long ata_sleep_timeout = 7 * HZ;
 static bool ata_powered;
+/* "Storage mode = SSD". Both drivers power flash off only once the backlight
+ * is off, ten or more seconds after it sleeps; this one also makes the step
+ * before that cheaper -- clock-gate rather than STANDBY IMMEDIATE (see
+ * ssd_deep_asleep). Q_STORAGE_PRE_WAKE, which backlight.c posts when the
+ * backlight comes on, powers the interface back up before the user has
+ * navigated anywhere; drivers/ata.c handles it the same way. */
 static bool ata_ssd_mode = false;
 static long ssd_sleep_tick;
+/* True when the next power-up must be a full init: the drive is unpowered
+ * (any power-down, not only the SSD deep sleep) or is being hard reset. */
 static bool ssd_deep_asleep;
 static struct semaphore mmc_wakeup;
 static struct semaphore mmc_comp_wakeup;
@@ -665,7 +672,6 @@ static int ata_power_up(void)
             ata_powered = true;
             return 0;
         }
-        ssd_deep_asleep = false;
         /* Fall through to full PATA init below */
     }
 
@@ -786,6 +792,7 @@ static int ata_power_up(void)
     }
 
     ata_powered = true;
+    ssd_deep_asleep = false;
     ata_set_active();
     return 0;
 }
@@ -804,6 +811,7 @@ static void ata_power_down(void)
     PCON(11) &= ~0xf;
     ide_power_enable(false);
     ata_powered = false;
+    ssd_deep_asleep = true;
 }
 
 static int ata_rw_chunk_internal(uint64_t sector, uint32_t cnt, void* buffer, bool write)
@@ -935,10 +943,13 @@ static int ata_transfer_sectors(uint64_t sector, int count, void* buffer, int wr
     if (sector + count > total_sectors)
         RET_ERR(0);
     ata_set_active();
-    if (ata_dma && write)
-        commit_dcache();
-    else if (ata_dma)
-        commit_discard_dcache();
+    if (ata_dma) {
+        int xfer_size = count * log_sector_size;
+        if (write)
+            commit_dcache_range(buffer, xfer_size);
+        else
+            commit_discard_dcache_range(buffer, xfer_size);
+    }
     if (!ceata)
         ATA_COMMAND = BIT(1);
 
@@ -1007,6 +1018,7 @@ int ata_soft_reset(void)
 int ata_hard_reset(void)
 {
     mutex_lock(&ata_mutex);
+    ssd_deep_asleep = true; /* a reset is a full init, never the fast path */
     PASS_RC(ata_power_up(), 0, 0);
     ata_set_active();
     mutex_unlock(&ata_mutex);
@@ -1141,7 +1153,6 @@ void ata_sleepnow(void)
         logf("ata SSD SLEEP %ld", current_tick);
         PWRCON(0) |= (1 << 5);
         ata_powered = false;
-        ssd_deep_asleep = false;
         ssd_sleep_tick = current_tick;
     } else if (ata_disk_can_sleep()) {
         logf("ata SLEEP %ld", current_tick);
@@ -1176,18 +1187,13 @@ void ata_spin(void)
 
 void ata_set_storage_mode(int mode)
 {
-    bool ssd = (mode == 2) || (mode == 0 && ata_disk_isssd());
-    mutex_lock(&ata_mutex);
-    if (ssd != ata_ssd_mode && !ata_powered)
-    {
-        if (IS_ERR(ata_power_up()))
-        {
-            mutex_unlock(&ata_mutex);
-            return;
-        }
-    }
-    ata_ssd_mode = ssd;
-    mutex_unlock(&ata_mutex);
+    /* 0=auto, 1=HDD, 2=SSD */
+    if (mode == 2)
+        ata_ssd_mode = true;
+    else if (mode == 1)
+        ata_ssd_mode = false;
+    else /* auto */
+        ata_ssd_mode = ata_disk_isssd();
 }
 
 bool ata_get_ssd_mode(void)
@@ -1348,11 +1354,11 @@ int ata_event(long id, intptr_t data)
         if (!ata_powered ||
             TIME_BEFORE(current_tick, ata_last_activity_value + ata_sleep_timeout))
         {
-            /* Phase 2: SSD deep sleep — cut AUTOLDO after 30s of
+            /* Phase 2: SSD deep sleep — cut AUTOLDO after 10s of
              * clock-gate sleep when backlight is off */
             if (ata_ssd_mode && !ata_powered && !ssd_deep_asleep
                 && !is_backlight_on(true)
-                && TIME_AFTER(current_tick, ssd_sleep_tick + 30 * HZ))
+                && TIME_AFTER(current_tick, ssd_sleep_tick + 10 * HZ))
             {
                 mutex_lock(&ata_mutex);
                 if (!ata_powered && !ssd_deep_asleep)

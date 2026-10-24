@@ -42,6 +42,8 @@ AUDIOHW_SETTING(MIC_GAIN,     "dB", 0,  1, -96,   0,   0, val + PGA_GAIN_DB)
 #define DSP_MODULE_MONITOR      (1 << 1)
 
 void audiohw_enable_lineout(bool enable);
+void audiohw_idle_powerdown(void);
+void audiohw_idle_powerup(void);
 
 /* Register addresses and bits */
 

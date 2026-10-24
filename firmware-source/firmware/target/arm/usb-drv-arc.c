@@ -28,6 +28,7 @@
 #include "kernel.h"
 #include "panic.h"
 #include "usb_drv.h"
+#include "usb_log.h"
 
 /*#define LOGF_ENABLE*/
 #include "logf.h"
@@ -463,6 +464,20 @@ void usb_drv_startup(void)
        ((type) == USB_ENDPOINT_XFER_INT ? "INTR" : "INVL"))))
 #endif
 
+/* Isochronous transfers logged per pipe since its endpoint was set up: the
+ * first few starts, and errors, each up to ISO_LOG_MAX. */
+#define ISO_LOG_MAX 8
+static uint8_t iso_starts_logged[USB_NUM_ENDPOINTS*2];
+static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS*2];
+
+static bool pipe_is_iso(int ep_num, bool send)
+{
+    unsigned int ctrl = REG_ENDPTCTRL(ep_num);
+    int type = send ? (ctrl & EPCTRL_TX_TYPE) >> EPCTRL_TX_EP_TYPE_SHIFT
+                    : (ctrl & EPCTRL_RX_TYPE) >> EPCTRL_RX_EP_TYPE_SHIFT;
+    return ep_num != EP_CONTROL && type == USB_ENDPOINT_XFER_ISOC;
+}
+
 static void init_endpoint(int ep, int type, int mps) {
     const int ep_num = EP_NUM(ep);
     const int ep_dir = EP_DIR(ep);
@@ -496,12 +511,698 @@ static void init_endpoint(int ep, int type, int mps) {
         qh->max_pkt_length = mps << QH_MAX_PKT_LEN_POS | QH_ZLT_SEL;
 
     qh->dtd.next_td_ptr = QH_NEXT_TERMINATE;
+
+    int pipe = ep_num * 2 + (ep_dir == DIR_IN ? 1 : 0);
+    iso_starts_logged[pipe] = 0;
+    iso_errors_logged[pipe] = 0;
+    usb_log(USB_LOG_EP_INIT, ep, type, mps, qh->max_pkt_length);
 }
 
+
+static struct usb_drv_hw_info hw_info;
+
+const struct usb_drv_hw_info *usb_drv_get_hw_info(void)
+{
+    return &hw_info;
+}
+
+/* HWHOST bit 0 is host capability; bits 3:1 are the root port count - 1. */
+static void read_hw_info(void)
+{
+    hw_info.regs[0].name = "ID";
+    hw_info.regs[0].val = REG_ID;
+    hw_info.regs[1].name = "HWGENERAL";
+    hw_info.regs[1].val = REG_HWGENERAL;
+    hw_info.regs[2].name = "HWHOST";
+    hw_info.regs[2].val = REG_HWHOST;
+    hw_info.regs[3].name = "HWDEVICE";
+    hw_info.regs[3].val = REG_HWDEVICE;
+    hw_info.host_capable = hw_info.regs[2].val & 1;
+    hw_info.host_units = ((hw_info.regs[2].val >> 1) & 7) + 1;
+    hw_info.nregs = 4;
+}
+
+/* Host probe. The controller is an EHCI host with one root port; a
+ * full-speed device is reached through a transaction translator, the
+ * controller's own (HOST_TT_PORT) or a high-speed hub's. PORTSC1's change
+ * bits clear when written as 1, and writing PE as 1 does nothing, so every
+ * write masks all four. */
+#define PORTSCX_WRITE_MASK (PORTSCX_CONNECT_STATUS_CHANGE | \
+                            PORTSCX_PORT_ENABLE | \
+                            PORTSCX_PORT_EN_DIS_CHANGE | \
+                            PORTSCX_OVER_CURRENT_CHG)
+
+static bool host_active;
+static bool host_reset_done;
+static int host_resets;
+/* Held by whoever drives the control schedule or the port, as these may
+ * sleep and the USB, UI and audio threads all reach them; recursive, as the
+ * poll enumerates through usb_drv_host_control() */
+static struct mutex host_mtx;
+static bool host_mtx_ready;
+
+/* One wait between reads of the controller: 100 us for the first
+ * millisecond, which is all a transfer usually takes, then a tick at a
+ * time, so a slow or refusing device lets the other threads run */
+static void host_wait(int polls)
+{
+    if (polls < 10)
+        udelay(100);
+    else
+        sleep(1);
+}
+
+/* EHCI 1.0 section 3.5: queue element transfer descriptor */
+struct ehci_qtd {
+    uint32_t next;
+    uint32_t alt_next;
+    uint32_t token;
+    uint32_t buf[5];
+};
+
+/* EHCI 1.0 section 3.6: queue head, padded to 64 bytes */
+struct ehci_qh {
+    uint32_t link;
+    uint32_t chars;
+    uint32_t caps;
+    uint32_t current;
+    struct ehci_qtd overlay;
+    uint32_t pad[4];
+};
+
+#define EHCI_T          (1 << 0)
+#define EHCI_TYP_QH     (1 << 1)
+#define QTD_HALTED      (1 << 6)
+#define QTD_ACTIVE      (1 << 7)
+#define QTD_PID_OUT     (0 << 8)
+#define QTD_PID_IN      (1 << 8)
+#define QTD_PID_SETUP   (2 << 8)
+#define QTD_CERR3       (3 << 10)
+#define QTD_IOC         (1 << 15)
+#define QTD_BYTES(n)    ((n) << 16)
+#define QTD_TOGGLE      (1u << 31)
+#define QH_EPS_FULL     (0 << 12)
+#define QH_EPS_HIGH     (2 << 12)
+#define QH_CTRL_EP      (1 << 27)   /* control endpoint below high speed */
+#define QH_HUB_ADDR(n)  ((n) << 16)
+#define QH_HUB_PORT(n)  ((n) << 23)
+#define QH_DTC          (1 << 14)
+#define QH_HEAD         (1 << 15)
+#define QH_MPS(n)       ((n) << 16)
+#define QH_MULT1        (1u << 30)
+
+/* Everything the controller reads or writes. It is only ever touched
+ * through its uncached alias, which is also the address the controller
+ * takes; the type's alignment pads it to whole cache lines, so no
+ * neighbour's write-back can land on it. */
+struct host_dma {
+    struct ehci_qh qh;
+    struct ehci_qtd qtd[3];
+    struct usb_ctrlrequest setup;
+    uint8_t data[1024];
+} __attribute__((aligned(32)));
+
+static struct host_dma host_dma_mem;
+static struct host_dma *hd;
+static uint32_t host_last_status;
+static struct usb_drv_host_route host_routes[USB_DRV_HOST_ADDRS];
+/* A full-speed device on the root port is reached through the controller's
+ * own transaction translator: hub address 0, port 1. */
+#define HOST_TT_PORT    1
+
+void usb_drv_host_set_route(int addr, const struct usb_drv_host_route *r)
+{
+    if (addr >= 0 && addr < USB_DRV_HOST_ADDRS)
+        host_routes[addr] = *r;
+}
+
+static const struct usb_drv_host_route *host_route(int addr)
+{
+    return &host_routes[addr >= 0 && addr < USB_DRV_HOST_ADDRS ? addr : 0];
+}
+
+/* The translator's port: a hub's, or with tt_hub 0 the controller's own */
+static int host_tt_port(const struct usb_drv_host_route *r)
+{
+    return r->tt_hub ? r->tt_port : HOST_TT_PORT;
+}
+
+bool usb_drv_host_high_speed(void)
+{
+    return (REG_PORTSC1 & PORTSCX_PORT_SPEED_MASK) == PORTSCX_PORT_SPEED_HIGH;
+}
+
+uint32_t usb_drv_host_last_status(void)
+{
+    return host_last_status;
+}
+
+static void qtd_fill(struct ehci_qtd *qtd, void *next, void *alt,
+                     uint32_t token, void *buf)
+{
+    uint32_t a = (uint32_t)buf;
+
+    qtd->next = next ? (uint32_t)next : EHCI_T;
+    qtd->alt_next = alt ? (uint32_t)alt : EHCI_T;
+    qtd->token = token;
+    qtd->buf[0] = a;
+    for (int i = 1; i < 5; i++)
+        qtd->buf[i] = (a & ~0xfff) + i * 0x1000;
+}
+
+/* One control transfer to endpoint 0 of a high- or full-speed device, on an
+ * async schedule holding one queue head. Returns the data-stage byte count,
+ * or -1 with host_last_status set from the qTD that halted or never
+ * finished. */
+static int host_control(int addr, int reqtype, int req, int value,
+                        int index, int len)
+{
+    struct ehci_qtd *setup = &hd->qtd[0];
+    struct ehci_qtd *data = &hd->qtd[1];
+    struct ehci_qtd *status = &hd->qtd[2];
+    const struct usb_drv_host_route *r = host_route(addr);
+    bool in = reqtype & USB_DIR_IN;
+    uint32_t token = QTD_ACTIVE | QTD_CERR3;
+    int n = -1;
+    long end;
+
+    hd->setup.bRequestType = reqtype;
+    hd->setup.bRequest = req;
+    hd->setup.wValue = value;
+    hd->setup.wIndex = index;
+    hd->setup.wLength = len;
+
+    /* The status stage runs opposite to the data stage, and IN if there is
+     * none. A short IN packet skips to it through alt_next. */
+    qtd_fill(status, NULL, NULL, token | QTD_IOC | QTD_TOGGLE |
+             ((len && in) ? QTD_PID_OUT : QTD_PID_IN), NULL);
+    qtd_fill(data, status, status, token | QTD_TOGGLE | QTD_BYTES(len) |
+             (in ? QTD_PID_IN : QTD_PID_OUT), hd->data);
+    qtd_fill(setup, len ? data : status, NULL,
+             token | QTD_PID_SETUP | QTD_BYTES(8), &hd->setup);
+
+    hd->qh.link = (uint32_t)&hd->qh | EHCI_TYP_QH;
+    if (r->high_speed)
+    {
+        hd->qh.chars = addr | QH_EPS_HIGH | QH_DTC | QH_HEAD |
+                       QH_MPS(r->mps);
+        hd->qh.caps = QH_MULT1;
+    }
+    else
+    {
+        hd->qh.chars = addr | QH_EPS_FULL | QH_DTC | QH_HEAD | QH_CTRL_EP |
+                       QH_MPS(r->mps);
+        hd->qh.caps = QH_MULT1 | QH_HUB_ADDR(r->tt_hub) |
+                      QH_HUB_PORT(host_tt_port(r));
+    }
+    hd->qh.current = 0;
+    hd->qh.overlay.next = (uint32_t)setup;
+    hd->qh.overlay.alt_next = EHCI_T;
+    hd->qh.overlay.token = 0;
+
+    REG_ENDPOINTLISTADDR = (uint32_t)&hd->qh;
+    REG_USBCMD |= USBCMD_ASYNC_SCHEDULE_EN;
+
+    end = current_tick + HZ / 2;
+    for (int t = 0; ; t++)
+    {
+        host_wait(t);
+        if ((setup->token | data->token | status->token) & QTD_HALTED)
+            break;
+        if (!(status->token & QTD_ACTIVE))
+        {
+            n = len - ((data->token >> 16) & 0x7fff);
+            break;
+        }
+        if (TIME_AFTER(current_tick, end))
+            break;
+    }
+
+    if (n < 0)
+        host_last_status = (setup->token & (QTD_ACTIVE | QTD_HALTED)) ?
+                          setup->token :
+                          (len && (data->token & (QTD_ACTIVE | QTD_HALTED))) ?
+                          data->token : status->token;
+    usb_log(USB_LOG_HOST_EHCI, addr,
+            req | host_tt_port(r) << 8,
+            n < 0 ? host_last_status : 0, (uint32_t)n);
+
+    REG_USBCMD &= ~USBCMD_ASYNC_SCHEDULE_EN;
+    for (int t = 0; t < 100 && (REG_USBSTS & USBSTS_ASYNC_SCHEDULE); t++)
+        udelay(100);
+    return n;
+}
+
+int usb_drv_host_control(int addr, int reqtype, int req, int value,
+                         int index, void *data, int len)
+{
+    int n = -1;
+
+    if (!host_active)
+        return -1;
+    mutex_lock(&host_mtx);
+    if (host_active && len <= (int)sizeof hd->data)
+    {
+        if (!(reqtype & USB_DIR_IN))
+            memcpy(hd->data, data, len);
+        n = host_control(addr, reqtype, req, value, index, len);
+        if (n > 0 && (reqtype & USB_DIR_IN))
+            memcpy(data, hd->data, n);
+    }
+    mutex_unlock(&host_mtx);
+    return n;
+}
+
+/* EHCI 1.0 section 3.3: isochronous transfer descriptor, one 1 ms frame of
+ * one endpoint, one transaction slot per microframe. */
+struct ehci_itd {
+    uint32_t next;
+    uint32_t trans[8];
+    uint32_t page[7];
+};
+
+#define ITD_ACTIVE      (1u << 31)
+#define ITD_ERRORS      (7u << 28)
+#define ITD_LEN(n)      ((n) << 16)
+#define ITD_DIR_IN      (1 << 11)
+
+/* EHCI 1.0 section 3.4: split isochronous transfer descriptor, one 1 ms
+ * frame of a full-speed endpoint behind a transaction translator. Padded to
+ * the 32 bytes the controller's alignment asks for. */
+struct ehci_sitd {
+    uint32_t next;
+    uint32_t ep;            /* port, hub, endpoint, address */
+    uint32_t uframe;        /* complete-split and start-split masks */
+    uint32_t results;       /* active, status, bytes left */
+    uint32_t buf[2];
+    uint32_t back;
+    uint32_t pad;
+};
+
+#define EHCI_TYP_SITD   (2 << 1)
+#define SITD_ACTIVE     (1 << 7)
+#define SITD_ERRORS     0x7c
+#define SITD_LEN(n)     ((n) << 16)
+
+/* The periodic schedule. Every frame-list entry for frame f leads to the
+ * feedback iTD then the OUT iTD of slot f % ISO_SLOTS, or at full speed to
+ * the slot's siTD. The refill keeps
+ * between 2 and ISO_AHEAD frames queued, so it never rewrites the slot the
+ * controller is on. Each slot's buffer lies inside one 4 KB page, so every
+ * transaction uses page pointer 0. */
+#define ISO_SLOTS       32
+#define ISO_AHEAD       24
+#define ISO_SLOT_BYTES  512
+
+struct host_iso_dma {
+    uint32_t framelist[1024];
+    struct ehci_sitd sout[ISO_SLOTS];
+    struct ehci_itd out[ISO_SLOTS];
+    struct ehci_itd fb[ISO_SLOTS];
+    uint8_t buf[ISO_SLOTS][ISO_SLOT_BYTES];
+    uint32_t fbbuf[ISO_SLOTS];
+} __attribute__((aligned(4096)));
+
+static struct host_iso_dma host_iso_mem;
+static struct host_iso_dma *iso_dma;
+static struct usb_drv_host_iso iso_cfg;
+static struct usb_drv_host_iso_stats iso_stats;
+static unsigned int iso_next;          /* next frame to fill */
+static bool iso_full_speed;            /* siTDs, one packet a frame */
+static uint32_t iso_acc;               /* samples owed, 16.16 */
+static bool iso_fb_armed[ISO_SLOTS];
+static uint32_t iso_fb_ceiling;        /* the most a packet carries, 16.16 */
+
+static void itd_init(struct ehci_itd *itd, void *buf, int ep, int dir,
+                     int mps)
+{
+    memset(itd, 0, sizeof *itd);
+    itd->next = EHCI_T;
+    itd->page[0] = ((uint32_t)buf & ~0xfff) | (ep << 8) | iso_cfg.addr;
+    itd->page[1] = dir | mps;
+    itd->page[2] = 1;       /* one transaction per microframe */
+}
+
+/* A feedback value is 16.16 samples per microframe. One more than an
+ * eighth away from nominal is taken as noise, not a rate, and one above what
+ * the packets carry is held at that, or the owed samples grow unbounded. */
+static void iso_take_feedback(int slot)
+{
+    uint32_t t = iso_dma->fb[slot].trans[0];
+    uint32_t v, nom = iso_cfg.nominal;
+
+    iso_fb_armed[slot] = false;
+    if (t & (ITD_ACTIVE | ITD_ERRORS))
+    {
+        iso_stats.errors += !!(t & ITD_ERRORS);
+        return;
+    }
+    if (((t >> 16) & 0xfff) < 3)
+        return;
+    v = iso_dma->fbbuf[slot];
+    iso_stats.fb_raw = v;
+    if (v > nom - nom / 8 && v < nom + nom / 8)
+    {
+        iso_stats.feedback = MIN(v, iso_fb_ceiling);
+        iso_stats.fb_ok++;
+    }
+    else
+        iso_stats.fb_bad++;
+}
+
+/* Full speed: one packet a frame, started with a single start-split in
+ * microframe 0 while it fits the translator's 188 bytes. Feedback is not
+ * read; the stream runs at the nominal rate. */
+static void iso_fill_sitd(int slot)
+{
+    struct ehci_sitd *s = &iso_dma->sout[slot];
+    uint8_t *buf = iso_dma->buf[slot];
+    int max = MIN(iso_cfg.mps_out, ISO_SLOT_BYTES) / iso_cfg.frame_bytes;
+    int n, bytes, splits;
+    uint32_t a = (uint32_t)buf;
+
+    if (s->results & SITD_ERRORS)
+        iso_stats.errors++;
+    iso_acc += iso_stats.feedback;
+    n = MIN((int)(iso_acc >> 16), max);
+    iso_acc -= (uint32_t)n << 16;
+    bytes = n * iso_cfg.frame_bytes;
+    iso_cfg.fill(buf, n);
+
+    splits = MAX(1, (bytes + 187) / 188);
+    s->uframe = (1 << splits) - 1;
+    s->buf[0] = a;
+    s->buf[1] = ((a + bytes) & ~0xfff) | (splits > 1 ? 1 << 3 : 0) | splits;
+    s->results = SITD_ACTIVE | SITD_LEN(bytes);
+}
+
+static void iso_fill_slot(int slot, unsigned int frame)
+{
+    struct ehci_itd *o = &iso_dma->out[slot];
+    struct ehci_itd *f = &iso_dma->fb[slot];
+    uint8_t *buf = iso_dma->buf[slot];
+    uint32_t base = (uint32_t)buf & 0xfff;
+    int step = iso_cfg.interval_out;
+    int max = MIN(iso_cfg.mps_out, ISO_SLOT_BYTES / (8 / step)) /
+              iso_cfg.frame_bytes;
+    int off = 0;
+
+    for (int m = 0; m < 8; m++)
+    {
+        if (o->trans[m] & ITD_ERRORS)
+            iso_stats.errors++;
+        o->trans[m] = 0;
+    }
+    if (iso_fb_armed[slot])
+        iso_take_feedback(slot);
+
+    for (int m = 0; m < 8; m += step)
+    {
+        int n, bytes;
+
+        iso_acc += iso_stats.feedback * step;
+        n = MIN((int)(iso_acc >> 16), max);
+        iso_acc -= (uint32_t)n << 16;
+        bytes = n * iso_cfg.frame_bytes;
+        iso_cfg.fill(buf + off, n);
+        o->trans[m] = ITD_ACTIVE | ITD_LEN(bytes) | (base + off);
+        off += bytes;
+    }
+
+    if (iso_cfg.ep_fb &&
+        frame % MAX(1, iso_cfg.interval_fb / 8) == 0)
+    {
+        f->trans[0] = ITD_ACTIVE | ITD_LEN(iso_cfg.mps_fb) |
+                      ((uint32_t)&iso_dma->fbbuf[slot] & 0xfff);
+        iso_fb_armed[slot] = true;
+    }
+}
+
+static void iso_tick(void)
+{
+    unsigned int cur = (REG_FRINDEX >> 3) & 1023;
+    unsigned int ahead = (iso_next - cur) & 1023;
+
+    if (!(REG_PORTSC1 & PORTSCX_CURRENT_CONNECT_STATUS))
+    {
+        if (!iso_stats.lost)
+        {
+            iso_stats.lost = true;
+            if (iso_cfg.lost)
+                iso_cfg.lost();
+        }
+        return;
+    }
+    if (iso_cfg.begin && !iso_cfg.begin())
+        return;
+
+    if (ahead < 2 || ahead > ISO_AHEAD)
+    {
+        if (ahead < 2 || ahead > 512)
+        {
+            iso_stats.underruns++;
+            iso_next = (cur + 4) & 1023;
+        }
+        else
+            return;
+    }
+    while (((iso_next - cur) & 1023) < ISO_AHEAD)
+    {
+        if (iso_full_speed)
+            iso_fill_sitd(iso_next % ISO_SLOTS);
+        else
+            iso_fill_slot(iso_next % ISO_SLOTS, iso_next);
+        iso_next = (iso_next + 1) & 1023;
+        iso_stats.frames++;
+        if (iso_stats.frames % 1000 == 0)
+            usb_log(USB_LOG_HOST_ISO, 1, 0, iso_stats.frames,
+                    iso_stats.underruns | iso_stats.errors << 16);
+    }
+}
+
+bool usb_drv_host_iso_start(const struct usb_drv_host_iso *iso)
+{
+    if (!host_active || iso_stats.running || iso->frame_bytes <= 0 ||
+        iso->interval_out < 1 || iso->interval_out > 8)
+        return false;
+
+    iso_dma = UNCACHED_ADDR(&host_iso_mem);
+    iso_cfg = *iso;
+    /* A longer feedback packet is then babble, not a write past fbbuf */
+    iso_cfg.mps_fb = MIN(iso->mps_fb, (int)sizeof iso_dma->fbbuf[0]);
+    memset(&iso_stats, 0, sizeof iso_stats);
+    memset(iso_fb_armed, 0, sizeof iso_fb_armed);
+    iso_stats.feedback = iso->nominal;
+    iso_acc = 0;
+
+    iso_full_speed = !host_route(iso->addr)->high_speed;
+    iso_fb_ceiling = (uint32_t)(MIN(iso->mps_out,
+                          usb_drv_host_iso_max_packet(!iso_full_speed,
+                                                      iso->interval_out)) /
+                      iso->frame_bytes << 16) /
+                     (iso_full_speed ? 1 : iso->interval_out);
+    for (int s = 0; s < ISO_SLOTS; s++)
+    {
+        struct ehci_sitd *st = &iso_dma->sout[s];
+
+        memset(st, 0, sizeof *st);
+        st->next = EHCI_T;
+        st->ep = host_tt_port(host_route(iso->addr)) << 24 |
+                 host_route(iso->addr)->tt_hub << 16 |
+                 (iso->ep_out & 0xf) << 8 | iso_cfg.addr;
+        st->back = EHCI_T;
+        itd_init(&iso_dma->out[s], iso_dma->buf[s], iso->ep_out, 0,
+                 iso->mps_out);
+        itd_init(&iso_dma->fb[s], &iso_dma->fbbuf[s], iso->ep_fb & 0xf,
+                 ITD_DIR_IN, iso_cfg.mps_fb);
+        iso_dma->fb[s].next = (uint32_t)&iso_dma->out[s];
+    }
+    for (int i = 0; i < 1024; i++)
+        iso_dma->framelist[i] = iso_full_speed ?
+            (uint32_t)&iso_dma->sout[i % ISO_SLOTS] | EHCI_TYP_SITD :
+            (uint32_t)&iso_dma->fb[i % ISO_SLOTS];
+
+    REG_DEVICEADDR = (uint32_t)iso_dma->framelist;    /* PERIODICLISTBASE */
+    iso_next = (((REG_FRINDEX >> 3) + 4) & 1023);
+    iso_tick();
+    REG_USBCMD |= USBCMD_PERIODIC_SCHEDULE_EN;
+    for (int t = 0; t < 100 && !(REG_USBSTS & USBSTS_PERIODIC_SCHEDULE); t++)
+        udelay(100);
+    iso_stats.running = true;
+    tick_add_task(iso_tick);
+    return true;
+}
+
+void usb_drv_host_iso_stop(void)
+{
+    if (!iso_stats.running)
+        return;
+    tick_remove_task(iso_tick);
+    iso_stats.running = false;
+    REG_USBCMD &= ~USBCMD_PERIODIC_SCHEDULE_EN;
+    for (int t = 0; t < 100 && (REG_USBSTS & USBSTS_PERIODIC_SCHEDULE); t++)
+        udelay(100);
+}
+
+void usb_drv_host_iso_set_nominal(uint32_t nominal)
+{
+    int oldlevel = disable_irq_save();
+    iso_cfg.nominal = nominal;
+    iso_stats.feedback = nominal;
+    restore_irq(oldlevel);
+}
+
+/* A frame's slot buffer is shared by its eight microframes' packets */
+int usb_drv_host_iso_max_packet(bool high_speed, int interval_out)
+{
+    if (!high_speed)
+        return ISO_SLOT_BYTES;
+    return ISO_SLOT_BYTES / (8 / interval_out);
+}
+
+void usb_drv_host_iso_get_stats(struct usb_drv_host_iso_stats *st)
+{
+    *st = iso_stats;
+}
+
+void usb_drv_host_start(void)
+{
+    if (!host_mtx_ready)
+    {
+        mutex_init(&host_mtx);
+        host_mtx_ready = true;
+    }
+    mutex_lock(&host_mtx);
+    commit_discard_dcache();
+    hd = UNCACHED_ADDR(&host_dma_mem);
+#ifdef HAVE_USB_HOST
+    usb_host_enum_clear();
+#endif
+
+    usb_drv_int_enable(false);
+    usb_drv_reset();
+    REG_USBMODE = USBMODE_CTRL_MODE_HOST;
+    REG_USBINTR = 0;
+    REG_PORTSC1 = (REG_PORTSC1 & ~PORTSCX_WRITE_MASK) | PORTSCX_PORT_POWER;
+    REG_USBCMD |= USBCMD_RUN;
+    host_reset_done = false;
+    host_resets = 0;
+    host_active = true;
+    mutex_unlock(&host_mtx);
+}
+
+void usb_drv_host_stop(void)
+{
+    mutex_lock(&host_mtx);
+    usb_drv_host_iso_stop();
+    host_active = false;
+    REG_PORTSC1 &= ~(PORTSCX_WRITE_MASK | PORTSCX_PORT_POWER);
+    REG_USBCMD &= ~USBCMD_RUN;
+    REG_USBCMD |= USBCMD_CTRL_RESET;
+    while (REG_USBCMD & USBCMD_CTRL_RESET);
+    mutex_unlock(&host_mtx);
+}
+
+void usb_drv_host_poll(struct usb_drv_host_status *st)
+{
+    static const char * const speeds[] = { "full", "low", "high", "?" };
+    unsigned int portsc;
+
+    st->active = host_active;
+    if (!host_active)
+        return;
+    mutex_lock(&host_mtx);
+    st->active = host_active;
+    if (!host_active)
+    {
+        mutex_unlock(&host_mtx);
+        return;
+    }
+
+    portsc = REG_PORTSC1;
+    if (!(portsc & PORTSCX_CURRENT_CONNECT_STATUS))
+    {
+        usb_drv_host_iso_stop();
+        host_reset_done = false;
+        REG_PORTSC1 &= ~(PORTSCX_WRITE_MASK | PORTSCX_PORT_FORCE_FULL_SPEED);
+#ifdef HAVE_USB_HOST
+        usb_host_enum_clear();
+#endif
+    }
+    else if (!host_reset_done)
+    {
+        /* 100 ms connect debounce, then a 60 ms root-port reset. The
+         * controller may time the reset itself; if not, end it here. A
+         * device that is not ready gets two more tries from a fresh reset. */
+        host_reset_done = true;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            host_resets++;
+            sleep(HZ / 10);
+            REG_PORTSC1 = (REG_PORTSC1 & ~PORTSCX_WRITE_MASK) |
+                          PORTSCX_PORT_RESET;
+            sleep(HZ * 60 / 1000);
+            if (REG_PORTSC1 & PORTSCX_PORT_RESET)
+                REG_PORTSC1 &= ~(PORTSCX_WRITE_MASK | PORTSCX_PORT_RESET);
+            sleep(HZ / 50);
+            portsc = REG_PORTSC1;
+            usb_log(USB_LOG_HOST_PORT, attempt, 0, portsc, HOST_TT_PORT);
+#ifdef HAVE_USB_HOST
+            if (portsc & PORTSCX_PORT_ENABLE)
+            {
+                const struct usb_drv_host_enum *e = usb_host_get_enum();
+
+                usb_host_enumerate();
+                portsc = REG_PORTSC1;
+                /* A full-speed device behind a high-speed hub would take
+                 * its stream as start splits of 188 bytes, more than the
+                 * 128-byte transmit FIFO, which then runs dry whenever
+                 * memory is busy. With the hub held at full speed, the
+                 * stream goes through the controller's own translator. That
+                 * reset is not one of the three tries, and happens once. */
+                if (e->result == 1 && e->hub_ports && !e->high_speed &&
+                    usb_drv_host_high_speed() &&
+                    !(REG_PORTSC1 & PORTSCX_PORT_FORCE_FULL_SPEED))
+                {
+                    REG_PORTSC1 = (REG_PORTSC1 & ~PORTSCX_WRITE_MASK) |
+                                  PORTSCX_PORT_FORCE_FULL_SPEED;
+                    usb_host_enum_clear();
+                    attempt--;
+                    continue;
+                }
+                if (e->result == 1)
+                    break;
+            }
+#else
+            break;
+#endif
+        }
+    }
+
+    st->host_mode = (REG_USBMODE & 3) == USBMODE_CTRL_MODE_HOST;
+    st->vbus = REG_OTGSC & (OTGSC_A_VBUS_VALID | OTGSC_B_SESSION_VALID);
+    st->connected = portsc & PORTSCX_CURRENT_CONNECT_STATUS;
+    st->enabled = portsc & PORTSCX_PORT_ENABLE;
+    st->line = (portsc >> 10) & 3;
+    st->speed = st->enabled ? speeds[(portsc >> 26) & 3] : "-";
+    st->resets = host_resets;
+    st->regs[0].name = "PORTSC1";
+    st->regs[0].val = portsc;
+    st->regs[1].name = "OTGSC";
+    st->regs[1].val = REG_OTGSC;
+    st->regs[2].name = "USBSTS";
+    st->regs[2].val = REG_USBSTS;
+    st->regs[3].name = "USBMODE";
+    st->regs[3].val = REG_USBMODE;
+    st->nregs = 4;
+    mutex_unlock(&host_mtx);
+}
 
 /* manual: 32.14.1 Device Controller Initialization */
 void usb_drv_init(void)
 {
+    read_hw_info();
+
     /* USB core decides */
     usb_drv_reset();
 
@@ -527,6 +1228,11 @@ void usb_drv_init(void)
         USBINTR_RESET_EN;
 
     usb_drv_int_enable(true);
+
+    /* Interrupt within a microframe of a completion. The reset default holds
+     * interrupts for eight, which re-arms an isochronous endpoint too late
+     * for the next packet about one frame in eight. */
+    REG_USBCMD = (REG_USBCMD & ~USBCMD_ITC) | USBCMD_ITC_1_MICRO_FRM;
 
     /* go go go */
     REG_USBCMD |= USBCMD_RUN;
@@ -736,6 +1442,7 @@ static uint8_t batch_ep = 0;
 static uint8_t batch_write_cursor;
 static bool batch_stopped;
 static usb_drv_batch_get_more batch_get_more;
+static volatile uint32_t batch_ran_empty, batch_failed;
 
 static int ep_to_pipe_index(uint8_t ep) {
     const int ep_num = EP_NUM(ep);
@@ -762,8 +1469,10 @@ int usb_drv_batch_deinit() {
     return 0;
 }
 
-/* returns whether priming is needed */
-static bool batch_fill_tds(void) {
+/* returns how many slots were refilled, or -1 when the queue was stopped and
+ * needs no priming */
+static int batch_fill_tds(void) {
+    int filled = 0;
     while(!(batch_td_array[batch_write_cursor].size_ioc_sts & DTD_STATUS_ACTIVE)) {
         /* batch_get_more may call batch_stop() through:
         *  - batch_get_more()
@@ -774,15 +1483,18 @@ static bool batch_fill_tds(void) {
         size_t len;
         batch_get_more(&ptr, &len);
         if(len == 0 || batch_stopped) {
-            return false;
+            return -1;
         }
 
         struct transfer_descriptor* td = &batch_td_array[batch_write_cursor];
+        if(td->size_ioc_sts & DTD_ERROR_MASK)
+            batch_failed++;
         td_set_buf_ptr(td, ptr);
         td->size_ioc_sts = (len << DTD_LENGTH_BIT_POS) | DTD_STATUS_ACTIVE;
         batch_write_cursor = (batch_write_cursor + 1)  % USB_BATCH_SLOTS;
+        filled++;
     }
-    return true;
+    return filled;
 }
 
 int usb_drv_batch_start(void) {
@@ -836,6 +1548,15 @@ int usb_drv_batch_stop(void) {
     while (REG_ENDPTFLUSH & mask);
 
     return 0;
+}
+
+void usb_drv_batch_take_counts(uint32_t *ran_empty, uint32_t *failed)
+{
+    const int irq = disable_irq_save();
+    *ran_empty = batch_ran_empty;
+    *failed = batch_failed;
+    batch_ran_empty = batch_failed = 0;
+    restore_irq(irq);
 }
 
 #if defined(LOGF_ENABLE) && defined(ROCKBOX_HAS_LOGF)
@@ -898,8 +1619,12 @@ static void sof_received(void) {
         REG_ENDPTPRIME |= mask;
     }
 
-    /* do refill */
-    if(batch_fill_tds()) {
+    /* do refill. Every slot free means the last queued packet went out with
+     * nothing behind it. */
+    const int filled = batch_fill_tds();
+    if(filled == USB_BATCH_SLOTS)
+        batch_ran_empty++;
+    if(filled >= 0) {
         const int pipe = ep_to_pipe_index(batch_ep);
         const unsigned int mask = pipe2mask[pipe];
         REG_ENDPTPRIME |= mask;
@@ -915,7 +1640,7 @@ static int prime_transfer(int ep_num, void* ptr, int len, bool send, bool wait)
     int pipe = ep_num * 2 + (send ? 1 : 0);
     unsigned int mask = pipe2mask[pipe];
     struct queue_head* qh = &qh_array[pipe];
-    static long last_tick;
+    uint32_t start;
     struct transfer_descriptor *new_td, *cur_td, *prev_td;
 
     int oldlevel = disable_irq_save();
@@ -956,14 +1681,16 @@ static int prime_transfer(int ep_num, void* ptr, int len, bool send, bool wait)
         goto pt_error;
     }
 
-    last_tick = current_tick;
+    /* Interrupts are off here, so current_tick stands still: the timeout
+     * has to come from the hardware timer. */
+    start = USEC_TIMER;
     while ((REG_ENDPTPRIME & mask)) {
         if (REG_USBSTS & USBSTS_RESET) {
             rc = -1;
             goto pt_error;
         }
 
-        if (TIME_AFTER(current_tick, last_tick + HZ/4)) {
+        if ((uint32_t)USEC_TIMER - start > 250000) {
             logf("prime timeout");
             rc = -2;
             goto pt_error;
@@ -989,6 +1716,13 @@ static int prime_transfer(int ep_num, void* ptr, int len, bool send, bool wait)
         goto pt_error;
     }
 
+    if (pipe_is_iso(ep_num, send) && iso_starts_logged[pipe] < ISO_LOG_MAX) {
+        iso_starts_logged[pipe]++;
+        usb_log(USB_LOG_ISO_XFER, ep_num | (send ? USB_DIR_IN : 0),
+                usb_drv_get_frame_number(), REG_ENDPTSTATUS,
+                REG_ENDPTCTRL(ep_num));
+    }
+
     restore_irq(oldlevel);
 
     if (wait) {
@@ -1003,6 +1737,9 @@ static int prime_transfer(int ep_num, void* ptr, int len, bool send, bool wait)
     }
 
 pt_error:
+    if (rc < 0 && ep_num != EP_CONTROL)
+        usb_log(USB_LOG_XFER_FAIL, ep_num | (send ? USB_DIR_IN : 0), -rc,
+                REG_ENDPTPRIME, REG_ENDPTCTRL(ep_num));
     if(rc<0)
         restore_irq(oldlevel);
 
@@ -1128,6 +1865,13 @@ static void transfer_completed(void)
 
                 int length=0;
                 struct transfer_descriptor* td=&td_array[pipe*NUM_TDS_PER_EP];
+                if ((td->size_ioc_sts & DTD_ERROR_MASK) &&
+                    pipe_is_iso(ep, dir) &&
+                    iso_errors_logged[pipe] < ISO_LOG_MAX) {
+                    iso_errors_logged[pipe]++;
+                    usb_log(USB_LOG_ISO_ERROR, ep | (dir ? USB_DIR_IN : 0), 0,
+                            td->size_ioc_sts, 0);
+                }
                 while(td!=(struct transfer_descriptor*)DTD_NEXT_TERMINATE && td!=0)
                 {
                     /* It seems that the controller sets the pipe bit to one even if the TD

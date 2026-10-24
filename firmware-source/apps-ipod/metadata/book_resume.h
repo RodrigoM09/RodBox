@@ -1,0 +1,111 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * Interface to book_resume.c: where each audiobook was left.
+ ****************************************************************************/
+
+#ifndef _BOOK_RESUME_H
+#define _BOOK_RESUME_H
+
+#include <stdbool.h>
+#include <stdint.h>
+#include "file.h"           /* MAX_PATH */
+
+/* As much of a book's album or album artist as identifies it. A book's id is
+ * built both from the database and from the playing track's tags, so each
+ * name is cut to this length either way or the two would never match. */
+#define BOOK_KEY_MAX    128
+
+/* A book's id, which every call below takes as 'book': its album and its
+ * album artist together, or the file's path for a single-file book with no
+ * album to name it. Two books of one title by different authors are two
+ * books; retagging either name loses the position. */
+#define BOOK_ID_MAX     (2 * BOOK_KEY_MAX)
+
+/* The id of the book 'album' by 'author', where the author is the album
+ * artist, else the artist, else <Untagged> -- as the database files it. */
+void book_resume_id(char *buf, size_t size, const char *album,
+                    const char *author);
+
+/* The id of the album at 'album_seek' by the album artist at 'artist_seek';
+ * with -1 for the artist, by the album artist whose album of that name is a
+ * book. False where the database is not in RAM or does not know it. */
+bool book_resume_id_of(long album_seek, long artist_seek, char *buf,
+                       size_t size);
+
+/* How many books are remembered: as many as the shelf can list, so a book
+ * marked by hand keeps its mark in any library the shelf was written for. */
+#define BOOK_RESUME_MAX 1024
+
+/* How a book was left. The two marks are set by hand from the shelf, and the
+ * next save of the book while it plays replaces either. */
+enum book_left
+{
+    BOOK_LEFT_PARTWAY,          /* stopped inside 'track' */
+    BOOK_LEFT_ENDED,            /* 'track' played to its end */
+    BOOK_LEFT_FINISHED,         /* marked Finished */
+    BOOK_LEFT_UNSTARTED,        /* marked Not started */
+};
+
+/* What one book's saved position holds. 'index' is a hint at the track's
+ * place in the playlist; 'track' is what actually identifies it, since a
+ * rebuilt playlist is only usually numbered the same way. */
+struct book_resume
+{
+    uint64_t track;             /* path_key() of the chapter's file; 0 is the
+                                   book's beginning */
+    int  index;
+    unsigned long elapsed;      /* ms into the chapter */
+    unsigned long offset;       /* the codec's byte offset into it */
+    enum book_left left;
+};
+
+/* The key 'book' is saved under. Letter case is folded, so two albums named
+ * alike but for case are one book here. */
+uint64_t book_resume_key(const char *book);
+
+/* Registers for the end of a track, which is how a book played through to its
+ * last word is noticed. Once, at boot. */
+void book_resume_init(void);
+
+/* Write down where the playing track is, if it is a book and Segregate
+ * Audiobooks is on. Silent about everything else, so a caller does not have
+ * to ask what is playing before calling.
+ *
+ * Also writes down a book whose track played to its end since the last call,
+ * which the audio thread can only note in RAM.
+ *
+ * Rewrites the file, so this is for the moment a book stops being listened
+ * to -- a pause, a stop, leaving the WPS, a shutdown, and the playlist erase
+ * that starts a different one -- and never for the audio thread. */
+void book_resume_save(void);
+
+/* Mark 'book' Finished, Not started, or -- with BOOK_LEFT_PARTWAY -- in
+ * progress from its beginning. Marking the book that is loaded stops it, or
+ * for in progress saves where it is. */
+bool book_resume_mark(const char *book, enum book_left left);
+
+/* The position saved for 'book'. False if it has none, and wherever there is
+ * nothing to resume: a saved track that played to its end, a mark, or a book
+ * marked in progress from its beginning. */
+bool book_resume_get(const char *book, struct book_resume *pos);
+
+/* Whatever is saved for 'book', pos->left saying what. */
+bool book_resume_find(const char *book, struct book_resume *pos);
+
+/* Rewrites the positions an older firmware kept as text in text_file as
+ * this one's file; the first boot of a new layout calls it. */
+bool book_resume_convert(const char *text_file);
+
+/* Every saved book, most recently played first, ended and marked ones
+ * included. 'path' is the file for a book keyed by its path, NULL for one
+ * keyed by its album. 'fn' returns false to stop early. */
+typedef bool (*book_resume_fn)(uint64_t book, const char *path,
+                               const struct book_resume *pos, void *data);
+void book_resume_each(book_resume_fn fn, void *data);
+
+/* Moves whenever the file is rewritten, so a caller may keep what it worked
+ * out from the file until this changes. */
+unsigned book_resume_writes(void);
+
+#endif /* _BOOK_RESUME_H */

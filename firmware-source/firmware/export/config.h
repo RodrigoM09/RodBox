@@ -1324,10 +1324,10 @@ Lyre prototype 1 */
 
 #endif /* NUM_CORES */
 
-#if defined(HAVE_HEADPHONE_DETECTION) || defined(HAVE_LINEOUT_DETECTION)
-/* Timeout objects required if headphone or line out detection is enabled */
+#ifdef HAVE_HEADPHONE_DETECTION
+/* Timeout objects required if headphone detection is enabled */
 #define INCLUDE_TIMEOUT_API
-#endif /* HAVE_HEADPHONE_DETECTION || HAVE_LINEOUT_DETECTION */
+#endif /* HAVE_HEADPHONE_DETECTION */
 
 #ifdef HAVE_TOUCHSCREEN
 /* Timeout objects required for kinetic list scrolling */
@@ -1425,13 +1425,23 @@ Lyre prototype 1 */
 #define USB_ENABLE_IAP
 #endif
 
-#if defined(USB_ENABLE_IAP)
-#define HAVE_MULTIMEDIA_KEYS
+/* USB host mode: the host probe, and audio to a USB Audio Class 1 or 2 DAC
+ * as a PCM sink, on both controllers. */
+#if CONFIG_USBOTG == USBOTG_ARC || CONFIG_USBOTG == USBOTG_DESIGNWARE
+#define HAVE_USB_HOST
+#define HAVE_USB_HOST_AUDIO
 #endif
 
 #endif /* BOOTLOADER */
 
 #endif /* HAVE_USBSTACK */
+
+/* "this target can produce multimedia key codes". Two independent producers,
+ * so this sits outside the USB block: a dock or head unit over USB iAP, and
+ * the 6G's inline earphone remote. Both gates are non-bootloader only. */
+#if defined(USB_ENABLE_IAP) || defined(HAVE_MIKEY_REMOTE)
+#define HAVE_MULTIMEDIA_KEYS
+#endif
 
 /* This attribute can be used to enable to detection of plugin file handles leaks.
  * When enabled, the plugin core will monitor open/close/creat and when the plugin exits

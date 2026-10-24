@@ -1,0 +1,242 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * Interface to sound_mix.c: playlists built from how tracks sound.
+ ****************************************************************************/
+
+#ifndef _SOUND_MIX_H
+#define _SOUND_MIX_H
+
+#include <stdbool.h>
+#include <stdint.h>
+#include "database/sound_index.h"
+
+struct playlist_info;
+
+/* Tracks a mix may hold. The candidate arrays are three times this and the
+ * running order one of them, so it is what the engine costs in static memory
+ * -- 38 KB, measured on the iPod Video build.
+ *
+ * Most of that is one struct sound_axes per candidate, which the chain rule
+ * in sound_mix.c needs: it scores each candidate against the track before it
+ * as well as against the goal, so every candidate's coordinates have to
+ * survive the first pass. Re-reading them from the index instead would mean
+ * three hundred scattered reads per slot filled. */
+#define SOUND_MIX_MAX  100
+
+/* The scale every axis is put on. Wide enough that a squared difference keeps
+ * its resolution in integers, small enough that eleven of them summed stay
+ * well inside a 32-bit word. Shared, because a mood names points on these
+ * same axes. */
+#define SOUND_AX  1000
+
+/* The axes a mix is judged on, derived from a record rather than stored in
+ * one.
+ *
+ * Derived, and that is deliberate: the weighting below is the part most
+ * likely to be wrong, and a scan costs half an hour. Everything here is
+ * arithmetic on fields already in the record, so a better formula ships in a
+ * firmware update and every existing index still answers to it.
+ *
+ * Each is 0-1000 against a fixed absolute range -- not normalised across the
+ * library, or a track's coordinates would move when music was added. */
+struct sound_axes
+{
+    int loud, crest, width, peak, clarity, change, dens;
+
+    /* Spectral balance rather than band level: each is its band against the
+     * track's own loudness, which is what separates it from loudness at all
+     * -- see band_rel() in sound_mix.c. A high 'bright' is a track with more
+     * treble than its loudness predicts, not simply a loud one. */
+    int bright, low, mid;
+
+    int dynamics;       /* How far the level moved across the window */
+    int steady;         /* How well the tempo held. -1 without a lock */
+    int tempo;          /* -1 where the tracker never settled on one */
+
+    /* The same reading unfolded: how fast the track actually is, rather than
+     * where it sits inside an octave.
+     *
+     * Both are kept because they answer different questions. Two tracks match
+     * on 'tempo' when they are tapped alike, which is what a track-to-track
+     * mix wants -- 87 and 174 BPM feel the same underneath. A mood named
+     * after a speed wants this one instead, or it calls a 160 BPM record slow
+     * for folding to 80. -1 on the same terms as 'tempo'. */
+    int speed;
+    int mode;           /* -1 where the pitch content did not commit */
+    uint32_t genre;
+    int year;
+
+    /* The one summary figure. Nothing displays it; what reads it is the
+     * chain rule, which caps how far it may move between neighbours. */
+    int energy;
+
+    /* Pitch content, for the harmony axis.
+     *
+     * Not an axis above, because harmony has no value for one track on its
+     * own: it is the angle between two tracks' note content. So what is kept
+     * here is the input, and the axis exists only inside
+     * sound_mix_distance(). 'pitch_norm' is taken once here because the
+     * first pass scores every record in the index -- a square root per pair
+     * would be a square root per record. */
+    uint8_t  pitch[12];
+    uint16_t pitch_norm;
+};
+
+void sound_mix_axes(const struct sound_record *r, struct sound_axes *out);
+
+/* How unlike each other two tracks are, 0 (identical) upwards. */
+int sound_mix_distance(const struct sound_axes *a, const struct sound_axes *b);
+
+/* The ceiling on that distance: past it a candidate is not offered. Declared
+ * here rather than kept private to sound_mix.c because the read-out in
+ * screens/playback/sound_props.c names the moods a track would be offered
+ * by, and that claim holds only while it asks with the same number. The
+ * derivation is above the mix weights. */
+#define MIX_MAX_DISTANCE 180
+
+/* Why a mix could not be built. Separated because what to do about each is
+ * different: an unmeasured track wants a scan, an empty result wants a wider
+ * library, and a database that is busy wants a moment. */
+#define SOUND_MIX_NO_INDEX     -1   /* No index to read */
+#define SOUND_MIX_NO_RECORD    -2   /* Index has nothing for this track */
+#define SOUND_MIX_NO_DB        -3   /* The database would not open */
+#define SOUND_MIX_NO_PLAYLIST  -4   /* Tracks were chosen, none reached the
+                                       playlist */
+#define SOUND_MIX_CANCELLED    -5   /* The erase warning was declined, or
+                                       the build was called off */
+#define SOUND_MIX_TOO_LONG     -6   /* More tracks than a reorder can hold */
+
+/* Build a playlist of tracks that sound like the one at 'path', and start it.
+ * The seed plays first, or with Start With Selected Track off is left out,
+ * and the rest follow in order of how near they are to it, no more than two
+ * from any one artist.
+ *
+ * 'want' is a ceiling, not a quota. Only tracks actually near the goal are
+ * offered, so a library holding few of them gives a short playlist rather
+ * than a long one padded with whatever was left -- see MIX_MAX_DISTANCE.
+ *
+ * Returns the number of tracks playing, 0 if nothing near enough survived, or
+ * one of the codes above.
+ *
+ * Two sequential passes and no allocation: the index is read once to find the
+ * nearest keys, then the database once to turn those keys back into paths.
+ * The obvious alternative -- hold the index in memory -- would take it from
+ * the audio buffer, and taking that stops playback to get it. A feature
+ * reached from the playing screen must not stop the music to answer. */
+int sound_mix_from_track(const char *path, int want);
+
+/* The same, around the mean of an album rather than one track -- see
+ * sound_props_album_result(), which is where that mean comes from.
+ *
+ * 'one_track' is any track of the album. It is not a seed and does not play
+ * first; it is there so the artist rules know whose album this is, which is
+ * what keeps the album itself from filling the playlist it seeded.
+ *
+ * Measured over a 3,439-track library, an album mean sits nearer its closest
+ * foreign track than a track seed does -- median 51 against 58, and a much
+ * tighter spread (p90 70 against 99). A mean is not a thin place to aim at:
+ * averaging pulls it toward where music actually is. */
+int sound_mix_from_album(const struct sound_axes *mean, const char *one_track,
+                         int want);
+
+/* Build a playlist of tracks that sit in one mood, and start it. Same rules
+ * as above except that there is no seed, so nothing plays first. */
+int sound_mix_from_mood(int mood, int want);
+
+/* Build a playlist that travels from one mood to another and start it. Each
+ * position in the run is filled from the tracks nearest that point along the
+ * way, so the change is heard across the playlist rather than at a join. */
+int sound_mix_journey(int from, int to, int want);
+
+/* Either of the two, for a caller with no screen to ask on: a mood when
+ * 'from' and 'to' are the same mood. The playlist is replaced without the
+ * erase warning. The build stops, leaving the playlist alone, once *stop
+ * turns true; stop may be NULL. */
+int sound_mix_mood_unasked(int from, int to, int want,
+                           const volatile bool *stop);
+
+/* A journey that ends calm, starting from where 'path' already sits.
+ *
+ * That track plays first and does not come round again, as it does for a mix
+ * built from a track -- winding down *from* something means starting there.
+ * With Play Selected First off it is left out altogether.
+ * What it does not do is set the goal: the near end of the journey is the
+ * track's nearest *mood*, because a journey moves between two moods' targets
+ * and a track is not one of those.
+ *
+ * A track already nearest Calm has no run-up to make and gives a plain Calm
+ * playlist, still led by itself. One the index has nothing usable for is
+ * refused rather than answered about some other music.
+ *
+ * target_ms above zero fills the playlist to that much music, by the tracks'
+ * own lengths, and 'want' is then ignored; otherwise it holds 'want' tracks. */
+int sound_mix_winddown(const char *path, int want, long target_ms);
+
+/* Extend the playlist now playing with more of the same, and play on from the
+ * first added track. Appends rather than replaces, and refuses anything the
+ * playlist already holds -- without which a continuation returns tracks that
+ * played minutes ago. Returns the number added, or one of the codes above. */
+int sound_mix_continue(int want);
+
+/* Put a set of tracks the listener already chose into an order where
+ * neighbours sound alike, writing positions 0..n-1 into 'order'.
+ *
+ * Deliberately not mix_build(). That scores candidates against a goal,
+ * applies the artist rules and samples for variety, and none of the three
+ * belongs here: there is no goal, since the set is fixed and nothing is being
+ * chosen from it; the artist rules would overrule a choice the listener made;
+ * and sampling is variety in selection, where this selects nothing. What the
+ * two share is the measure -- sound_mix_distance() and the cap on the energy
+ * step between neighbours.
+ *
+ * 'ax' and 'have' are one entry per track, 'have' saying whether that entry's
+ * axes mean anything. 'start' is the position that must come first, or -1 for
+ * none: a playlist being reordered under a playing track passes that track's
+ * position, since putting it in order must not change what is playing.
+ *
+ * Anything with no usable record keeps the order it arrived in, at the end.
+ * Returns how many positions were written, which is 'n' unless 'n' is out of
+ * range -- at most SOUND_MIX_MAX, because the caller has to hold one
+ * struct sound_axes per track for the whole pass and re-reading them from the
+ * index instead would be a seek per pair. */
+int sound_mix_chain(const struct sound_axes *ax, const uint8_t *have,
+                    int n, int start, int16_t *order);
+
+/* Put one playlist into that order, in place. NULL is the playlist now
+ * playing, and then the track playing leads it.
+ *
+ * Returns how many of its tracks the index had nothing for -- 0 where every
+ * one was placed by how it sounds -- or one of the codes above.
+ * SOUND_MIX_TOO_LONG where the playlist is longer than SOUND_MIX_MAX, which
+ * is refused rather than reordered in part. */
+int sound_mix_reorder(struct playlist_info *playlist);
+
+/* Forget what built the current playlist. Called where a playlist is created,
+ * which is the moment the terms behind the old one stop applying. */
+void sound_mix_forget(void);
+
+/* Keep what built the current playlist while a throwaway one plays, and put
+ * it back afterwards -- see playlist_set_aside(). A continuation the
+ * throwaway's end asked for is dropped on the way back. */
+void sound_mix_set_aside(void);
+void sound_mix_bring_back(void);
+
+/* The listener skipped out of a track this early into it.
+ *
+ * Only useful on a playlist the engine built, and only for as long as that
+ * playlist lasts -- a continuation already refuses everything the playlist
+ * holds, so what this adds is that a track skipped out of stays refused after
+ * the playlist has grown past the history a continuation can see. Call it
+ * with any track; it decides for itself whether the skip means anything. */
+void sound_mix_skipped(const char *path, unsigned long elapsed_ms);
+
+/* A playlist has run out. Called from the audio thread, so it does no more
+ * than set a flag. */
+void sound_mix_playlist_ended(void);
+
+/* Whether a continuation is owed, clearing the record of it. False unless the
+ * engine and Continue Playing are both on. */
+bool sound_mix_continue_due(void);
+
+#endif /* _SOUND_MIX_H */

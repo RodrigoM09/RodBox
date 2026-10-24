@@ -21,6 +21,8 @@
 #include "buffering.h"
 #include "core_alloc.h"
 #include "metadata.h"
+#include "database/tagcache.h"
+#include "iap_library.h"
 #include "misc.h"
 #include "pcm_mixer.h"
 #include "pcm_sink.h"
@@ -29,8 +31,16 @@
 #include "powermgmt.h"
 #include "settings.h"
 #include "sound.h"
+#include "string-extra.h"
 #include "usb_drv.h"
+#include "remote_seek.h"
+#include "iap_chapters.h"
+#include "iap_artwork.h"
+#include "platform-macros.h"
+#include "usb_log.h"
+#include "disk.h"
 
+#include "usb.h"
 #include "../usb_iap.h"
 #include "debug.h"
 #include "libiap/iap.h"
@@ -69,7 +79,7 @@ void iap_platform_free(struct IAPContext* iap_ctx, void* ptr) {
 }
 
 int iap_platform_send_hid_report(struct IAPContext* iap_ctx, const void* ptr, size_t size) {
-    (void)iap_ctx;
+    iap_log_report(iap_ctx, ptr, size, true);
 #if DEBUG_DUMP_TX == 1
     logf("==== dev ==== %p %u > %d", ptr, size, HID_EP_IN);
     iap_platform_dump_hex(ptr, MIN(size, 48));
@@ -84,6 +94,125 @@ IAPBool iap_platform_get_ipod_serial_num(struct IAPContext* iap_ctx, struct IAPS
     return iap_span_append(serial, serial_num, strlen(serial_num) + 1);
 }
 
+IAPBool iap_platform_get_ipod_model_num(struct IAPContext* iap_ctx, struct IAPSpan* model) {
+    (void)iap_ctx;
+    const struct usb_identity* id    = usb_identity();
+    const uint8_t              be[4] = {id->model_id >> 24, id->model_id >> 16, id->model_id >> 8, id->model_id};
+    return iap_span_append(model, be, sizeof(be)) && iap_span_append(model, id->model, strlen(id->model) + 1);
+}
+
+IAPBool iap_platform_get_ipod_name(struct IAPContext* iap_ctx, struct IAPSpan* name) {
+    (void)iap_ctx;
+    char buf[32];
+    iap_player_name(buf, sizeof(buf));
+    return iap_span_append(name, buf, strlen(buf) + 1);
+}
+
+IAPBool iap_platform_get_chapter(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformChapter* chapter) {
+    (void)iap_ctx;
+    struct iap_chapter_info info;
+    if(!iap_current_chapter(&info)) {
+        return iap_false;
+    }
+    if(index != 0xFFFFFFFF && !iap_chapter_at(audio_current_track(), index, &info)) {
+        return iap_false;
+    }
+    chapter->index      = info.index;
+    chapter->count      = info.count;
+    chapter->length_ms  = info.length_ms;
+    chapter->elapsed_ms = info.elapsed_ms;
+    if(chapter->name != NULL) {
+        return iap_span_append(chapter->name, info.name, strlen(info.name) + 1);
+    }
+    return iap_true;
+}
+
+IAPBool iap_platform_set_chapter(struct IAPContext* iap_ctx, uint32_t index) {
+    (void)iap_ctx;
+    return iap_set_chapter(index) ? iap_true : iap_false;
+}
+
+uint32_t iap_platform_get_time_ms(struct IAPContext* iap_ctx) {
+    (void)iap_ctx;
+    return (uint32_t)current_tick * (1000 / HZ);
+}
+
+/* The seek itself is remote_seek's; this tells the accessory about it */
+void iap_platform_seek_stop(struct IAPContext* ctx) {
+    if(!remote_seek_stop()) {
+        return;
+    }
+    iap_notify_track_time_position(ctx, remote_seek_position());
+    iap_notify_play_status(ctx, IAPIPodStatePlayStatus_EndFastForwardRewind);
+}
+
+void iap_platform_seek_tick(struct IAPContext* ctx) {
+    remote_seek_tick();
+    if(remote_seek_direction()) {
+        iap_notify_track_time_position(ctx, remote_seek_position());
+    }
+}
+
+static bool start_seek(struct IAPContext* ctx, int direction) {
+    if(!remote_seek_start(direction)) {
+        return false;
+    }
+    iap_notify_play_status(ctx, direction > 0 ? IAPIPodStatePlayStatus_FastForward : IAPIPodStatePlayStatus_FastRewind);
+    return true;
+}
+
+/* A track's art comes from the art cache, which has every track's. The
+ * playback engine's slot is the fallback, and has only the playing track's,
+ * and only once it is buffered after the accessory connected. */
+static fb_data cached_art[IAP_ARTWORK_WIDTH * IAP_ARTWORK_HEIGHT];
+#define ART_CACHED ((uintptr_t)-1) /* an artwork's opaque: in cached_art */
+
+static bool slot_art(struct Platform* plt, uint32_t index) {
+    return global_settings.car_artwork != CAR_ARTWORK_OFF &&
+           (int)index == playlist_get_display_index() - 1 &&
+           plt->aa_slot >= 0 && playback_current_aa_hid(plt->aa_slot) >= 0;
+}
+
+/* The playing track's art cache answer is kept until the track or Accessory
+ * Artwork changes: the play status carries it, accessories poll that about
+ * once a second, and each check opens a file, which keeps the disk from
+ * sleeping */
+static int playing_art_check(uint32_t index) {
+    static char     path[MAX_PATH];
+    static uint32_t checked = UINT32_MAX;
+    static int      setting = -1;
+    static int      result;
+    struct mp3entry* id3 = audio_current_track();
+
+    if(id3 == NULL) {
+        return iap_artwork_check(index);
+    }
+    if(checked != index || setting != global_settings.car_artwork || strcmp(path, id3->path)) {
+        result  = iap_artwork_check(index);
+        checked = index;
+        setting = global_settings.car_artwork;
+        strlcpy(path, id3->path, sizeof(path));
+    }
+    return result;
+}
+
+/* The playing track's answer goes in the USB log each time it changes */
+static bool has_art(struct Platform* plt, uint32_t index) {
+    static uint32_t logged  = UINT32_MAX;
+    const bool      playing = (int)index == playlist_get_display_index() - 1;
+    const int       cache   = playing ? playing_art_check(index) : iap_artwork_check(index);
+    const bool      slot    = cache != USB_LOG_IAP_ART_CACHE_OK && slot_art(plt, index);
+
+    if(playing) {
+        const uint32_t key = index << 4 | cache << 1 | slot;
+        if(key != logged) {
+            logged = key;
+            usb_log(USB_LOG_IAP_ART, USB_LOG_IAP_ART_REPORTED, index, cache, slot);
+        }
+    }
+    return cache == USB_LOG_IAP_ART_CACHE_OK || slot;
+}
+
 IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatformPlayStatus* status) {
     struct Platform* plt = iap_ctx->platform;
 
@@ -96,31 +225,78 @@ IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatf
     check_act(id3 != NULL, return iap_false);
     status->track_total_ms = id3->length;
     status->track_pos_ms   = id3->elapsed;
+    if(remote_seek_direction()) {
+        status->track_pos_ms = remote_seek_position();
+        status->state        = remote_seek_direction() > 0 ? IAPIPodStatePlayStatus_FastForward : IAPIPodStatePlayStatus_FastRewind;
+    }
     status->track_index    = playlist_get_display_index() - 1;
     status->track_count    = playlist_amount();
     status->track_caps     = IAPIPodStateTrackCapBits_HasReleaseDate;
-    if(plt->aa_slot >= 0 && playback_current_aa_hid(plt->aa_slot) >= 0) {
+    if(has_art(plt, status->track_index)) {
         status->track_caps |= IAPIPodStateTrackCapBits_HasAlbumArts;
     }
 
     return iap_true;
 }
 
+static bool library_play_held;
+
+bool iap_platform_control_waits(struct IAPContext* ctx) {
+    struct Platform* plt = ctx->platform;
+    bool             ok  = true;
+    if(!plt->control_pending) {
+        return false;
+    }
+    if(library_play_held) {
+        if(iap_library_building()) {
+            return true;
+        }
+        /* playback starting has usually answered it already, but not where
+         * it was playing before and the stream never stopped */
+        library_play_held = false;
+    } else if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+        /* the iAP sink's play answers it first; playback on the built-in
+         * sink, or none at all, is answered from here */
+        if(!TIME_AFTER(current_tick, plt->pending_tick + 5 * HZ)) {
+            return true;
+        }
+        ok = false;
+    }
+    check_act(iap_control_response(ctx, plt->pending_control, ok), );
+    plt->control_pending = false;
+    return false;
+}
+
 void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl control, struct IAPPlatformPendingControl pending) {
     struct Platform* plt = iap_ctx->platform;
 
+    IAPBool ret = iap_true;
+    /* play, pause, stop and skip end a scan where it has got to */
+    if(control <= IAPPlatformControl_Prev) {
+        iap_platform_seek_tick(iap_ctx);
+        iap_platform_seek_stop(iap_ctx);
+    }
     long button = BUTTON_NONE;
     switch(control) {
     case IAPPlatformControl_TogglePlayPause:
         button = BUTTON_MULTIMEDIA_PLAYPAUSE;
         break;
     case IAPPlatformControl_Play:
-        if(audio_status() != AUDIO_STATUS_PLAY) {
+        if(iap_library_building()) {
+            /* The library starts playback once the Queue is built, and an
+             * accessory told before then asks about a Queue half made */
+            plt->control_pending = true;
+            plt->pending_control = pending;
+            plt->pending_tick    = current_tick;
+            library_play_held    = true;
+            return;
+        }
+        if(!(audio_status() & AUDIO_STATUS_PLAY) || (audio_status() & AUDIO_STATUS_PAUSE)) {
             button = BUTTON_MULTIMEDIA_PLAYPAUSE;
         }
         break;
     case IAPPlatformControl_Pause:
-        if(audio_status() == AUDIO_STATUS_PLAY) {
+        if((audio_status() & AUDIO_STATUS_PLAY) && !(audio_status() & AUDIO_STATUS_PAUSE)) {
             button = BUTTON_MULTIMEDIA_PLAYPAUSE;
         }
         break;
@@ -131,7 +307,14 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
         button = BUTTON_MULTIMEDIA_NEXT;
         break;
     case IAPPlatformControl_Prev:
-        button = BUTTON_MULTIMEDIA_PREV;
+        /* Two seconds into a track, Previous goes back to its start, where
+         * the multimedia key always skips */
+        if((audio_status() & AUDIO_STATUS_PLAY) && audio_current_track() && audio_current_track()->elapsed > 2000) {
+            audio_pre_ff_rewind();
+            audio_ff_rewind(0);
+        } else {
+            button = BUTTON_MULTIMEDIA_PREV;
+        }
         break;
     case IAPPlatformControl_VolumeUp:
         adjust_volume(1);
@@ -142,10 +325,24 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
     case IAPPlatformControl_ToggleMute:
         /* rockbox has no mute/unmute */
         break;
+    case IAPPlatformControl_StartFF:
+    case IAPPlatformControl_StartRew:
+        ret = start_seek(iap_ctx, control == IAPPlatformControl_StartFF ? 1 : -1);
+        break;
+    case IAPPlatformControl_EndFFRew:
+        iap_platform_seek_tick(iap_ctx);
+        iap_platform_seek_stop(iap_ctx);
+        break;
+    case IAPPlatformControl_NextChapter:
+    case IAPPlatformControl_PrevChapter:
+        iap_platform_seek_stop(iap_ctx);
+        if(!iap_skip_chapter(control == IAPPlatformControl_NextChapter ? 1 : -1)) {
+            button = control == IAPPlatformControl_NextChapter ? BUTTON_MULTIMEDIA_NEXT : BUTTON_MULTIMEDIA_PREV;
+        }
+        break;
     }
     logf("control=%d button=0x%04lX", control, button);
 
-    IAPBool ret = iap_true;
     if(button == BUTTON_NONE) {
         goto exit;
     }
@@ -155,6 +352,8 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
          * to maintain synchronization with accessories, do not send an ack until playback actually begins. */
         plt->control_pending = true;
         plt->pending_control = pending;
+        plt->pending_tick    = current_tick;
+        library_play_held    = false;
         return;
     }
 exit:
@@ -189,6 +388,9 @@ IAPBool iap_platform_get_shuffle_setting(struct IAPContext* iap_ctx, uint8_t* st
 IAPBool iap_platform_set_shuffle_setting(struct IAPContext* iap_ctx, uint8_t status) {
     (void)iap_ctx;
 
+    if(iap_library_queue_lent()) {
+        return iap_false;
+    }
     if(status == IAPIPodStateShuffleSettingState_Tracks && !global_settings.playlist_shuffle) {
         global_settings.playlist_shuffle = true;
         settings_save();
@@ -265,6 +467,22 @@ IAPBool iap_platform_get_hold_switch_state(struct IAPContext* iap_ctx, IAPBool* 
     return iap_true;
 }
 
+IAPBool iap_platform_get_lineout_usage(struct IAPContext* iap_ctx, IAPBool* used) {
+    (void)iap_ctx;
+    *used = global_settings.lineout_active ? iap_true : iap_false;
+    return iap_true;
+}
+
+IAPBool iap_platform_get_storage_space(struct IAPContext* iap_ctx, uint64_t* total, uint64_t* avail) {
+    sector_t size_kib, free_kib;
+
+    (void)iap_ctx;
+    volume_size(IF_MV(0,) &size_kib, &free_kib);
+    *total = (uint64_t)size_kib * 1024;
+    *avail = (uint64_t)free_kib * 1024;
+    return iap_true;
+}
+
 /* taken from iap-core.c */
 static void get_trackinfo(const unsigned int track, struct mp3entry* id3) {
     int tracknum = track;
@@ -273,10 +491,15 @@ static void get_trackinfo(const unsigned int track, struct mp3entry* id3) {
         tracknum -= playlist_amount();
     }
 
-    if(playlist_next(0) != tracknum) {
+    /* Stopped, the current track's tags are empty */
+    if(playlist_next(0) != tracknum || !(audio_status() & AUDIO_STATUS_PLAY)) {
         struct playlist_track_info info;
         playlist_get_track_info(NULL, tracknum, &info);
-        get_metadata(id3, -1, info.filename);
+        /* The database first: a dock listing a playlist asks for every
+         * track, and the file is a parse each. */
+        if(!tagcache_fill_tags(id3, info.filename)) {
+            get_metadata(id3, -1, info.filename);
+        }
     } else {
         memcpy(id3, audio_current_track(), sizeof(*id3));
     }
@@ -286,7 +509,9 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
     struct Platform* plt = iap_ctx->platform;
 
     struct playlist_track_info track;
-    struct mp3entry            id3;
+    /* 3 KB, and only the USB thread asks: off its stack, which the metadata
+     * parse below already strains */
+    static struct mp3entry     id3;
     check_act(playlist_get_track_info(NULL, index, &track) == 0, return iap_false);
     get_trackinfo(index, &id3);
 
@@ -295,8 +520,7 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
     }
     if(info->caps != NULL) {
         *info->caps = IAPIPodStateTrackCapBits_HasReleaseDate;
-        /* FIXME: respect index */
-        if(plt->aa_slot >= 0 && playback_current_aa_hid(plt->aa_slot) >= 0) {
+        if(has_art(plt, index)) {
             *info->caps |= IAPIPodStateTrackCapBits_HasAlbumArts;
         }
     }
@@ -308,44 +532,106 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
         info->release_date->minute  = 0;
         info->release_date->seconds = 0;
     }
+    /* A tag the track does not carry is NULL, and goes as an empty string */
     if(info->artist != NULL) {
-        check_act(iap_span_append(info->artist, id3.artist, strlen(id3.artist) + 1), return iap_false);
+        const char* s = id3.artist ? id3.artist : "";
+        check_act(iap_span_append(info->artist, s, strlen(s) + 1), return iap_false);
     }
     if(info->composer != NULL) {
-        check_act(iap_span_append(info->composer, id3.composer, strlen(id3.composer) + 1), return iap_false);
+        const char* s = id3.composer ? id3.composer : "";
+        check_act(iap_span_append(info->composer, s, strlen(s) + 1), return iap_false);
     }
     if(info->album != NULL) {
-        check_act(iap_span_append(info->album, id3.album, strlen(id3.album) + 1), return iap_false);
+        const char* s = id3.album ? id3.album : "";
+        check_act(iap_span_append(info->album, s, strlen(s) + 1), return iap_false);
     }
     if(info->title != NULL) {
-        check_act(iap_span_append(info->title, id3.title, strlen(id3.title) + 1), return iap_false);
+        const char* s = id3.title ? id3.title : "";
+        check_act(iap_span_append(info->title, s, strlen(s) + 1), return iap_false);
     }
     return iap_true;
 }
 
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index) {
     (void)iap_ctx;
+    /* audio_skip() locks up on an offset past the end rather than refusing it */
+    check_act(index < (uint32_t)playlist_amount(), return iap_false);
     audio_skip((int)index - playlist_next(0));
     return iap_true;
 }
 
+/* The library browsed from an accessory lives in apps-ipod (iap_library.h);
+ * only the Queue's tracks are named and chosen here. */
+IAPBool iap_platform_get_db_count(struct IAPContext* iap_ctx, uint8_t type, uint32_t* count) {
+    (void)iap_ctx;
+    return iap_library_count(type, count);
+}
+
+IAPBool iap_platform_get_db_record(struct IAPContext* iap_ctx, uint8_t type, uint32_t index, struct IAPSpan* name) {
+    struct IAPSpan saved = *name;
+    if(type == IAPDatabaseType_Track && iap_library_tracks_are_queue()) {
+        struct IAPPlatformTrackInfo info = {.title = name};
+        if(iap_platform_get_indexed_track_info(iap_ctx, index, &info)) {
+            return iap_true;
+        }
+    } else if(name->size > 0 && iap_library_name(type, index, (char*)name->ptr, name->size)) {
+        return iap_span_alloc(name, strlen((char*)name->ptr) + 1) != NULL;
+    }
+    /* a record that cannot be read goes with an empty name */
+    *name = saved;
+    return iap_span_append(name, "", 1);
+}
+
+IAPBool iap_platform_select_db_record(struct IAPContext* iap_ctx, uint8_t type, uint32_t index, uint8_t sort) {
+    if(iap_library_building()) {
+        /* an accessory asking again while the Queue is built */
+        return iap_true;
+    }
+    if(type == IAPDatabaseType_Track && iap_library_tracks_are_queue()) {
+        return iap_platform_set_playing_track(iap_ctx, index);
+    }
+    return iap_library_select(type, index, sort);
+}
+
+void iap_platform_reset_db_selection(struct IAPContext* iap_ctx) {
+    (void)iap_ctx;
+    iap_library_reset();
+}
+
 IAPBool iap_platform_open_artwork(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformArtwork* artwork) {
-    struct Platform* plt = iap_ctx->platform;
-    /* only aa for currently playing track is available */
-    check_act((int)index == playlist_get_display_index() - 1, return iap_false);
-    const int hid = playback_current_aa_hid(plt->aa_slot);
-    check_act(hid >= 0, return iap_false, "%d %d", plt->aa_slot, hid);
+    struct Platform* plt   = iap_ctx->platform;
+    const int        cache = iap_artwork_check(index);
+    if(cache == USB_LOG_IAP_ART_CACHE_OK &&
+       iap_artwork_load(index, IAP_ARTWORK_WIDTH, cached_art, sizeof(cached_art))) {
+        artwork->color  = iap_true;
+        artwork->width  = IAP_ARTWORK_WIDTH;
+        artwork->height = IAP_ARTWORK_HEIGHT;
+        artwork->opaque = ART_CACHED;
+        usb_log(USB_LOG_IAP_ART, USB_LOG_IAP_ART_SENT, index, cache, 0);
+        return iap_true;
+    }
+    const int      hid = slot_art(plt, index) ? playback_current_aa_hid(plt->aa_slot) : -1;
     struct bitmap* bmp;
-    check_act(bufgetdata(hid, 0, (void*)&bmp) > 0, return iap_false);
+    if(hid < 0 || bufgetdata(hid, 0, (void*)&bmp) <= 0) {
+        usb_log(USB_LOG_IAP_ART, USB_LOG_IAP_ART_REFUSED, index, cache, 0);
+        return iap_false;
+    }
     artwork->color  = iap_true;
     artwork->width  = bmp->width;
     artwork->height = bmp->height;
     artwork->opaque = hid;
+    usb_log(USB_LOG_IAP_ART, USB_LOG_IAP_ART_SENT, index, cache, 1);
     return iap_true;
 }
 
 IAPBool iap_platform_get_artwork_ptr(struct IAPContext* iap_ctx, struct IAPPlatformArtwork* artwork, struct IAPSpan* span) {
     struct Platform* plt = iap_ctx->platform;
+
+    if(artwork->opaque == ART_CACHED) {
+        span->ptr  = (uint8_t*)cached_art;
+        span->size = sizeof(cached_art);
+        return iap_true;
+    }
 
     /* check the albumart has not reloaded */
     /* FIXME: not a correct check due to possibility of hid confliction */
@@ -402,17 +688,21 @@ void iap_platform_dump_hex(const void* ptr, size_t size) {
 IAPBool iap_platform_on_acc_samprs_received(struct IAPContext* iap_ctx, struct IAPSpan* samprs) {
     (void)iap_ctx;
 
-    bool has_44k = false;
-    bool has_48k = false;
-    while(samprs->size > 0) {
-        uint32_t sample_rate;
-        check_act(iap_span_read_32(samprs, &sample_rate), return iap_false);
-        has_44k |= sample_rate == SAMPR_44;
-        has_48k |= sample_rate == SAMPR_48;
-    }
-    check_act(has_44k && has_48k, return iap_false, "accessory lacks mandatory freq support: 44k=%d 48k=%d", has_44k, has_48k);
+    check_act(iap_audio_accessory_rates(samprs), return iap_false);
+    return iap_platform_take_sink() ? iap_true : iap_false;
+}
+
+bool iap_platform_take_sink(void) {
     check_act(mixer_switch_sink(PCM_SINK_IAP), return false);
-    return iap_true;
+    usb_iap_end_reset_hold(false);
+    iap_audio_connected();
+    queue_broadcast(SYS_ACCESSORY_CONNECTED, 0);
+    return true;
+}
+
+void iap_platform_on_audio_attrs_ack(struct IAPContext* iap_ctx, IAPBool success) {
+    (void)iap_ctx;
+    iap_audio_attrs_ack(success);
 }
 
 uint8_t _iap_convert_play_status(int rb_audio_status) {

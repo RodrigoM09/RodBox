@@ -31,8 +31,7 @@ class BootloaderInstallBase : public QObject
         enum Capability
             { Install = 0x01, Uninstall = 0x02, Backup = 0x04,
               IsFile = 0x08, IsRaw = 0x10, NeedsOf = 0x20,
-              CanCheckInstalled = 0x40, CanCheckVersion = 0x80,
-              NoMountpoint = 0x100 };
+              CanCheckInstalled = 0x40, CanCheckVersion = 0x80 };
         Q_DECLARE_FLAGS(Capabilities, Capability)
 
         enum BootloaderType

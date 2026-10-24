@@ -64,6 +64,15 @@
 #define MP4_moov FOURCC('m', 'o', 'o', 'v')
 #define MP4_mp4a FOURCC('m', 'p', '4', 'a')
 #define MP4_soun FOURCC('s', 'o', 'u', 'n')
+#define MP4_vide FOURCC('v', 'i', 'd', 'e')
+#define MP4_avc1 FOURCC('a', 'v', 'c', '1')
+#define MP4_avc3 FOURCC('a', 'v', 'c', '3')
+#define MP4_hvc1 FOURCC('h', 'v', 'c', '1')
+#define MP4_hev1 FOURCC('h', 'e', 'v', '1')
+#define MP4_mp4v FOURCC('m', 'p', '4', 'v')
+#define MP4_av01 FOURCC('a', 'v', '0', '1')
+#define MP4_vp09 FOURCC('v', 'p', '0', '9')
+#define MP4_encv FOURCC('e', 'n', 'c', 'v')
 #define MP4_stbl FOURCC('s', 't', 'b', 'l')
 #define MP4_stsd FOURCC('s', 't', 's', 'd')
 #define MP4_stts FOURCC('s', 't', 't', 's')
@@ -604,6 +613,47 @@ static bool read_mp4_tags(int fd, struct mp3entry* id3,
     return true;
 }
 
+/* Whether a 'vide' track's minf describes moving video, judged by its first
+ * sample entry. Chapter pictures and cover tracks are 'vide' tracks too, of
+ * still images ('jpeg', 'png '), and must not keep a file out of the
+ * database. Leaves fd at the end of the minf. */
+static bool read_mp4_video_minf(int fd, uint32_t size_left)
+{
+    off_t end = lseek(fd, 0, SEEK_CUR) + size_left;
+    uint32_t size;
+    uint32_t type;
+    uint32_t entry = 0;
+
+    while (size_left > 0 && errno == 0)
+    {
+        type = 0;   /* a short read must not repeat the last type */
+        size_left = read_mp4_atom(fd, &size, &type, size_left);
+        if (type == MP4_stbl)
+        {
+            size_left = size;   /* descend */
+        }
+        else if (type == MP4_stsd)
+        {
+            /* version, flags and entry count, then the first entry */
+            if (size >= 16)
+            {
+                lseek(fd, 8, SEEK_CUR);
+                read_mp4_atom(fd, &size, &entry, size - 8);
+            }
+            break;
+        }
+        else
+        {
+            lseek(fd, size, SEEK_CUR);
+        }
+    }
+
+    lseek(fd, end, SEEK_SET);
+    return entry == MP4_avc1 || entry == MP4_avc3 || entry == MP4_hvc1
+        || entry == MP4_hev1 || entry == MP4_mp4v || entry == MP4_av01
+        || entry == MP4_vp09 || entry == MP4_encv;
+}
+
 static bool read_mp4_container(int fd, struct mp3entry* id3,
                                uint32_t size_left)
 {
@@ -661,6 +711,12 @@ static bool read_mp4_container(int fd, struct mp3entry* id3,
             if (handler == MP4_soun)
             {
                 rc = read_mp4_container(fd, id3, size);
+                size = 0;
+            }
+            else if (handler == MP4_vide)
+            {
+                if (read_mp4_video_minf(fd, size))
+                    id3->has_video = true;
                 size = 0;
             }
             break;
@@ -785,18 +841,41 @@ static bool read_mp4_container(int fd, struct mp3entry* id3,
 
         case MP4_chpl:
             {
-                /* ADDME: add support for real chapters. Right now it's only
-                 * used for Nero's gapless hack */
+                /* Only Nero's gapless hack is read here, not a chapter
+                 * list. */
+                uint8_t version    = 0;
                 uint8_t chapters   = 0;
                 uint64_t timestamp = 0;
+                off_t chapter_pos = lseek(fd, 0, SEEK_CUR);
+                uint32_t rest;
 
-                lseek(fd, 8, SEEK_CUR);
-                read_uint8(fd, &chapters);
-                size -= 9;
+                /* The count follows a version, three bytes of flags and,
+                 * when the version is not 0, a reserved word. size is
+                 * unsigned: a box shorter than its own header wraps it, and
+                 * the loop below then seeks by ~4GB. Every read has to be
+                 * checked for the same reason. */
+                if (chapter_pos < 0 || size < 1
+                    || read_uint8(fd, &version) != 1) {
+                    break;
+                }
+                size -= 1;
+                rest = version ? 8 : 4;     /* the flags to the count */
+                if (size < rest
+                    || lseek(fd, rest - 1, SEEK_CUR)
+                       != chapter_pos + (off_t)rest
+                    || read_uint8(fd, &chapters) != 1) {
+                    break;
+                }
+                size -= rest;
 
-                /* the first chapter will be used as the lead_trim */
-                if (chapters > 0) {
-                    read_uint64be(fd, &timestamp);
+                /* A lone record is the encoder delay, used as the lead_trim.
+                 * More than one is a chapter list, whose first chapter can
+                 * start after 0:00 without any audio being trimmed. A record
+                 * is a timestamp and a length byte, so nine bytes. */
+                if (chapters == 1) {
+                    if (size < 9 || read_uint64be(fd, &timestamp) != 8) {
+                        break;
+                    }
                     id3->lead_trim = (timestamp * id3->frequency) / 10000000;
                     size -= 8;
                 }

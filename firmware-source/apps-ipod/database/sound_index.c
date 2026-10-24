@@ -1,0 +1,910 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * The per-track sound measurements on disk.
+ *
+ * A scan appends to a working file as it goes and renames it into place at
+ * the end. Append-only is what makes a run resumable for free: everything
+ * finished is already on disk, so stopping costs nothing and needs no
+ * confirmation, and an interruption -- the user, an unplugged charger, a flat
+ * battery -- is the same path as finishing.
+ *
+ * The finished file is sorted by key so a reader can binary search it. The
+ * working file is not, because sorting as it grows would mean rewriting it
+ * per track; the sort happens once, at the end, from the key table the scan
+ * was keeping anyway.
+ *
+ * Parts, in order:
+ *   - keys
+ *   - the file header
+ *   - the working file: begin, done, add, finish
+ *   - reading a finished index
+ ****************************************************************************/
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include "config.h"
+#include "system/library_files.h"
+#include "file.h"
+#include "core_alloc.h"
+#include "audio/track_decode.h"
+#include "database/path_key.h"
+#include "database/sound_index.h"
+
+#define SOUND_FILE   LIB_SOUND_FILE
+#define SOUND_PART   LIB_SOUND_PART
+
+/* Bump the version with the layout of struct sound_record or of the header.
+ * A reader also checks the record size, which catches a struct that grew
+ * without this moving -- but only by rejecting the file, so move this too and
+ * say what changed.
+ *   1: first.
+ *   2: pitch[12], tonic, mode, mode_margin, tonal_clarity, harmonic_change.
+ *      40 bytes to 56.
+ *   3: size, so a record written on a desktop can be checked for staleness
+ *      without an mtime the desktop cannot reproduce. 56 bytes to 64.
+ *
+ * A working file's reserved field counts the records seeded into it from the
+ * finished index; 0 in a finished index. */
+#define SOUND_MAGIC    0x534E4431  /* "SND1" */
+#define SOUND_VERSION  3
+
+/* The record goes to disk verbatim, so its size is part of the format rather
+ * than a detail of this build. A field added without the version moving would
+ * otherwise change the stride and be caught only by the reader rejecting
+ * every file. */
+_Static_assert(sizeof (struct sound_record) == 64,
+               "struct sound_record is the on-disk stride");
+
+struct sound_header
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t record_bytes;
+    uint32_t count;
+    uint32_t reserved;
+};
+
+/* What the scan keeps in memory: enough to answer "is this one done" and to
+ * sort the working file at the end without holding every record. */
+struct key_entry
+{
+    uint64_t key;
+    uint32_t mtime;
+    uint32_t size;
+    uint32_t ordinal;   /* Position in the working file */
+    uint8_t  seen;      /* The run reached this track. See sound_index_seen() */
+};
+
+static int          part_fd = -1;
+static int          table_handle;
+static int          table_used;
+static int          table_max;
+static bool         table_sorted;   /* Of the first table_used entries */
+static int          table_sorted_upto; /* Entries [0, this) ascend by key.
+                                          What find_entry() may binary
+                                          search; the rest it scans. */
+static uint32_t     part_seeded;    /* Records carried in from the finished
+                                       index, kept in the working file's
+                                       reserved field. 0 on a rebuild */
+
+bool (*sound_index_genre_of)(uint64_t key, char *buf, size_t size);
+
+
+/** Keys **/
+
+bool sound_record_usable(const struct sound_record *r)
+{
+    return !(r->flags & SOUND_F_FAILED) && r->analysed_s > 0;
+}
+
+uint32_t sound_index_genre_key(const char *genre)
+{
+    char first[32];
+    unsigned int n = 0;
+
+    if (genre == NULL || *genre == '\0')
+        return 0;
+
+    /* The first genre named, not the whole field.
+     *
+     * "Rock", "Rock/Alternative", "Rock; Indie" and "Rock, Indie Rock" are
+     * one genre with a qualifier, and taggers disagree about the separator,
+     * the spacing and the order. Hashed whole, the same music arrives under
+     * half a dozen keys and the same-genre term in sound_mix_distance()
+     * never fires on a library tagged by more than one tool. Cut at the
+     * first separator and the qualifier stops mattering. Case is folded by
+     * path_key_fold_hash() below.
+     *
+     * Trap: this changes the key a genre hashes to, so records written
+     * before it do not group with records written after it. The layout is
+     * unchanged, so the version is not moved and no rescan is forced: an
+     * update refolds each record it carries forward from the database's
+     * genre (seed_from_finished()), and without the database in RAM the
+     * record keeps its key until the track is next measured. */
+    while (n + 1 < sizeof (first) && genre[n] != '\0'
+           && genre[n] != '/' && genre[n] != ';' && genre[n] != ',')
+    {
+        n++;
+    }
+
+    while (n > 0 && genre[n - 1] == ' ')
+        n--;
+
+    if (n == 0)
+        return 0;
+
+    memcpy(first, genre, n);
+    first[n] = '\0';
+
+    /* Folded to 32 bits from the same 64-bit hash rather than a separate
+     * 32-bit one, so there is a single definition of "the same string" here.
+     * A few hundred genres over 32 bits collide about once in fifty thousand
+     * libraries, which is a mis-grouped genre and not a lost measurement. */
+    return (uint32_t)(path_key_fold_hash(first) >> 32);
+}
+
+static uint8_t cap8(unsigned int v)
+{
+    return v > 255 ? 255 : (uint8_t)v;
+}
+
+void sound_index_fill(struct sound_record *out, uint64_t key, uint32_t mtime,
+                      uint32_t size, uint32_t genre_key, int year,
+                      const struct track_sound *s, int decode_rc)
+{
+    int g;
+
+    memset(out, 0, sizeof (*out));
+
+    out->key       = key;
+    out->mtime     = mtime;
+    out->size      = size;
+    out->genre_key = genre_key;
+    out->year      = (uint16_t)(year > 0 ? year : 0);
+
+    out->period_ms     = (uint16_t)s->period_ms;
+    out->loudness_db10 = (int16_t)s->loudness_db10;
+    out->confidence    = cap8(s->confidence);
+    out->tempo_spread  = cap8(s->tempo_spread);
+    out->crest_db      = cap8(s->crest_db10 / 10);
+    out->width         = cap8(s->width);
+    out->level_spread  = s->level_spread;
+    out->strength      = s->strength;
+    out->peakiness     = s->peakiness;
+    out->analysed_s    = cap8((unsigned int)(s->analysed_ms / 1000));
+
+    for (g = 0; g < BEAT_GROUPS; g++)
+    {
+        out->level[g]  = s->level[g];
+        out->rate10[g] = cap8(s->rate10[g]);
+    }
+
+    for (g = 0; g < 12; g++)
+        out->pitch[g] = s->chroma.pitch[g];
+
+    out->tonic           = s->chroma.key;
+    out->mode            = s->chroma.minor ? 1 : 0;
+    out->mode_margin     = s->chroma.margin;
+    out->tonal_clarity   = s->chroma.clarity;
+    out->harmonic_change = s->chroma.change;
+
+    if (s->chroma.margin < CHROMA_MARGIN_MIN)
+        out->flags |= SOUND_F_NO_MODE;
+
+    if (s->settled)
+        out->flags |= SOUND_F_SETTLED;
+    if (s->period_ms == 0)
+        out->flags |= SOUND_F_NO_LOCK;
+    if (decode_rc == TRACK_DECODE_FAILED ||
+        decode_rc == TRACK_DECODE_NO_CODEC ||
+        decode_rc == TRACK_DECODE_NO_FILE)
+    {
+        out->flags |= SOUND_F_FAILED;
+    }
+}
+
+
+/** The file header **/
+
+static void header_init(struct sound_header *h, uint32_t count)
+{
+    h->magic        = SOUND_MAGIC;
+    h->version      = SOUND_VERSION;
+    h->record_bytes = (uint16_t)sizeof (struct sound_record);
+    h->count        = count;
+    h->reserved     = 0;
+}
+
+static bool header_ok(const struct sound_header *h)
+{
+    return h->magic == SOUND_MAGIC &&
+           h->version == SOUND_VERSION &&
+           h->record_bytes == sizeof (struct sound_record);
+}
+
+/* The working file's header, which also records how much of it was seeded. */
+static void part_header_init(struct sound_header *h, uint32_t count)
+{
+    header_init(h, count);
+    h->reserved = part_seeded;
+}
+
+/* Records in one of our files, or 0 for a file that is absent or not ours.
+ *
+ * Bounded by what the file can hold rather than trusted: the count is
+ * rewritten per record, so a run cut off mid-write leaves one that claims
+ * more than is there (load_part() says the same of it), and this number sizes
+ * an allocation. */
+static int file_count(const char *path)
+{
+    struct sound_header h;
+    int fd = open(path, O_RDONLY);
+    off_t room;
+    int n = 0;
+
+    if (fd < 0)
+        return 0;
+
+    room = lseek(fd, 0, SEEK_END) - (off_t)sizeof (h);
+    if (room < 0)
+        room = 0;
+    room /= (off_t)sizeof (struct sound_record);
+
+    if (lseek(fd, 0, SEEK_SET) == 0 &&
+        read(fd, &h, sizeof (h)) == (ssize_t)sizeof (h) && header_ok(&h))
+    {
+        n = (off_t)h.count < room ? (int)h.count : (int)room;
+    }
+
+    close(fd);
+
+    return n;
+}
+
+
+/** The working file **/
+
+static struct key_entry *table(void)
+{
+    return table_handle > 0 ? core_get_data(table_handle) : NULL;
+}
+
+/* How much of the table is in ascending key order, found in one pass.
+ *
+ * Both load paths leave a sorted run at the front: seed_from_finished()
+ * copies a file that is sorted by key, and a working file is that same seed
+ * with this run's appends after it. Nothing records where the join is, so it
+ * is measured rather than assumed -- and an interrupted run whose tail is
+ * partly ordered anyway gets the benefit of however much of it is.
+ *
+ * Strictly ascending, so a duplicate key ends the run rather than being
+ * searched for in a region a binary search would not find it in. */
+static void table_measure_sorted(void)
+{
+    struct key_entry *t = table();
+
+    table_sorted_upto = table_used > 0 ? 1 : 0;
+
+    if (t == NULL)
+        return;
+
+    while (table_sorted_upto < table_used &&
+           t[table_sorted_upto].key > t[table_sorted_upto - 1].key)
+    {
+        table_sorted_upto++;
+    }
+}
+
+/* Enter the record written at the working file's next ordinal. */
+static void table_append(struct key_entry *t, const struct sound_record *r,
+                         uint8_t seen)
+{
+    t[table_used].key = r->key;
+    t[table_used].mtime = r->mtime;
+    t[table_used].size = r->size;
+    t[table_used].ordinal = (uint32_t)table_used;
+    t[table_used].seen = seen;
+    table_used++;
+}
+
+static int key_cmp(const void *a, const void *b)
+{
+    const struct key_entry *x = a;
+    const struct key_entry *y = b;
+
+    if (x->key < y->key)
+        return -1;
+    if (x->key > y->key)
+        return 1;
+
+    return 0;
+}
+
+/* Copy the finished index into the working file.
+ *
+ * An update has to start from what is already known or it is a rebuild with a
+ * gentler name. The records are copied rather than referenced because finish()
+ * reads them back by their position in the working file, so everything it will
+ * write has to be in that one file. At 64 bytes a track it is a megabyte for a
+ * large library, read and written once. */
+static bool seed_from_finished(void)
+{
+    struct sound_header h;
+    struct sound_record r;
+    struct key_entry *t = table();
+    int fd = open(SOUND_FILE, O_RDONLY);
+    uint64_t last_key = 0;
+    char genre[48];     /* As the scan reads it */
+    unsigned int i;
+
+    if (fd < 0)
+        return true;    /* Nothing finished yet is not a failure */
+
+    if (read(fd, &h, sizeof (h)) != (ssize_t)sizeof (h) || !header_ok(&h))
+    {
+        close(fd);
+        return true;
+    }
+
+    lseek(part_fd, 0, SEEK_END);
+
+    for (i = 0; i < h.count && table_used < table_max; i++)
+    {
+        if (read(fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
+            break;
+
+        /* A failure is retried rather than inherited. What could not be read
+         * last time is a property of the reader as much as the file -- a
+         * decoder fix, or another machine's codecs -- and an update is how
+         * that reaches an existing index without measuring the library
+         * again. Dropping the record from the working file as well as the
+         * table is what makes the scan measure the track; the cost is bounded
+         * by the number of failures, which is small or the index is not worth
+         * keeping. */
+        if (r.flags & SOUND_F_FAILED)
+            continue;
+
+        /* An index written before add() replaced in place can hold a track
+         * twice. The file is sorted by key, so the pair is adjacent and one
+         * comparison repairs it as the index is carried forward. Which of the
+         * two survives does not matter: if it is the stale one, its mtime and
+         * size say so and the track is measured again. */
+        if (r.key == last_key)
+            continue;
+        last_key = r.key;
+
+        /* The same fold the scan applies, so a record keyed by an older
+         * fold groups with ones measured since. */
+        if (sound_index_genre_of != NULL
+            && sound_index_genre_of(r.key, genre, sizeof (genre)))
+        {
+            r.genre_key = sound_index_genre_key(genre);
+        }
+
+        if (write(part_fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
+            break;
+
+        table_append(t, &r, 0);
+    }
+
+    close(fd);
+
+    part_seeded = (uint32_t)table_used;
+    part_header_init(&h, (uint32_t)table_used);
+    lseek(part_fd, 0, SEEK_SET);
+    write(part_fd, &h, sizeof (h));
+
+    table_sorted = false;
+    table_measure_sorted();
+
+    return true;
+}
+
+/* Read whatever the working file already holds into the table. A file whose
+ * header is not ours is a file with nothing in it -- the same rule as the
+ * rest of the fork's own files, and it earns its place here because a
+ * foreign file of the wrong stride reads as plausible records rather than as
+ * gibberish.
+ *
+ * An empty one is seeded from the finished index, which is what makes an
+ * update an update. An unfinished one is left alone: it is a run in progress
+ * and already holds everything the finished index did. */
+/* 'seed' is whether a finished index may be carried into this run. False on
+ * a rebuild, which is the whole of what makes it one: removing the working
+ * file alone leaves the finished index to be read straight back in, and
+ * nothing is measured again. */
+static bool load_part(bool seed)
+{
+    struct sound_header h;
+    struct sound_record r;
+    struct key_entry *t = table();
+    unsigned int i;
+
+    if (read(part_fd, &h, sizeof (h)) != (ssize_t)sizeof (h) ||
+        !header_ok(&h) || h.count == 0)
+    {
+        lseek(part_fd, 0, SEEK_SET);
+        part_seeded = 0;
+        part_header_init(&h, 0);
+
+        if (write(part_fd, &h, sizeof (h)) != (ssize_t)sizeof (h))
+            return false;
+
+        ftruncate(part_fd, sizeof (h));
+        table_used = 0;
+        table_sorted = true;
+        table_sorted_upto = 0;
+
+        return seed ? seed_from_finished() : true;
+    }
+
+    for (i = 0; i < h.count && table_used < table_max; i++)
+    {
+        if (read(part_fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
+            break;
+
+        table_append(t, &r, 0);
+    }
+
+    /* A count that ran past what the file holds is a run that was cut off
+     * mid-write. What was read is sound; the header is corrected on the next
+     * add, and until then only the table is consulted. Records past the count
+     * are orphans of a header write that failed: add() addresses records by
+     * ordinal, so the file is cut back to what the table describes. */
+    part_seeded = h.reserved < (uint32_t)table_used ? h.reserved
+                                                    : (uint32_t)table_used;
+    ftruncate(part_fd, (off_t)sizeof (h)
+                       + (off_t)table_used * (off_t)sizeof (r));
+    table_sorted = false;
+    table_measure_sorted();
+
+    return true;
+}
+
+int sound_index_begin(int capacity, bool fresh)
+{
+    if (capacity < 1)
+        capacity = 1;
+
+    if (fresh)
+        remove(SOUND_PART);
+
+    /* Room for what is carried in as well as for what will be measured.
+     *
+     * The caller sizes this from the library, but an index outlives the
+     * tracks in it -- nothing drops a record when a file leaves the player --
+     * so after enough coming and going it holds more records than the
+     * database holds tracks. Sized to the library alone, the seed silently
+     * discards the overflow, the table is full from the first track, and
+     * every add() for the rest of the run is refused: a scan that decodes for
+     * hours, stores none of it and then reports Done. */
+    if (!fresh)
+    {
+        int carried = file_count(SOUND_PART);
+
+        capacity += carried > 0 ? carried : file_count(SOUND_FILE);
+    }
+
+    table_handle = core_alloc((size_t)capacity * sizeof (struct key_entry));
+    if (table_handle <= 0)
+        return SOUND_ERR_MEM;
+
+    /* Pinned, not merely allocated. Every function below takes table() once
+     * and then indexes it across reads and writes of the working file, so a
+     * block free to move on somebody else's allocation would leave those
+     * writing through a stale pointer.
+     *
+     * Pinned rather than allocated with buflib_ops_locked, because this file
+     * is also compiled into tools/soundscan, whose core_alloc_ex() is a
+     * link-satisfying stub that always fails -- the tool would build cleanly
+     * and then find no memory. Its core_pin() is a no-op, which is the right
+     * answer for a malloc-backed allocator. */
+    core_pin(table_handle);
+
+    table_max = capacity;
+    table_used = 0;
+    table_sorted = true;
+    table_sorted_upto = 0;
+
+    part_fd = open(SOUND_PART, O_RDWR | O_CREAT, 0666);
+    if (part_fd < 0)
+    {
+        core_unpin(table_handle);
+        core_free(table_handle);
+        table_handle = 0;
+        return SOUND_ERR_IO;
+    }
+
+    if (!load_part(!fresh))
+    {
+        sound_index_close();
+        return SOUND_ERR_IO;
+    }
+
+    return SOUND_OK;
+}
+
+/* Where this key already sits in the table, or -1.
+ *
+ * Binary search over the sorted run, then a linear scan of whatever was
+ * appended after it. This is asked two to three times per track by the scan
+ * -- twice before it decides whether to decode at all -- so a linear search
+ * of the whole table makes a run that skips every track cost O(n^2) in the
+ * size of the library, which for twenty thousand tracks is the entire cost
+ * of the run. The tail is only what this run has measured. */
+static int find_entry(uint64_t key)
+{
+    struct key_entry *t = table();
+    int lo = 0, hi = table_sorted_upto - 1;
+    int i;
+
+    if (t == NULL)
+        return -1;
+
+    while (lo <= hi)
+    {
+        int mid = lo + (hi - lo) / 2;
+
+        if (t[mid].key == key)
+            return mid;
+
+        if (t[mid].key < key)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+
+    for (i = table_sorted_upto; i < table_used; i++)
+        if (t[i].key == key)
+            return i;
+
+    return -1;
+}
+
+void sound_index_seen(uint64_t key)
+{
+    struct key_entry *t = table();
+    int i = find_entry(key);
+
+    if (t != NULL && i >= 0)
+        t[i].seen = 1;
+}
+
+bool sound_index_done(uint64_t key, uint32_t mtime, uint32_t size)
+{
+    struct key_entry *t = table();
+    int i = find_entry(key);
+
+    if (t != NULL && i >= 0)
+    {
+        if (t[i].size != size)
+            return false;
+
+        /* Zero on either side is "not known", which is what a desktop tool
+         * writes. Two known values that disagree are a changed file; anything
+         * else falls back to the size having matched. */
+        if (t[i].mtime != 0 && mtime != 0 && t[i].mtime != mtime)
+            return false;
+
+        return true;
+    }
+
+    return false;
+}
+
+bool sound_index_add(const struct sound_record *r)
+{
+    struct sound_header h;
+    struct key_entry *t = table();
+    off_t before;
+    int at;
+
+    if (part_fd < 0 || t == NULL)
+        return false;
+
+    /* A key already in the table is overwritten where it lies rather than
+     * appended after itself. An update seeds from the finished index and then
+     * re-measures whatever has changed, so without this the file ends up
+     * holding both readings of that track -- and since finish() sorts by key
+     * and the reader binary searches, which of the two answers is arbitrary.
+     * The new measurement can simply lose. */
+    at = find_entry(r->key);
+    if (at >= 0)
+    {
+        off_t where = (off_t)sizeof (h)
+                      + (off_t)t[at].ordinal * (off_t)sizeof (*r);
+
+        if (lseek(part_fd, where, SEEK_SET) != where ||
+            write(part_fd, r, sizeof (*r)) != (ssize_t)sizeof (*r))
+        {
+            return false;
+        }
+
+        t[at].mtime = r->mtime;
+        t[at].size = r->size;
+        t[at].seen = 1;
+
+        /* The key set is unchanged, so a sorted table stays sorted and the
+         * count in the header still describes the file. */
+        return true;
+    }
+
+    if (table_used >= table_max)
+        return false;
+
+    /* At the offset the ordinal names rather than the end of the file. */
+    before = (off_t)sizeof (h) + (off_t)table_used * (off_t)sizeof (*r);
+    if (lseek(part_fd, before, SEEK_SET) != before)
+        return false;
+
+    if (write(part_fd, r, sizeof (*r)) != (ssize_t)sizeof (*r))
+    {
+        ftruncate(part_fd, before);
+        return false;
+    }
+
+    table_append(t, r, 1);
+    table_sorted = false;
+
+    /* The header counts what is there and is rewritten per record, so a run
+     * that ends without warning leaves a file that reads back correctly.
+     *
+     * The flush is every sixteenth, not every one. A hard power cut is the
+     * only thing that outruns the file system's own cache, and it costs at
+     * most sixteen tracks, which are simply measured again. Flushing per
+     * track would wake the disk twenty thousand times for that. */
+    part_header_init(&h, (uint32_t)table_used);
+    lseek(part_fd, 0, SEEK_SET);
+    write(part_fd, &h, sizeof (h));
+
+    if ((table_used & 15) == 0)
+        fsync(part_fd);
+
+    return true;
+}
+
+int sound_index_count(void)
+{
+    return table_used;
+}
+
+int sound_index_finish(bool prune)
+{
+    struct sound_header h;
+    struct sound_record r;
+    struct key_entry *t = table();
+    int out_fd;
+    int kept = 0;
+    int i;
+
+    if (part_fd < 0 || t == NULL)
+        return SOUND_ERR_IO;
+
+    if (!table_sorted)
+    {
+        qsort(t, (size_t)table_used, sizeof (*t), key_cmp);
+        table_sorted = true;
+    }
+
+    out_fd = open(SOUND_FILE ".new", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (out_fd < 0)
+        return SOUND_ERR_IO;
+
+    /* Written twice: the count is not known until the loop below has decided
+     * what to keep, and a placeholder holds the records' offset while it
+     * does. */
+    header_init(&h, 0);
+    if (write(out_fd, &h, sizeof (h)) != (ssize_t)sizeof (h))
+    {
+        close(out_fd);
+        remove(SOUND_FILE ".new");
+        return SOUND_ERR_IO;
+    }
+
+    /* One seek and one record at a time, from the working file. The whole
+     * set would be 800K at twenty thousand tracks and taking that from core
+     * stops playback; the seeks cost a few seconds once, at the end of a scan
+     * that took hours. */
+    for (i = 0; i < table_used; i++)
+    {
+        off_t at = (off_t)sizeof (h)
+                   + (off_t)t[i].ordinal * (off_t)sizeof (r);
+
+        /* A record the run never reached is a track that has left the
+         * player. Dropped only where the caller can prove the walk saw every
+         * track there is -- see the header. */
+        if (prune && !t[i].seen)
+            continue;
+
+        if (lseek(part_fd, at, SEEK_SET) != at ||
+            read(part_fd, &r, sizeof (r)) != (ssize_t)sizeof (r) ||
+            write(out_fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
+        {
+            close(out_fd);
+            remove(SOUND_FILE ".new");
+            return SOUND_ERR_IO;
+        }
+
+        kept++;
+    }
+
+    header_init(&h, (uint32_t)kept);
+    if (lseek(out_fd, 0, SEEK_SET) != 0 ||
+        write(out_fd, &h, sizeof (h)) != (ssize_t)sizeof (h))
+    {
+        close(out_fd);
+        remove(SOUND_FILE ".new");
+        return SOUND_ERR_IO;
+    }
+
+    fsync(out_fd);
+    close(out_fd);
+
+    /* In place only once the replacement is whole: a scan of this length must
+     * not be able to destroy the previous index by failing near the end. */
+    if (rename(SOUND_FILE ".new", SOUND_FILE) < 0)
+        return SOUND_ERR_IO;
+
+    sound_index_close();
+    remove(SOUND_PART);
+
+    return SOUND_OK;
+}
+
+void sound_index_close(void)
+{
+    if (part_fd >= 0)
+    {
+        close(part_fd);
+        part_fd = -1;
+    }
+
+    if (table_handle > 0)
+    {
+        core_unpin(table_handle);
+        core_free(table_handle);
+        table_handle = 0;
+    }
+
+    table_used = 0;
+    table_max = 0;
+    table_sorted_upto = 0;
+}
+
+bool sound_index_partial(int *done, bool *update)
+{
+    struct sound_header h;
+    int fd = open(SOUND_PART, O_RDONLY);
+    bool ok = false;
+
+    if (fd < 0)
+        return false;
+
+    if (read(fd, &h, sizeof (h)) == (ssize_t)sizeof (h) && header_ok(&h) &&
+        h.count > 0)
+    {
+        uint32_t seeded = h.reserved < h.count ? h.reserved : h.count;
+
+        if (done != NULL)
+            *done = (int)(h.count - seeded);
+        if (update != NULL)
+            *update = seeded > 0;
+        ok = true;
+    }
+
+    close(fd);
+
+    return ok;
+}
+
+void sound_index_discard_part(void)
+{
+    remove(SOUND_PART);
+}
+
+bool sound_index_exists(void)
+{
+    return file_exists(SOUND_FILE);
+}
+
+
+/** Reading **/
+
+int sound_index_reader_open(struct sound_index_reader *r)
+{
+    struct sound_header h;
+
+    r->next = -1;
+
+    r->fd = open(SOUND_FILE, O_RDONLY);
+    if (r->fd < 0)
+        return SOUND_ERR_NONE;
+
+    if (read(r->fd, &h, sizeof (h)) != (ssize_t)sizeof (h) ||
+        !header_ok(&h))
+    {
+        close(r->fd);
+        r->fd = -1;
+        return SOUND_ERR_NONE;
+    }
+
+    r->count = (int)h.count;
+    r->next = 0;    /* The header read above left it at record zero */
+
+    return SOUND_OK;
+}
+
+void sound_index_reader_close(struct sound_index_reader *r)
+{
+    if (r->fd >= 0)
+        close(r->fd);
+
+    r->fd = -1;
+    r->count = 0;
+    r->next = -1;
+}
+
+bool sound_index_read(struct sound_index_reader *r, int n,
+                      struct sound_record *out)
+{
+    if (r->fd < 0 || n < 0 || n >= r->count)
+        return false;
+
+    /* Seek only when the file is not already there. A whole-index walk asks
+     * for record after record, and an absolute seek resolves the offset
+     * against the cluster chain every time -- so on the walk that reads every
+     * record the seek costs more than the sixty-four bytes do. The binary
+     * search in sound_index_find() still seeks, which is the case the offset
+     * is for. */
+    if (n != r->next)
+    {
+        off_t at = (off_t)sizeof (struct sound_header)
+                   + (off_t)n * (off_t)sizeof (*out);
+
+        if (lseek(r->fd, at, SEEK_SET) != at)
+        {
+            r->next = -1;
+            return false;
+        }
+
+        r->next = n;
+    }
+
+    if (read(r->fd, out, sizeof (*out)) != (ssize_t)sizeof (*out))
+    {
+        r->next = -1;
+        return false;
+    }
+
+    r->next = n + 1;
+
+    return true;
+}
+
+bool sound_index_find(struct sound_index_reader *r, uint64_t key,
+                      struct sound_record *out)
+{
+    int lo = 0;
+    int hi = r->count - 1;
+
+    while (lo <= hi)
+    {
+        int mid = lo + (hi - lo) / 2;
+
+        if (!sound_index_read(r, mid, out))
+            return false;
+
+        if (out->key == key)
+            return true;
+
+        if (out->key < key)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+
+    return false;
+}

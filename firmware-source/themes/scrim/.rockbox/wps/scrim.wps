@@ -1,0 +1,89 @@
+#-----------------------------------------------#
+#scrim
+#by Anthony Fletcher for PodBox
+#CC BY-SA 3.0
+#-----------------------------------------------#
+#
+#--- Fonts ---#
+#
+%Fl(2,26-noto-sans-medium.fnt)
+%Fl(3,12-noto-sans.fnt)
+%Fl(4,24x24-icons.fnt)
+%Fl(5,18-noto-sans-bold.fnt)
+#
+#--- Images ---#
+#
+%xl(vbg,volband.bmp,0,0)
+%xl(vwf,volfill.bmp,0,0)
+#
+#--- Background layer ---#
+#
+# Album art
+%V(0,0,-,-,-)%VB%Vf(000000)%Cl(80,0,240,240,c,c,-,-,original)%Cd(original)
+#
+# Album panel and progress tints, while the panel shows (see Auto-hide below)
+%?and(%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,5),%Tl(5)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,10),%Tl(10)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,30),%Tl(30)))<%?if(%tw(%it,2),>,230)<%dr(0,50,240,90,dominant<30:000000,-,10)|%dr(0,77,240,63,dominant<30:000000,-,10)>%dr(0,140,240,5,!ffffff,-,6)|>
+#
+#--- Foreground layer ---#
+#
+%V(0,0,-,-,-)
+#
+# Disable the status bar
+%wd
+#   
+# Auto-hide: show the panel -- title, sub-line, progress, track number and
+# remaining time -- until there has been no input for the auto-hide: seconds
+# in scrim.preferences. Any other value, or none, keeps it shown.
+%?and(%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,5),%Tl(5)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,10),%Tl(10)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,30),%Tl(30)))<%?if(%tw(%it,2),>,230)<%Vd(Tall)|%Vd(Short)>%Vd(Panel)|>
+#
+# Top bar: the volume overlay while the volume changes, else the status
+# icons, which auto-hide with the panel
+%?mv(3)<%Vd(Volume)|%?and(%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,5),%Tl(5)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,10),%Tl(10)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,30),%Tl(30)))<%Vd(Chrome)|>>
+#
+# Album panel contents
+#
+# - Track title
+%Vl(Short,5,85,230,28,2)%Vf(!ffffff)
+%it
+%Vl(Tall,5,58,230,55,2)%Vf(!ffffff)%wt(%it,tl)
+#
+# - Sub-line: artist, album, artist-album, album-artist or
+#   playlist_name, per scrim.preferences
+%Vl(Panel,5,113,230,20,-)%Vf(!ffffff)
+%s%?if(%ft(themes/scrim.preferences,sub-line mode:),=,artist)<%ia|%?if(%ft(themes/scrim.preferences,sub-line mode:),=,playlist_name)<%pn|%?if(%ft(themes/scrim.preferences,sub-line mode:),=,artist-album)<%?ia<%ia%?id< - |>|>%id|%?if(%ft(themes/scrim.preferences,sub-line mode:),=,album-artist)<%?id<%id%?ia< - |>|>%ia|%id>>>>
+#
+# Progress
+%Vl(Panel,0,140,240,5,-)%Vf(vivid>60:ffffff)%pb(0,0,-,-,noborder)
+#
+# Under panel
+#
+# - Track number
+%Vl(Panel,5,150,30,14,3)
+%?if(%pp,<,10)<0>%pp
+#
+# - Remaining time.
+%Vl(Panel,45,150,30,14,3)
+%ar%pr
+#
+# - Status icons - Transport: stopped C, playing A, paused B, ffwd G, rewind F.
+#   play-pause icon: next in scrim.preferences swaps A and B.
+%Vl(Chrome,0,0,320,35,4)
+%Vl(Chrome,2,2,76,24,4)
+%?if(%ft(themes/scrim.preferences,play-pause icon:),=,next)<%?mp<C|B|A|G|F>|%?mp<C|A|B|G|F>>%?ps<H>%?mm<|J|J|J|J>
+#
+# Spectrum analyser, with 2px peak caps unless spectrum peaks: off. The
+# caps are grey: dynamic colours keep a grey's contrast with the
+# background, so a darker grey here is a fainter cap.
+%V(0,200,80,40,-)
+%?if(%ft(themes/scrim.preferences,spectrum peaks:),=,off)<%Sb(8,-,-,0)|%Sb(8,-,-,0,2,333333)>
+#
+# Volume overlay
+%Vl(Volume,0,0,320,35,5)%Vg(000000,000000,ffffff)
+%Vs(gradient) 
+%Vs(gradient) 
+%Vs(gradient) 
+%Vl(Volume,8,6,304,24,4)%Vg(000000,000000,ffffff)%Vf(ffffff)
+%Vs(gradient)%?pv<M|N|N>%arO
+%Vl(Volume,40,15,240,6,-)%Vf(!ffffff)
+%dr(0,0,240,6,000000)%pv(0,0,240,6,image,vwf,backdrop,vbg)
+

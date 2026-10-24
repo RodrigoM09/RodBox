@@ -1,0 +1,1804 @@
+/***************************************************************************
+ * Original code from the Spun plugin (Stats_for_iPod)
+ * was: apps/plugins/wrapped_core.h
+ * Copyright (C) 2026 Siebe Majoor
+ * GNU General Public License (version 2+)
+ *
+ * What the log adds up to.
+ *
+ * One pass over the family (pv_log.c), naming each entry as it arrives
+ * (pv_names.c) and folding it into three tables -- artists, titles and
+ * albums -- plus a day array and an hour histogram. Everything the cards
+ * eventually draw is derived from these.
+ *
+ * The tables live in memory the caller lends us and are gone when this
+ * returns; only the summary survives. That is deliberate: the aggregates are
+ * the expensive part to produce and the cheap part to keep, so the eventual
+ * on-disk index (see .specifications/SPUN_INTEGRATION.md) replaces this
+ * working set without changing what a record means. Which is why a record is
+ * plain data with no pointers in it -- it is already the shape it needs to be
+ * to be written to a file.
+ *
+ * The saved index holds the rows already named, so it is good for as long as
+ * every logged file would still be named the same. A file the database holds
+ * is renamed only by being deleted or retagged, and a retag deletes the old
+ * entry too, so the database's deleted count covers all of those; the files
+ * it did not hold are kept in the index with what the database says of them.
+ * An update that only adds tracks, the usual one, leaves the index standing.
+ *
+ * A note on albums. A path does not carry one, so an album name can only come
+ * from the database. Without one, plays are bucketed under the ARTIST
+ * instead: the numbers stay meaningful and the album card degrades to an
+ * artist card, which is better than a table full of folder names. With one,
+ * an album belongs to its album artist, as the database files it: a
+ * compilation is one album, not one per track artist, and two artists'
+ * albums of one name are two.
+ ****************************************************************************/
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <string-extra.h>
+#include <file.h>            /* MAX_PATH */
+#include "config.h"
+#include "system/hash.h"
+#include "kernel.h"      /* current_tick, HZ */
+#include "database/tagcache.h"   /* the library's size, for the table caps */
+#include "database/path_key.h"
+#include "system.h"      /* cpu_boost */
+#include "lang.h"
+#include "widgets/splash.h"
+#include "audio/playback.h"  /* playback_log_flush() */
+#ifdef HAVE_ALBUMART
+#include "metadata/art_cache.h"
+#endif
+#include "pv_badges.h"
+#include "pv_index.h"
+#include "pv_log.h"
+#include "pv_names.h"
+#include "pv_stats.h"
+
+struct pv_htable
+{
+    struct pv_agg *items;
+    int             *slots;   /* slot -> item index + 1; 0 = empty */
+    int              cap;
+    int              mask;    /* slots - 1, always a power of two */
+    int              n;
+};
+
+/* Weeks are Monday-aligned and absolute: unix day 4 was Mon 1970-01-05. Being
+ * independent of any displayed year means a week keeps its identity however
+ * the deck is later filtered. */
+#define WEEK_OF_DAY(d) (((d) - 4) / 7)
+#define WEEK_START_DAY(w) ((w) * 7 + 4)
+
+static struct pv_htable t_artist, t_title, t_album;
+static struct pv_day   *days;
+static int day_cap, day_n;
+static bool overflowed;
+
+/* Plays older than this count as "not heard lately" for PV_RANK_REDIS.
+ * Derived from the log's own span at the end of a build. */
+static unsigned long redis_cutoff;
+
+/* The year being reported, and the seconds it spans. PV_YEAR_ALL leaves the
+ * range wide open, which is how a caller asks for the whole log. */
+static int  cur_year;
+static unsigned long year_lo, year_hi;
+
+/* The whole log's figures, whatever year is being shown. The badge engine is
+ * scored against these and the year switch offers from them. */
+static struct pv_totals lifetime;
+
+static bool in_year(const struct pv_entry *e)
+{
+    if (cur_year == PV_YEAR_ALL)
+        return true;
+    /* An entry with no usable date belongs to no year. It still counts
+     * towards the lifetime figures, and towards the badges. */
+    if (!e->valid_ts)
+        return false;
+    return e->ts >= year_lo && e->ts < year_hi;
+}
+
+static bool day_in_year(long day)
+{
+    unsigned long ts;
+
+    if (cur_year == PV_YEAR_ALL)
+        return true;
+    ts = (unsigned long)day * 86400UL;
+    return ts >= year_lo && ts < year_hi;
+}
+
+/* The badge engine's chronological state, built as the log is read and
+ * carried in the index so an extend continues it rather than restarting. */
+static struct pv_badge_state badge_state;
+
+/* The logged files the database does not hold, each with where
+ * pv_names_locate() put it. A set that fills makes the index keyed to the
+ * database's exact state instead. */
+#define PV_ABSENT_MAX 1024
+
+struct pv_logged
+{
+    uint64_t key;               /* path_key() of the logged path */
+    uint64_t loc;               /* and of where it was named from */
+};
+
+static struct pv_logged *logged;
+static int *logged_slots;
+static int logged_cap, logged_mask, logged_n;
+static bool logged_full;
+
+static void logged_add(uint64_t key, uint64_t loc)
+{
+    int s;
+
+    if (logged_cap == 0)
+        return;
+    s = (int)((uint32_t)key & (unsigned)logged_mask);
+    while (logged_slots[s])
+    {
+        if (logged[logged_slots[s] - 1].key == key)
+            return;
+        s = (s + 1) & logged_mask;
+    }
+    if (logged_n >= logged_cap)
+    {
+        logged_full = true;
+        return;
+    }
+    logged[logged_n].key = key;
+    logged[logged_n].loc = loc;
+    logged_slots[s] = ++logged_n;
+}
+
+/* One absent file as the index keeps it */
+struct pv_logged_rec
+{
+    uint64_t key;
+    uint64_t loc;
+    uint32_t loc_names;         /* pv_names_fingerprint() of 'loc' */
+    uint32_t pad;
+};
+
+/* The database's state */
+struct pv_db_whole
+{
+    int32_t entries;
+    int32_t commit;
+    int32_t deleted;            /* -1 where it cannot be counted */
+    int32_t pad;                /* zero, so memcmp() sees no padding */
+    uint64_t last_key;          /* tagcache_entry_key() of the last entry */
+};
+
+static void db_whole(struct pv_db_whole *w)
+{
+    struct tagcache_stat *stat = tagcache_get_stat();
+    struct tagcache_marks marks;
+
+    tagcache_get_marks(&marks);
+    w->entries = stat ? stat->total_entries : 0;
+    w->commit = marks.commitid;
+    w->deleted = marks.deleted_ct;
+    w->pad = 0;
+    w->last_key = tagcache_entry_key(w->entries - 1);
+}
+
+/* Whether a database in state 'now' names every file it held at 'then' as
+ * it did: nothing deleted or retagged since, only added. A Rebuild renumbers
+ * the entries, which the file at the old last entry shows. RAM only. */
+static bool db_only_added(const struct pv_db_whole *then,
+                          const struct pv_db_whole *now)
+{
+    if (memcmp(then, now, sizeof(*now)) == 0)
+        return true;
+    return then->deleted >= 0 && now->deleted == then->deleted
+        && now->entries > then->entries && now->commit >= then->commit
+        && then->last_key != 0
+        && tagcache_entry_key(then->entries - 1) == then->last_key;
+}
+
+/* Bump allocator over the caller's buffer, above the moved-folder table. */
+static char  *abuf;
+static size_t abuf_sz, abuf_used;
+
+static void *abuf_alloc(size_t n)
+{
+    void *p;
+
+    n = (n + 3u) & ~(size_t)3u;
+    if (abuf_used + n > abuf_sz)
+        return NULL;
+    p = abuf + abuf_used;
+    abuf_used += n;
+    memset(p, 0, n);
+    return p;
+}
+
+static bool htable_init(struct pv_htable *t, int cap)
+{
+    int slots = next_pow2(cap * 2);
+
+    t->items = abuf_alloc((size_t)cap * sizeof(struct pv_agg));
+    t->slots = abuf_alloc((size_t)slots * sizeof(int));
+    if (!t->items || !t->slots)
+        return false;
+
+    t->cap  = cap;
+    t->mask = slots - 1;
+    t->n    = 0;
+    return true;
+}
+
+/* A row's identity: its stored name and the artist it belongs to.
+ *
+ * One function because three places need the same answer -- insert, lookup,
+ * and the rebuild after an index load -- and a scope mixed into two of them
+ * would file rows where the third cannot find them. */
+static unsigned int agg_hash(const char *stored, int artist)
+{
+    return fnv1a_str(stored) ^ ((unsigned)artist * 0x9E3779B9u);
+}
+
+/* Which of a row's two links names a row of 'parent'. */
+static int link_of(const struct pv_agg *a, enum pv_table parent)
+{
+    return (parent == PV_T_ALBUM) ? a->album : a->artist;
+}
+
+static int row_index(const struct pv_htable *t, const struct pv_agg *a)
+{
+    return a ? (int)(a - t->items) : PV_ROW_NONE;
+}
+
+/* The row stored as 'key' within 'artist', or NULL with *slot set to the
+ * empty slot it would take. */
+static struct pv_agg *htable_probe(const struct pv_htable *t, const char *key,
+                                   int artist, int *slot)
+{
+    int i = (int)(agg_hash(key, artist) & (unsigned)t->mask);
+
+    while (t->slots[i])
+    {
+        struct pv_agg *a = &t->items[t->slots[i] - 1];
+        if (a->artist == artist && strcmp(a->name, key) == 0)
+            return a;
+        i = (i + 1) & t->mask;
+    }
+    if (slot)
+        *slot = i;
+    return NULL;
+}
+
+/* Find or create, within an artist. NULL only when the table is full --
+ * which is a real outcome, not an impossible one: the caller records it so an
+ * undercount is visible rather than silent.
+ *
+ * 'artist' is PV_ROW_NONE for the artist table itself, and for a title or an
+ * album whose artist row could not be made. */
+static struct pv_agg *htable_get(struct pv_htable *t, const char *name,
+                                 int artist)
+{
+    /* Hash and compare the STORED form. A longer name hashed in full would
+     * never match its own truncated entry, and would make a new row on every
+     * single play. */
+    char key[PV_NAME_MAX];
+    struct pv_agg *a;
+    int i;
+
+    strlcpy(key, name, sizeof(key));
+    a = htable_probe(t, key, artist, &i);
+    if (a)
+        return a;
+
+    if (t->n >= t->cap)
+    {
+        overflowed = true;
+        return NULL;
+    }
+
+    a = &t->items[t->n];
+    strlcpy(a->name, key, sizeof(a->name));
+    /* The buffer arrives zeroed, so both links have to be set: zero is row 0,
+     * not "no row". */
+    a->artist = artist;
+    a->album  = PV_ROW_NONE;
+    t->slots[i] = t->n + 1;
+    t->n++;
+    return a;
+}
+
+/* Logs run forwards, so the day being added is almost always the last one
+ * seen. The scan behind it is the exception, not the rule. A full table keeps
+ * the newest days: a new day takes the oldest one's slot, so the calendar and
+ * the streaks stay current and only the far past is lost. */
+static void day_add(long day, unsigned secs, unsigned long offset)
+{
+    int slot = day_n;
+
+    if (day_n && days[day_n - 1].day == day)
+    {
+        days[day_n - 1].count++;
+        days[day_n - 1].secs += secs;
+        return;
+    }
+
+    for (int i = 0; i < day_n; i++)
+    {
+        if (days[i].day == day)
+        {
+            days[i].count++;
+            days[i].secs += secs;
+            return;
+        }
+    }
+
+    if (day_n >= day_cap)
+    {
+        overflowed = true;
+        slot = 0;
+        for (int i = 1; i < day_n; i++)
+            if (days[i].day < days[slot].day)
+                slot = i;
+        if (days[slot].day > day)
+            return;
+        /* The new day goes last, where the next play looks first */
+        days[slot] = days[day_n - 1];
+        slot = day_n - 1;
+    }
+    else
+        day_n++;
+
+    days[slot].day = day;
+    days[slot].count = 1;
+    days[slot].secs = secs;
+    days[slot].skips = 0;
+    /* The first entry seen for this day, which is where a later reader
+     * should start looking for it. */
+    days[slot].offset = offset;
+}
+
+#ifdef HAVE_ALBUMART
+/* A skip on a day that was also listened to.
+ *
+ * Deliberately does not create a day: see struct pv_day. The cost is that
+ * skips on a day with no completed play are not counted anywhere per-day,
+ * which is a day spent skipping everything and nothing else. */
+static void day_skip(long day)
+{
+    if (day_n && days[day_n - 1].day == day)
+    {
+        days[day_n - 1].skips++;
+        return;
+    }
+
+    for (int i = 0; i < day_n; i++)
+    {
+        if (days[i].day == day)
+        {
+            days[i].skips++;
+            return;
+        }
+    }
+}
+
+/* The artwork cache's key for the folder holding 'path', or for that folder's
+ * parent when 'up' is set -- which under an <artist>/<album>/<track> layout is
+ * the artist's own folder, and is exactly how art_cache generates its keys
+ * (see aa_dirname() in metadata/art_cache.c).
+ *
+ * The path is hashed with no normalisation and no trailing slash, because
+ * that is what the cache does. Anything else here silently misses every
+ * lookup. */
+static unsigned int folder_hash(const char *path, bool up)
+{
+    char dir[MAX_PATH];
+    const char *slash;
+    size_t n;
+
+    if (!path || !path[0])
+        return 0;
+
+    slash = strrchr(path, '/');
+    if (!slash || slash == path)
+        return 0;
+    n = (size_t)(slash - path);
+
+    if (up)
+    {
+        /* Step to the parent by finding the slash before this one. */
+        while (n > 0 && path[n - 1] != '/')
+            n--;
+        if (n <= 1)
+            return 0;       /* no distinct parent: a flat or rooted layout */
+        n--;
+    }
+
+    if (n == 0 || n >= sizeof(dir))
+        return 0;
+
+    memcpy(dir, path, n);
+    dir[n] = '\0';
+    return art_cache_dir_hash(dir);
+}
+#endif /* HAVE_ALBUMART */
+
+/* Below this much unindexed log, replaying it beats saving it: writing the
+ * index costs about what reading it does, and a day's listening is a few
+ * kilobytes against a quarter of a megabyte of tables. */
+#define PV_INDEX_REWRITE_AT (64 * 1024)
+
+/* The slot arrays are derived, not stored: rebuilding them from the records
+ * is a few thousand hash inserts, which is quicker than reading them back and
+ * leaves that much less file to be wrong. */
+static void htable_reindex(struct pv_htable *t)
+{
+    memset(t->slots, 0, (size_t)(t->mask + 1) * sizeof(int));
+    for (int i = 0; i < t->n; i++)
+    {
+        int s = (int)(agg_hash(t->items[i].name, t->items[i].artist)
+                      & (unsigned)t->mask);
+        while (t->slots[s])
+            s = (s + 1) & t->mask;
+        t->slots[s] = i + 1;
+    }
+}
+
+static void index_identity(struct pv_index_id *id, enum pv_source src,
+                           int year)
+{
+    id->source      = (unsigned long)src;
+    id->agg_size    = sizeof(struct pv_agg);
+    id->day_size    = sizeof(struct pv_day);
+    id->totals_size = sizeof(struct pv_totals);
+    id->state_size  = sizeof(struct pv_badge_state);
+    id->year        = (unsigned long)year;
+    id->names       = (src == PV_SRC_PLAYBACK) ? pv_names_identity() : 0;
+}
+
+/* Whether the database has said what it holds. While it is still loading, or
+ * mid-scan, a build names everything from folders -- and saving that would
+ * keep those names until the database next changes, long after it could have
+ * named them properly. */
+static bool names_settled(void)
+{
+    struct tagcache_stat *stat = tagcache_get_stat();
+
+    if (!stat)
+        return false;
+    return stat->ready || (stat->readyvalid && !tagcache_is_busy());
+}
+
+static void logged_reset(void)
+{
+    logged_n = 0;
+    logged_full = false;
+    if (logged_cap)
+        memset(logged_slots, 0, (size_t)(logged_mask + 1) * sizeof(int));
+}
+
+/* The database's state and the absent files, with what it says of where
+ * each was named from; -1 for the files when the set filled, which keys the
+ * index to the exact state */
+static bool logged_save(const struct pv_db_whole *db)
+{
+    struct pv_logged_rec r[32];
+    int32_t n = (logged_full || logged_cap == 0) ? -1 : logged_n;
+
+    if (!pv_index_write(db, sizeof(*db)) || !pv_index_write(&n, sizeof(n)))
+        return false;
+
+    for (int i = 0; i < n; )
+    {
+        int k = 0;
+
+        memset(r, 0, sizeof(r));
+        for (; k < (int)ARRAYLEN(r) && i < n; k++, i++)
+        {
+            r[k].key = logged[i].key;
+            r[k].loc = logged[i].loc;
+            r[k].loc_names = pv_names_fingerprint(r[k].loc);
+        }
+        if (!pv_index_write(r, (size_t)k * sizeof(r[0])))
+            return false;
+    }
+    return true;
+}
+
+/* Whether every logged file would be named as it was when the index was
+ * saved. The absent files are taken back into the set, for the plays read
+ * after the index. */
+static bool logged_check(void)
+{
+    struct pv_logged_rec r[32];
+    struct pv_db_whole then, now;
+    int32_t n;
+
+    logged_reset();
+    db_whole(&now);
+    if (!pv_index_read(&then, sizeof(then)) || !pv_index_read(&n, sizeof(n)))
+        return false;
+    if (n < 0)
+    {
+        logged_full = true;
+        return memcmp(&then, &now, sizeof(now)) == 0;
+    }
+    if (!db_only_added(&then, &now) || n > logged_cap)
+        return false;
+
+    for (int i = 0; i < n; )
+    {
+        int k = n - i < (int)ARRAYLEN(r) ? n - i : (int)ARRAYLEN(r);
+
+        if (!pv_index_read(r, (size_t)k * sizeof(r[0])))
+            return false;
+        for (int j = 0; j < k; j++, i++)
+        {
+            /* Added since, or named from a moved file that changed */
+            if (pv_names_fingerprint(r[j].key) != 0
+                || (r[j].loc != r[j].key
+                    && pv_names_fingerprint(r[j].loc) != r[j].loc_names))
+                return false;
+            logged_add(r[j].key, r[j].loc);
+        }
+    }
+    return true;
+}
+
+/* Read a saved index into the tables, which the caller has already sized.
+ * Anything that does not fit or does not read whole means no index. */
+static bool index_load(struct pv_totals *out, unsigned long log_size,
+                       unsigned long *covered)
+{
+    struct pv_index_id id;
+    struct pv_totals saved;
+    int n_artist, n_title, n_album, n_days;
+
+    index_identity(&id, out->source, cur_year);
+    if (!pv_index_read_begin(&id, log_size, covered))
+        return false;
+
+    if (!pv_index_read(&saved, sizeof(saved))
+        || !pv_index_read(&lifetime, sizeof(lifetime))
+        || !pv_index_read(&n_artist, sizeof(n_artist))
+        || !pv_index_read(&n_title, sizeof(n_title))
+        || !pv_index_read(&n_album, sizeof(n_album))
+        || !pv_index_read(&n_days, sizeof(n_days))
+        || !pv_index_read(&badge_state, sizeof(badge_state)))
+        goto fail;
+
+    /* A library that grew since the index was written can have more rows than
+     * the tables were sized for. Rebuilding is the right answer -- loading
+     * what fits would silently drop the rest. */
+    if (n_artist > t_artist.cap || n_title > t_title.cap
+        || n_album > t_album.cap || n_days > day_cap
+        || n_artist < 0 || n_title < 0 || n_album < 0 || n_days < 0)
+        goto fail;
+
+    if (!pv_index_read(t_artist.items, (size_t)n_artist * sizeof(struct pv_agg))
+        || !pv_index_read(t_title.items, (size_t)n_title * sizeof(struct pv_agg))
+        || !pv_index_read(t_album.items, (size_t)n_album * sizeof(struct pv_agg))
+        || !pv_index_read(days, (size_t)n_days * sizeof(struct pv_day)))
+        goto fail;
+
+    /* Every logged file still named as it was, or the rows are not */
+    if (out->source == PV_SRC_PLAYBACK && !logged_check())
+        goto fail;
+
+    pv_index_read_end();
+
+    t_artist.n = n_artist;
+    t_title.n  = n_title;
+    t_album.n  = n_album;
+    day_n      = n_days;
+
+    /* The rows arrived as bytes, and everything downstream reads name as
+     * a string -- htable_reindex() hashes it a character at a time and
+     * stops at a zero. A file supplying a full-width name with no room
+     * for one runs off the row and into the next. Being terminated is a
+     * property of the type rather than a claim about the figures, so it
+     * is settled here rather than left to a rebuild. */
+    for (int i = 0; i < n_artist; i++)
+        t_artist.items[i].name[PV_NAME_MAX - 1] = '\0';
+    for (int i = 0; i < n_title; i++)
+        t_title.items[i].name[PV_NAME_MAX - 1] = '\0';
+    for (int i = 0; i < n_album; i++)
+        t_album.items[i].name[PV_NAME_MAX - 1] = '\0';
+
+    htable_reindex(&t_artist);
+    htable_reindex(&t_title);
+    htable_reindex(&t_album);
+
+    /* Carry the accumulated figures across, but not the ones that describe
+     * this run: how long it took, and which capacities it was given. */
+    {
+        long ms_names = out->ms_names;
+        int ct = out->cap_titles, ca = out->cap_artists, cb = out->cap_albums;
+        int de = out->db_entries, dm = out->db_mapped;
+        enum pv_source src = out->source;
+
+        *out = saved;
+        out->ms_names = ms_names;
+        out->cap_titles = ct;
+        out->cap_artists = ca;
+        out->cap_albums = cb;
+        out->db_entries = de;
+        out->db_mapped = dm;
+        out->source = src;
+        out->ms_read = 0;
+    }
+    return true;
+
+fail:
+    pv_index_read_end();
+    /* Everything the read may already have written, back to empty. The badge
+     * state is the one that does not look like a table: it is read whole
+     * before the capacities are checked, so a rejected index leaves its
+     * counters standing, and the full replay the caller falls back to then
+     * feeds the whole log on top of them. */
+    pv_badges_reset(&badge_state);
+    day_n = 0;
+    t_artist.n = t_title.n = t_album.n = 0;
+    logged_reset();
+    return false;
+}
+
+/* The database the rows being saved were named from */
+static struct pv_db_whole index_db;
+
+static void index_save(const struct pv_totals *out, unsigned long covered)
+{
+    struct pv_index_id id;
+
+    index_identity(&id, out->source, cur_year);
+    if (!pv_index_write_begin(&id, covered, out->source))
+        return;
+
+    if (pv_index_write(out, sizeof(*out))
+        && pv_index_write(&lifetime, sizeof(lifetime))
+        && pv_index_write(&t_artist.n, sizeof(t_artist.n))
+        && pv_index_write(&t_title.n, sizeof(t_title.n))
+        && pv_index_write(&t_album.n, sizeof(t_album.n))
+        && pv_index_write(&day_n, sizeof(day_n))
+        && pv_index_write(&badge_state, sizeof(badge_state))
+        && pv_index_write(t_artist.items,
+                          (size_t)t_artist.n * sizeof(struct pv_agg))
+        && pv_index_write(t_title.items,
+                          (size_t)t_title.n * sizeof(struct pv_agg))
+        && pv_index_write(t_album.items,
+                          (size_t)t_album.n * sizeof(struct pv_agg))
+        && pv_index_write(days, (size_t)day_n * sizeof(struct pv_day))
+        && (out->source != PV_SRC_PLAYBACK || logged_save(&index_db)))
+        pv_index_write_end();
+    else
+        pv_index_write_abort();
+}
+
+/* How far a long read of the log has got, from 'from' to 'size', so whatever
+ * splash came before -- often the moved-folder search -- is not left up over
+ * it. Not before half a second, so a short tail of new plays does not flash.
+ * replay_size is 0 when no read is running. */
+static unsigned long replay_from, replay_size;
+
+static void replay_begin(unsigned long from, unsigned long size)
+{
+    replay_from = from;
+    replay_size = size;
+    splash_progress_set_delay(HZ / 2);
+}
+
+static void replay_progress(unsigned long offset)
+{
+    /* In thousandths, since an offset need not fit an int. */
+    unsigned long step = (replay_size - replay_from) / 1000 + 1;
+
+    if (replay_size == 0 || offset < replay_from)
+        return;
+
+    splash_progress((int)((offset - replay_from) / step),
+                    (int)((replay_size - replay_from) / step),
+                    "%s", str(LANG_PV_READING_HISTORY));
+}
+
+static void entry_cb(const struct pv_entry *e, void *ctx)
+{
+    struct pv_totals *t = ctx;
+    char artist[PV_NAME_MAX], title[PV_NAME_MAX], album[PV_NAME_MAX];
+    char album_artist[PV_NAME_MAX];
+    const char *path = e->path;
+    enum pv_name_src src;
+    unsigned elapsed;
+    bool night, year;
+    struct pv_agg *ar = NULL, *al = NULL, *ti = NULL;
+    int ar_idx = PV_ROW_NONE, al_idx = PV_ROW_NONE;
+
+    replay_progress(e->offset);
+
+    if (e->artist)
+    {
+        /* The scrobbler format carries tagged names already, so there is
+         * nothing to resolve and no database to consult. */
+        strlcpy(artist, e->artist, sizeof(artist));
+        strlcpy(title, e->title, sizeof(title));
+        strlcpy(album, e->album ? e->album : "", sizeof(album));
+        album_artist[0] = '\0';
+        src = PV_NAME_LOG;
+        t->from_log++;
+    }
+    else
+    {
+        uint64_t key = path_key(e->path);
+
+        path = pv_names_locate(e->path);
+        if (tagcache_find_key(key) < 0)
+            logged_add(key, path == e->path ? key : path_key(path));
+        src = pv_names_resolve(path, artist, title, album, album_artist);
+        if (src == PV_NAME_DB)
+            t->from_db++;
+        else
+            t->from_path++;
+    }
+
+    elapsed = (unsigned)(e->elapsed_ms / 1000);
+    year = in_year(e);
+
+    /* Counted here rather than from the reader's return value, so that a pass
+     * over only the new tail of the log adds to what was loaded instead of
+     * replacing it. Every counter in this function accumulates for the same
+     * reason -- extending is the same arithmetic as building, applied to
+     * fewer entries. */
+    t->lines++;
+    lifetime.lines++;
+
+    if (!e->valid_ts)
+    {
+        t->unset_clock++;
+        lifetime.unset_clock++;
+    }
+
+    /* Keep the first few properly-named entries, so "the names are real" is
+     * something that can be seen rather than inferred from a counter. */
+    if (src != PV_NAME_PATH
+        && t->samples < (int)(sizeof(t->sample) / sizeof(t->sample[0])))
+    {
+        snprintf(t->sample[t->samples], sizeof(t->sample[0]),
+                 "%s - %s", artist, title);
+        t->samples++;
+    }
+
+    /* The three rows this entry belongs to, made in order: an album is
+     * identified within its artist and a title within both, so each has to
+     * exist before the next can name it. Only for entries that played or were
+     * skipped -- a browsing tap should leave no row behind. */
+    if (e->listened || e->skipped)
+    {
+        /* Only for a name there is. A row with an empty name is not an
+         * unnamed artist, it is no artist: it collects the plays of every
+         * entry whose name could not be resolved, ranks on the total and
+         * arrives in the top ten as a card with nothing on it. Leaving the
+         * row out instead gives ar_idx = PV_ROW_NONE, which is what the
+         * header already means by "the artist could not be recorded". */
+        if (artist[0])
+        {
+            ar = htable_get(&t_artist, artist, PV_ROW_NONE);
+            ar_idx = row_index(&t_artist, ar);
+        }
+        if (album[0] || artist[0])
+        {
+            /* An album artist who is not this track's own is a row of the
+             * artist table too, though one with no plays of its own */
+            int owner = ar_idx;
+
+            if (album[0] && album_artist[0] && strcmp(album_artist, artist))
+                owner = row_index(&t_artist,
+                                  htable_get(&t_artist, album_artist,
+                                             PV_ROW_NONE));
+            al = htable_get(&t_album, album[0] ? album : artist, owner);
+            al_idx = row_index(&t_album, al);
+        }
+        if (title[0])
+        {
+            ti = htable_get(&t_title, title, ar_idx);
+            if (ti)
+                ti->album = al_idx;
+        }
+    }
+
+    if (e->listened)
+    {
+        lifetime.plays++;
+        lifetime.seconds += elapsed;
+
+        night = e->valid_ts && (e->ts % 86400UL) / 3600UL < 5;
+        if (night)
+            lifetime.night++;
+
+        if (year)
+        {
+            t->plays++;
+            t->seconds += elapsed;
+            if (night)
+                t->night++;
+        }
+
+        if (ar)
+        {
+            ar->count++;
+            ar->seconds += elapsed;
+            if (night)
+                ar->night++;
+            if (year)
+            {
+                ar->y_count++;
+                ar->y_seconds += elapsed;
+            }
+#ifdef HAVE_ALBUMART
+            if (ar->art_hash == 0 && path && path[0])
+                ar->art_hash = folder_hash(path, true);
+#endif
+        }
+
+        if (ti)
+        {
+            ti->count++;
+            ti->seconds += elapsed;
+            if (night)
+                ti->night++;
+            if (year)
+            {
+                ti->y_count++;
+                ti->y_seconds += elapsed;
+            }
+            if (e->valid_ts && e->ts > ti->last_ts)
+                ti->last_ts = e->ts;
+#ifdef HAVE_ALBUMART
+            /* A song's picture is its album's, which is the folder the file
+             * itself sits in -- the same key the album row takes. */
+            if (ti->art_hash == 0 && path && path[0])
+                ti->art_hash = folder_hash(path, false);
+#endif
+        }
+
+        if (al)
+        {
+            al->count++;
+            al->seconds += elapsed;
+            if (year)
+            {
+                al->y_count++;
+                al->y_seconds += elapsed;
+            }
+#ifdef HAVE_ALBUMART
+            if (al->art_hash == 0 && path && path[0])
+                al->art_hash = folder_hash(path, false);
+#endif
+        }
+
+        if (e->valid_ts)
+        {
+            if (!lifetime.ts_min || e->ts < lifetime.ts_min)
+                lifetime.ts_min = e->ts;
+            if (e->ts > lifetime.ts_max)
+                lifetime.ts_max = e->ts;
+
+            lifetime.hour_hist[(e->ts % 86400UL) / 3600UL]++;
+
+            if (year)
+            {
+                if (!t->ts_min || e->ts < t->ts_min)
+                    t->ts_min = e->ts;
+                if (e->ts > t->ts_max)
+                    t->ts_max = e->ts;
+                t->hour_hist[(e->ts % 86400UL) / 3600UL]++;
+            }
+
+            /* The day array is the whole log, always: the badge engine walks
+             * it for streak and active-day thresholds, and those are for a
+             * lifetime. Every day figure the tiles want is filtered out of it
+             * by date instead, which costs nothing to store. */
+            day_add((long)(e->ts / 86400UL), elapsed, e->offset);
+        }
+    }
+    else if (e->skipped)
+    {
+        /* Counted on all three rows, not just the title: an artist's skips
+         * and an album's are figures the tiles ask for, and neither can be
+         * recovered from the titles once the pass is over. */
+        lifetime.skips++;
+        if (year)
+            t->skips++;
+        if (ti)
+        {
+            ti->skips++;
+            if (year)
+                ti->y_skips++;
+        }
+        if (ar)
+        {
+            ar->skips++;
+            if (year)
+                ar->y_skips++;
+        }
+        if (al)
+        {
+            al->skips++;
+            if (year)
+                al->y_skips++;
+        }
+        if (e->valid_ts)
+            day_skip((long)(e->ts / 86400UL));
+    }
+    else
+    {
+        lifetime.taps++;
+        if (year)
+            t->taps++;
+        return;         /* a browsing tap is not a play and not a skip */
+    }
+
+    /* Fed last, and only for entries that counted as one or the other: the
+     * running figures it keeps are about what you listened to, and it reads
+     * the tables above to see where this play left its artist and title. */
+    pv_badges_feed(&badge_state, e->ts, e->valid_ts, e->listened, elapsed,
+                   artist, title);
+}
+
+/* Days arrive in log order, which is nearly sorted but not guaranteed to be
+ * -- a log written across a clock change is not. Insertion sort costs almost
+ * nothing on nearly-ordered data and makes the run below correct rather than
+ * usually correct. */
+static void days_sort(void)
+{
+    for (int i = 1; i < day_n; i++)
+    {
+        struct pv_day key = days[i];
+        int j = i - 1;
+
+        while (j >= 0 && days[j].day > key.day)
+        {
+            days[j + 1] = days[j];
+            j--;
+        }
+        days[j + 1] = key;
+    }
+}
+
+/* Where the longest run of consecutive listening days sits in the array,
+ * within the year being shown. The length itself comes from derive(), which
+ * has to compute it anyway; this is for the tile that names the dates. */
+static int streak_run(int *from_i, int *to_i)
+{
+    int best = 0, run = 0, start = 0, best_start = 0, best_end = -1;
+    long prev = 0;
+    bool have = false;
+
+    for (int i = 0; i < day_n; i++)
+    {
+        long d = days[i].day;
+
+        if (!day_in_year(d))
+            continue;
+
+        if (have && d == prev + 1)
+        {
+            run++;
+        }
+        else
+        {
+            run = 1;
+            start = i;
+        }
+        prev = d;
+        have = true;
+
+        if (run > best)
+        {
+            best = run;
+            best_start = start;
+            best_end = i;
+        }
+    }
+
+    if (from_i)
+        *from_i = best_start;
+    if (to_i)
+        *to_i = best_end;
+    return best;
+}
+
+/* Rows of 't' with a play in them, in the year or ever. */
+static int rows_played(const struct pv_htable *t, bool year_only)
+{
+    int n = 0;
+
+    for (int i = 0; i < t->n; i++)
+        if (year_only ? t->items[i].y_count : t->items[i].count)
+            n++;
+    return n;
+}
+
+/* A week's listening is the sum of its days', so it costs one pass over the
+ * day array rather than a bin of its own during the read. */
+/* The figures that come from the tables and the day array rather than from
+ * counting entries as they arrive.
+ *
+ * Run twice: once over the year, for what the tiles read, and once over
+ * everything, for what the badges are scored against. One function because
+ * the two must agree about what a streak or a heaviest week is, and two
+ * walks with the same job drift. */
+static void derive(struct pv_totals *o, bool year_only)
+{
+    long prev = 0, cur_week = 0;
+    unsigned cur_secs = 0;
+    int run = 0;
+    bool have_day = false, have_week = false;
+
+    o->days = 0;
+    o->streak = 0;
+    o->best_week_secs = 0;
+    o->best_week_day = 0;
+
+    o->titles  = rows_played(&t_title, year_only);
+    o->artists = rows_played(&t_artist, year_only);
+    o->albums  = rows_played(&t_album, year_only);
+
+    for (int i = 0; i < day_n; i++)
+    {
+        long d = days[i].day;
+        long w;
+
+        if (year_only && !day_in_year(d))
+            continue;
+
+        o->days++;
+
+        /* Against the last day KEPT, not the last day in the array: a year
+         * boundary must break a streak rather than be stepped over. */
+        run = (have_day && d == prev + 1) ? run + 1 : 1;
+        if (run > o->streak)
+            o->streak = run;
+        prev = d;
+        have_day = true;
+
+        w = WEEK_OF_DAY(d);
+        if (!have_week || w != cur_week)
+        {
+            cur_week = w;
+            cur_secs = 0;
+            have_week = true;
+        }
+        cur_secs += days[i].secs;
+        if ((long)cur_secs > o->best_week_secs)
+        {
+            o->best_week_secs = (long)cur_secs;
+            o->best_week_day  = WEEK_START_DAY(w);
+        }
+    }
+}
+
+/* ------------------------------------------------------------- calendar */
+
+/* Howard Hinnant's civil-from-days, which treats March as the first month so
+ * the leap day lands at the end of a year and the arithmetic stays branchless.
+ * Kept in its published form: it is easy to verify against the original and
+ * horrible to re-derive. */
+void pv_civil_from_days(long z, int *y, int *m, int *d)
+{
+    long era, doe, yoe, yr, doy, mp;
+
+    z += 719468;
+    era = (z >= 0 ? z : z - 146096) / 146097;
+    doe = z - era * 146097;
+    yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    yr  = yoe + era * 400;
+    doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    mp  = (5 * doy + 2) / 153;
+
+    if (d)
+        *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    if (m)
+        *m = (int)(mp + (mp < 10 ? 3 : -9));
+    if (y)
+        *y = (int)(yr + ((mp + (mp < 10 ? 3 : -9)) <= 2 ? 1 : 0));
+}
+
+long pv_days_from_civil(int y, int m, int d)
+{
+    long era, yoe, doy, doe;
+
+    y -= (m <= 2) ? 1 : 0;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = y - era * 400;
+    doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/* ------------------------------------------------------------- querying */
+
+static struct pv_htable *table_of(enum pv_table which)
+{
+    switch (which)
+    {
+    case PV_T_ARTIST: return &t_artist;
+    case PV_T_ALBUM:  return &t_album;
+    default:          return &t_title;
+    }
+}
+
+/* What a row scores under a given order. Zero or less means it does not
+ * belong in that list at all -- a track with no skips has no business on the
+ * skip card, and saying "0" there would be worse than saying nothing. */
+/* Ranking is what the tiles read, so it scores the year rather than the
+ * lifetime. Night is the exception the rows do not carry twice: it is only
+ * ever asked for alongside the year's own night total, and a night play
+ * outside the year cannot reach a row the year did not touch. */
+static bool rank_time;
+
+void pv_stats_rank_by_time(bool on)
+{
+    rank_time = on;
+}
+
+long pv_stats_weight(const struct pv_agg *a)
+{
+    if (!a)
+        return 0;
+    /* Seconds rather than minutes: a row played twice for forty seconds each
+     * would weigh zero in whole minutes, and zero is how the ranker says
+     * "leave this row out". */
+    return rank_time ? (long)a->y_seconds : a->y_count;
+}
+
+/* Skips and night plays stay counts in either mode. A skip has no listening
+ * time worth ranking by, and a night play is a time of day rather than a
+ * duration -- neither has a minutes reading to offer. */
+static int agg_metric(const struct pv_agg *a, enum pv_rank rank)
+{
+    switch (rank)
+    {
+    case PV_RANK_SKIPS: return a->y_skips;
+    case PV_RANK_LOYAL: return (a->y_skips == 0) ? (int)pv_stats_weight(a) : 0;
+    case PV_RANK_REDIS: return (a->last_ts && a->last_ts <= redis_cutoff)
+                               ? (int)pv_stats_weight(a) : 0;
+    case PV_RANK_NIGHT: return a->y_count ? a->night : 0;
+    default:            return (int)pv_stats_weight(a);
+    }
+}
+
+int pv_stats_top(enum pv_table which, enum pv_rank rank,
+                 const struct pv_agg **out, int max)
+{
+    struct pv_htable *t = table_of(which);
+    int got = 0;
+
+    if (!t->items)
+        return 0;
+
+    /* Selection sort, one pass per row wanted. Five rows out of a few
+     * thousand is far cheaper than ordering the whole table, and the table is
+     * never wanted in order for its own sake. */
+    for (int k = 0; k < max; k++)
+    {
+        int best = -1, best_val = 0;
+
+        for (int i = 0; i < t->n; i++)
+        {
+            struct pv_agg *a = &t->items[i];
+            int v = agg_metric(a, rank);
+            bool taken = false;
+
+            if (v <= 0)
+                continue;
+            for (int j = 0; j < got; j++)
+            {
+                if (out[j] == a)
+                {
+                    taken = true;
+                    break;
+                }
+            }
+            if (taken)
+                continue;
+
+            if (best < 0 || v > best_val)
+            {
+                best = i;
+                best_val = v;
+            }
+        }
+
+        if (best < 0)
+            break;
+        out[got++] = &t->items[best];
+    }
+
+    return got;
+}
+
+const struct pv_agg *pv_stats_rows(enum pv_table which, int *count)
+{
+    struct pv_htable *t = table_of(which);
+
+    if (count)
+        *count = t->n;
+    return t->items;
+}
+
+const struct pv_agg *pv_stats_find(enum pv_table which, const char *name,
+                                   int artist)
+{
+    struct pv_htable *t = table_of(which);
+    char key[PV_NAME_MAX];
+
+    if (!t->items || !t->slots)
+        return NULL;
+
+    /* An artist row is scoped to nothing, so asking for one with a scope
+     * would look in the wrong place rather than simply miss. */
+    if (which == PV_T_ARTIST)
+        artist = PV_ROW_NONE;
+
+    /* The stored form, as htable_get() uses -- a longer name would hash
+     * differently from its own truncated row and never be found. */
+    strlcpy(key, name, sizeof(key));
+    return htable_probe(t, key, artist, NULL);
+}
+
+int pv_stats_index(enum pv_table which, const struct pv_agg *row)
+{
+    struct pv_htable *t = table_of(which);
+    int idx;
+
+    if (!row || !t->items)
+        return PV_ROW_NONE;
+
+    idx = (int)(row - t->items);
+    return (idx >= 0 && idx < t->n) ? idx : PV_ROW_NONE;
+}
+
+const struct pv_agg *pv_stats_row(enum pv_table which, int idx)
+{
+    struct pv_htable *t = table_of(which);
+
+    if (!t->items || idx < 0 || idx >= t->n)
+        return NULL;
+
+    return &t->items[idx];
+}
+
+/* Both of these walk the child table rather than index into it. The tables
+ * are keyed by identity, not by parent, so there is no list of an artist's
+ * songs to follow -- and building one would cost a row's worth of memory to
+ * answer a question asked about ten rows. */
+int pv_stats_child_count(enum pv_table child, enum pv_table parent, int idx)
+{
+    struct pv_htable *t = table_of(child);
+    int n = 0;
+
+    if (idx < 0 || !t->items)
+        return 0;
+
+    for (int i = 0; i < t->n; i++)
+    {
+        /* Played, not merely seen: this figure sits beside a play count, and
+         * a song only ever skipped was never listened to. */
+        if (t->items[i].y_count > 0 && link_of(&t->items[i], parent) == idx)
+            n++;
+    }
+
+    return n;
+}
+
+const struct pv_agg *pv_stats_best_child(enum pv_table child,
+                                         enum pv_table parent, int idx)
+{
+    struct pv_htable *t = table_of(child);
+    const struct pv_agg *best = NULL;
+
+    if (idx < 0 || !t->items)
+        return NULL;
+
+    for (int i = 0; i < t->n; i++)
+    {
+        const struct pv_agg *a = &t->items[i];
+
+        if (a->y_count <= 0 || link_of(a, parent) != idx)
+            continue;
+        if (!best || pv_stats_weight(a) > pv_stats_weight(best))
+            best = a;
+    }
+
+    return best;
+}
+
+/* A week is a range of the day array, which is sorted, so every figure below
+ * is a walk of it and nothing is kept as the log is read. */
+
+/* The first and last day of the year being shown, as indices into the
+ * lifetime day array. -1 when the year has nothing in it. */
+static int first_year_day(void)
+{
+    for (int i = 0; i < day_n; i++)
+        if (day_in_year(days[i].day))
+            return i;
+    return -1;
+}
+
+static int last_year_day(void)
+{
+    for (int i = day_n - 1; i >= 0; i--)
+        if (day_in_year(days[i].day))
+            return i;
+    return -1;
+}
+
+int pv_stats_week_count(void)
+{
+    int a = first_year_day(), b = last_year_day();
+
+    if (a < 0 || b < 0)
+        return 0;
+
+    return (int)(WEEK_OF_DAY(days[b].day) - WEEK_OF_DAY(days[a].day)) + 1;
+}
+
+bool pv_stats_week(int i, struct pv_week *out)
+{
+    long start;
+
+    if (!out || i < 0 || i >= pv_stats_week_count())
+        return false;
+
+    start = WEEK_START_DAY(WEEK_OF_DAY(days[first_year_day()].day) + i);
+
+    memset(out, 0, sizeof(*out));
+    out->start_day = start;
+    out->best_day = -1;
+
+    for (int d = 0; d < day_n; d++)
+    {
+        int slot;
+
+        if (days[d].day < start)
+            continue;
+        if (days[d].day >= start + 7)
+            break;      /* sorted, so the week is one contiguous run */
+
+        /* A week can straddle 1 January, and the days on the far side of it
+         * belong to the other year. */
+        if (!day_in_year(days[d].day))
+            continue;
+
+        slot = (int)(days[d].day - start);
+        out->day_secs[slot] = days[d].secs;
+        out->secs  += days[d].secs;
+        out->plays += days[d].count;
+        out->skips += days[d].skips;
+
+        if (out->best_day < 0
+            || days[d].secs > out->day_secs[out->best_day])
+            out->best_day = slot;
+    }
+
+    return true;
+}
+
+int pv_stats_active_weeks(void)
+{
+    long prev = 0;
+    int n = 0;
+    bool have = false;
+
+    for (int i = 0; i < day_n; i++)
+    {
+        long w;
+
+        if (!day_in_year(days[i].day))
+            continue;
+
+        w = WEEK_OF_DAY(days[i].day);
+        if (!have || w != prev)
+        {
+            n++;
+            prev = w;
+            have = true;
+        }
+    }
+
+    return n;
+}
+
+bool pv_stats_longest_day(struct pv_day *out)
+{
+    int best = -1;
+
+    for (int i = 0; i < day_n; i++)
+    {
+        if (!day_in_year(days[i].day))
+            continue;
+        if (best < 0 || days[i].secs > days[best].secs)
+            best = i;
+    }
+
+    if (best < 0)
+        return false;
+    if (out)
+        *out = days[best];
+    return true;
+}
+
+bool pv_stats_streak_span(long *from_day, long *to_day, unsigned *secs)
+{
+    unsigned s = 0;
+    int a, b;
+
+    if (streak_run(&a, &b) <= 0)
+        return false;
+
+    /* The run skips days outside the year, so they can lie inside a..b */
+    for (int i = a; i <= b; i++)
+        if (day_in_year(days[i].day))
+            s += days[i].secs;
+
+    if (from_day)
+        *from_day = days[a].day;
+    if (to_day)
+        *to_day = days[b].day;
+    if (secs)
+        *secs = s;
+    return true;
+}
+
+const struct pv_day *pv_stats_days(int *count)
+{
+    if (count)
+        *count = day_n;
+    return days;
+}
+
+static enum pv_build_result build_body(void *buf, size_t bufsz,
+                                       struct pv_totals *out)
+{
+    size_t names_used;
+    int cap_title, cap_artist, cap_album, cap_logged;
+    long lines;
+    unsigned long save_covered = 0;
+    bool save_wanted = false;
+
+    memset(out, 0, sizeof(*out));
+    overflowed = false;
+    day_n = 0;
+
+    /* Decide the source before anything else: a scrobbler log names its own
+     * entries, so there are no paths to resolve and no moved-folder table to
+     * load. */
+    /* Plays still in the audio thread's buffer count too */
+    playback_log_flush();
+    {
+        long t0 = current_tick;
+        out->source = pv_log_pick_source();
+        out->ms_pick = (current_tick - t0) * 1000 / HZ;
+    }
+    if (out->source == PV_SRC_NONE)
+        return PV_BUILD_NO_LOG;
+
+    /* The moved-folder table claims the bottom of the buffer; the tables live
+     * above it and never move, so the two never have to know about each other.
+     * Names take no buffer: they come from the database's path index. */
+    if (out->source != PV_SRC_PLAYBACK)
+    {
+        /* Not merely zero for tidiness: pv_names_info() would otherwise hand
+         * back whatever a previous crunch left behind, which would both
+         * misreport on screen and mis-size the tables below. */
+        names_used = 0;
+        out->db_entries = out->db_mapped = 0;
+    }
+    else
+    {
+        long t0 = current_tick;
+
+        names_used = pv_names_init(buf, bufsz);
+        out->ms_names = (current_tick - t0) * 1000 / HZ;
+        pv_names_info(&out->db_entries, &out->db_mapped);
+    }
+
+    abuf      = (char *)buf + names_used;
+    abuf_sz   = bufsz - names_used;
+    abuf_used = 0;
+
+    /* Size the tables to the library rather than to a guess. The database
+     * knows how many files there are, and a track table can never need more
+     * rows than that; artists and albums are a fraction of it. Guessing
+     * instead -- the same 1500 rows for artists as for albums -- spent most
+     * of the buffer on rows a real library never fills while the track table
+     * ran out, which is the one that matters. */
+    cap_title = out->db_entries > 0 ? out->db_entries : 4000;
+    cap_artist = cap_title / 8;
+    cap_album  = cap_title / 4;
+    if (cap_artist < 200)
+        cap_artist = 200;
+    if (cap_album < 200)
+        cap_album = 200;
+
+    /* Give ground in order of what is least missed. The 5G has 512 KB of
+     * scratch against the 6G's 3 MB, so on a large library what gets
+     * sacrificed matters: shrinking every table together costs the track
+     * table -- the one the deck is mostly made of -- to buy room for artist
+     * rows a library will never fill.
+     *
+     * The absent-file set goes first, halving down to 128 and then to none,
+     * which costs only a rebuild after updates. Days go next (1024 of them is
+     * nearly three years of daily listening, and they feed only the heatmap
+     * and the streak), then albums down to 200 rows, then artists down to
+     * 200. The track table is cut last and only
+     * when nothing else is left. A table that then fills up stops counting,
+     * and the day table drops its oldest days; either sets out->overflowed,
+     * which nothing on screen shows.
+     *
+     * Trap: halving albums and artists once each is not enough. At 16,000
+     * tracks they are still 300 KB between them, and on a 5G no size of track
+     * table then fits. */
+    cap_logged = PV_ABSENT_MAX;
+    day_cap = 1500;
+    for (;;)
+    {
+        size_t need;
+
+        need  = (size_t)cap_title * sizeof(struct pv_agg)
+              + (size_t)next_pow2(cap_title * 2) * sizeof(int);
+        if (cap_logged)
+            need += (size_t)cap_logged * sizeof(struct pv_logged) + 8
+                  + (size_t)next_pow2(cap_logged * 2) * sizeof(int);
+        need += (size_t)cap_artist * sizeof(struct pv_agg)
+              + (size_t)next_pow2(cap_artist * 2) * sizeof(int);
+        need += (size_t)cap_album * sizeof(struct pv_agg)
+              + (size_t)next_pow2(cap_album * 2) * sizeof(int);
+        need += (size_t)day_cap * sizeof(struct pv_day);
+
+        if (need <= abuf_sz)
+            break;
+
+        if (cap_logged)
+            cap_logged = cap_logged > 128 ? cap_logged / 2 : 0;
+        else if (day_cap > 1024)
+            day_cap = 1024;
+        else if (day_cap > 512)
+            day_cap = 512;
+        else if (cap_album > 200)
+            cap_album = cap_album / 2 > 200 ? cap_album / 2 : 200;
+        else if (cap_artist > 200)
+            cap_artist = cap_artist / 2 > 200 ? cap_artist / 2 : 200;
+        else if (cap_title > 200)
+            cap_title /= 2;
+        else
+            break;      /* as small as it goes; overflowed records it */
+    }
+
+    long t_alloc = current_tick;
+
+    pv_badges_reset(&badge_state);
+
+    memset(&t_artist, 0, sizeof(t_artist));
+    memset(&t_title, 0, sizeof(t_title));
+    memset(&t_album, 0, sizeof(t_album));
+
+    if (!htable_init(&t_title, cap_title)
+        || !htable_init(&t_artist, cap_artist)
+        || !htable_init(&t_album, cap_album))
+        return PV_BUILD_NO_MEMORY;
+
+    days = abuf_alloc((size_t)day_cap * sizeof(struct pv_day));
+    if (!days)
+        return PV_BUILD_NO_MEMORY;
+
+    logged_cap = logged_n = 0;
+    logged_full = false;
+    if (cap_logged)
+    {
+        int slots = next_pow2(cap_logged * 2);
+        char *p = abuf_alloc((size_t)cap_logged * sizeof(struct pv_logged)
+                             + 8);
+
+        logged_slots = abuf_alloc((size_t)slots * sizeof(int));
+        if (p && logged_slots)
+        {
+            /* Eight-aligned for the keys; the allocator gives four */
+            logged = (struct pv_logged *)(((uintptr_t)p + 7) & ~(uintptr_t)7);
+            logged_cap = cap_logged;
+            logged_mask = slots - 1;
+        }
+    }
+
+    out->cap_titles  = cap_title;
+    out->cap_artists = cap_artist;
+    out->cap_albums  = cap_album;
+    out->ms_alloc = (current_tick - t_alloc) * 1000 / HZ;
+
+    {
+        long t0 = current_tick;
+        unsigned long log_size = pv_log_size(out->source);
+        unsigned long covered = 0;
+        /* The naming state the rows are read under, which a save must still
+         * match at the end: the database can finish loading mid-replay */
+        unsigned long names_id = pv_names_identity();
+        bool names_ready = pv_names_complete() && names_settled();
+        /* And the database itself: the fingerprints saved at the end must
+         * describe the database the rows were named from */
+        struct pv_db_whole whole_start, whole_end;
+
+        db_whole(&whole_start);
+
+        /* Three ways in, in order of what they cost. Each falls through to
+         * the next, so a saved index that cannot be trusted is simply not
+         * used -- there is no repair path and no half-loaded state.
+         *
+         * Trap: index_load() has already filled the tables and set t_*.n by
+         * the time it returns true, so nothing may be tested alongside it
+         * here. A second condition failing would drop into the replay below
+         * and count the whole log a second time on top of what was loaded.
+         * The watermark is checked where it can still act -- against the
+         * header, in pv_index_read_begin(). */
+        /* Both replays stop at log_size, which is what the index records as
+         * covered: plays flushed while they ran are the next build's. */
+        if (index_load(out, log_size, &covered))
+        {
+            out->from_index = true;
+            replay_begin(covered, log_size);
+            lines = (covered < log_size)
+                  ? pv_log_read_range(out->source, covered, log_size,
+                                      entry_cb, out)
+                  : 0;
+            out->ms_read = (current_tick - t0) * 1000 / HZ;
+
+            /* Rewrite only once the unindexed tail is worth the write, which
+             * costs as much as the read. Below that it is cheaper to replay
+             * the same few kilobytes next time than to save them. */
+            save_wanted = (log_size - covered >= PV_INDEX_REWRITE_AT);
+        }
+        else
+        {
+            /* No index, or one that does not load -- most often because its
+             * row counts do not fit tables sized like these. The whole log is
+             * replayed instead. */
+            /* A 'to' of 0 reads to the end, so an empty log saves nothing */
+            replay_begin(0, log_size);
+            lines = pv_log_read_range(out->source, 0, log_size, entry_cb, out);
+            out->ms_read = (current_tick - t0) * 1000 / HZ;
+            save_wanted = (lines >= 0 && log_size > 0);
+        }
+
+        replay_size = 0;
+        if (lines < 0)
+            return PV_BUILD_NO_LOG;
+
+        /* Names are what the index cannot correct later, so it is not saved
+         * with names a later build would get right: the database not yet able
+         * to say, or not yet in RAM. */
+        db_whole(&whole_end);
+        index_db = whole_start;
+        if (out->source == PV_SRC_PLAYBACK
+            && (!names_ready || !pv_names_complete() || !names_settled()
+                || pv_names_identity() != names_id
+                || memcmp(&whole_start, &whole_end, sizeof(whole_end)) != 0))
+            save_wanted = false;
+
+        save_covered = log_size;
+    }
+
+    /* Titles with no play at all are skip-only rows: real entries, and part
+     * of the table, but not something the deck would ever call a track you
+     * listened to. Count what was actually heard. */
+    long t_post = current_tick;
+
+    days_sort();
+
+    /* Twice: the year for the tiles, everything for the badges. */
+    derive(out, true);
+    derive(&lifetime, false);
+
+    /* "Not heard in a while" is a third of however long the log covers,
+     * held between two and six weeks. A fixed window would mean the
+     * rediscovery card had nothing to say about a month-old log and far too
+     * much to say about a five-year-old one. */
+    {
+        unsigned long span = (out->ts_min && out->ts_max > out->ts_min)
+                           ? out->ts_max - out->ts_min : 0;
+        unsigned long gap = span / 3;
+
+        if (gap < 14UL * 86400)
+            gap = 14UL * 86400;
+        if (gap > 45UL * 86400)
+            gap = 45UL * 86400;
+
+        redis_cutoff = (out->ts_max > gap) ? out->ts_max - gap : 0;
+        out->redis_days = (int)(gap / 86400);
+    }
+
+    out->ms_post = (current_tick - t_post) * 1000 / HZ;
+    out->overflowed = overflowed;
+
+    /* Scored against the whole log, never the year: a badge earned in one
+     * year does not stop being earned in the next. */
+    out->badges_unlocked = pv_badges_eval(&badge_state, &lifetime);
+    out->badges_total = pv_badges_count();
+
+    /* Saved here rather than the moment the log was read, so the file holds a
+     * complete snapshot. Written any earlier and the derived figures -- the
+     * unique counts, the streak, the heaviest week -- would all go to disk as
+     * zero, which works only because they happen to be recomputed on load and
+     * would quietly stop working the day something trusted them. */
+    if (save_wanted)
+        index_save(out, save_covered);
+    return PV_BUILD_OK;
+}
+
+const struct pv_totals *pv_stats_lifetime(void)
+{
+    return &lifetime;
+}
+
+int pv_stats_year(void)
+{
+    return cur_year;
+}
+
+void pv_stats_year_span(int *first, int *last)
+{
+    int y, m, d;
+
+    if (first)
+        *first = 0;
+    if (last)
+        *last = 0;
+
+    if (!lifetime.ts_min || !lifetime.ts_max)
+        return;
+
+    pv_civil_from_days((long)(lifetime.ts_min / 86400UL), &y, &m, &d);
+    if (first)
+        *first = y;
+    pv_civil_from_days((long)(lifetime.ts_max / 86400UL), &y, &m, &d);
+    if (last)
+        *last = y;
+}
+
+enum pv_build_result pv_stats_build(void *buf, size_t bufsz,
+                                    struct pv_totals *out, int year)
+{
+    enum pv_build_result r;
+
+    cur_year = year;
+    if (year == PV_YEAR_ALL)
+    {
+        year_lo = 0;
+        year_hi = ~0UL;
+    }
+    else
+    {
+        year_lo = (unsigned long)pv_days_from_civil(year, 1, 1) * 86400UL;
+        year_hi = (unsigned long)pv_days_from_civil(year + 1, 1, 1) * 86400UL;
+    }
+
+    memset(&lifetime, 0, sizeof(lifetime));
+
+    /* Reading a megabyte and hashing ten thousand entries is exactly the
+     * bounded, user-is-waiting work the core boosts for everywhere else it
+     * touches the database (tagcache.c, db_summary.c). Unboosted this runs at
+     * 30 MHz of the 5G's 80, and 54 of the 6G's 216. */
+#ifdef HAVE_ADJUSTABLE_CPU_FREQ
+    cpu_boost(true);
+#endif
+
+    r = build_body(buf, bufsz, out);
+
+#ifdef HAVE_ADJUSTABLE_CPU_FREQ
+    cpu_boost(false);
+#endif
+
+    return r;
+}

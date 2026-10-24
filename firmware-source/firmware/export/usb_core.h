@@ -55,6 +55,13 @@ struct usb_class_driver;
 
 void usb_core_init(void);
 void usb_core_exit(void);
+/* True if the host wrote to mass storage during the connect that just ended.
+ * False means the disk is byte-for-byte as we left it, so the post-USB
+ * database and dircache rebuild can be skipped entirely. */
+bool usb_core_host_wrote_storage(void);
+/* True while the host may yet ask for the disk without a new configuration:
+ * none is selected, or this one's storage handover is still held */
+bool usb_core_storage_pending(void);
 /* IRQ context, after both EP0 directions and their stale completions have
  * been cancelled. Does not release a request buffer still owned by a handler. */
 void usb_core_control_cancelled(void);
@@ -62,6 +69,8 @@ void usb_core_setup_received(struct usb_ctrlrequest* req);
 void usb_core_control_response(enum usb_control_response response, const void* data, size_t size);
 void usb_core_transfer_complete(int endpoint,int dir,int status,int length);
 void usb_core_bus_reset(void);
+/* True while a host's bus reset is pending or closing class drivers. */
+bool usb_core_bus_resetting(void);
 void usb_core_enable_driver(int driver,bool enabled);
 bool usb_core_driver_enabled(int driver);
 #ifdef HAVE_USBSTACK
@@ -76,6 +85,15 @@ void usb_core_notify_set_config(uint8_t config);
 
 #ifdef HAVE_HOTSWAP
 void usb_core_hotswap_event(int volume,bool inserted);
+#endif
+
+#if defined(USB_ENABLE_STORAGE) && !defined(BOOTLOADER)
+/* Claim the mass-storage transfer buffers. Call once at boot, from usb_init(),
+ * *before* audio_init() takes the rest of the RAM -- see the definition in
+ * usbstack/usb_storage.c for why it must not happen any later. Idempotent, and
+ * a no-op where the buffers are static BSS. Declared here rather than in
+ * usbstack/usb_storage.h so usb.c can reach it. */
+void usb_storage_alloc_buffers(void);
 #endif
 
 #endif

@@ -153,7 +153,7 @@ static inline void storage_sleep(void) {};
         #define storage_event stub_storage_event
         #define storage_spindown(sec) stub_storage_spindown(sec)
         #define storage_set_storage_mode(mode) stub_storage_set_storage_mode(mode)
-        #define storage_get_ssd_mode stub_storage_get_ssd_mode
+        #define storage_get_ssd_mode() stub_storage_get_ssd_mode()
         #define storage_sleep() stub_storage_sleep()
         #define storage_spin() stub_storage_spin()
 
@@ -181,7 +181,7 @@ static inline void storage_sleep(void) {};
         #define STORAGE_FUNCTION(NAME) (ata_## NAME)
         #define storage_spindown(sec) ata_spindown(sec)
         #define storage_set_storage_mode(mode) ata_set_storage_mode(mode)
-        #define storage_get_ssd_mode ata_get_ssd_mode
+        #define storage_get_ssd_mode() ata_get_ssd_mode()
         #define storage_spin() ata_spin()
         #define storage_enable(on) ata_enable(on)
         #define storage_sleepnow() ata_sleepnow()

@@ -1,0 +1,199 @@
+/***************************************************************************
+ * GNU General Public License (version 2+)
+ *
+ * The carousel model vtable and shared render state -- the interface
+ * between the engine and its two screens.
+ ****************************************************************************/
+
+/* Coverflow "carousel" engine shared by Album Covers
+ * (screens/covers/album_covers.c) and Artist Portraits
+ * (screens/covers/artist_portraits.c). The engine (rendering, slide cache,
+ * scroll, input loop, thread) is generic; each screen supplies a
+ * carousel_model describing what the slides are. This header is the interface
+ * between the two: the model vtable, the shared index/rendering state the
+ * models read, and the engine helpers they call. */
+
+#ifndef _CAROUSEL_H_
+#define _CAROUSEL_H_
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include "config.h"
+#include "lcd.h"        /* fb_data */
+#include "system/library_files.h"  /* CACHE_PREFIX, EMPTY_SLIDE */
+#include "database/tagcache.h"   /* struct tagcache_search */
+/* The slide data itself belongs to the index builder, not to this engine:
+ * struct db_summary_t, struct album_data, struct artist_data and the
+ * SUCCESS/ERROR_* codes a build returns. */
+#include "database/db_summary.h"
+
+typedef fb_data pix_t;
+
+/* Fixed-point type used for slide positions and angles throughout the engine.
+ * See carousel.c for the shift and the arithmetic helpers. */
+#define PFreal long
+
+/* The on-disk slide cache, shared because a model writes into it during
+ * build_index() and the engine reads it back while rendering. Bumping
+ * CACHE_VERSION invalidates every cached slide; CACHE_REBUILD is the stored
+ * value meaning "no valid cache". */
+#define CACHE_PREFIX     LIB_ART_DIR
+#define EMPTY_SLIDE      LIB_COVERS_EMPTY_FILE
+#define CACHE_VERSION    6
+#define CACHE_REBUILD    0
+
+/* Number of slide slots the engine keeps decoded at once. */
+#define SLIDE_CACHE_SIZE 100
+
+/* Caption geometry, owned by the engine because three things have to agree on
+ * it: each model's draw_text() places the text, and init() reserves a band of
+ * clear height beside the covers for it. They were separate copies of the same
+ * arithmetic, which is how the text and the band drifted apart.
+ *
+ * Band and text are sized separately, on purpose:
+ *
+ *   The band fixes where the covers stop, and nothing else. It is always sized
+ *   for a two-line caption, so the covers come out the same size on the album
+ *   and artist screens.
+ *
+ *   The text is then centred in the clear space the band opens up, so a
+ *   one-line caption lands in the middle of it rather than sitting high in
+ *   room meant for two, and neither has to be kept numerically in step with
+ *   the other. */
+struct pf_caption {
+    int y1;   /* top of the first line, drawn in pf_bold_font */
+    int y2;   /* top of the second line, drawn in the UI font */
+};
+
+enum pf_scroll_line_type {
+    PF_SCROLL_TRACK = 0,
+    PF_SCROLL_ALBUM,
+    PF_SCROLL_ARTIST,
+    PF_MAX_SCROLL_LINES
+};
+
+/* on_menu() return values. Non-negative values are GO_TO_* screen codes the
+ * engine loop returns (exits the carousel); these two sentinels mean "handled,
+ * stay in the carousel". They are negative so they never collide with a
+ * (non-negative) GO_TO_* enum value. */
+#define CAROUSEL_MENU_STAY     (-1)  /* menu closed; just resume drawing */
+#define CAROUSEL_MENU_RELOADED (-2)  /* index was rebuilt; engine resets its display */
+
+/* enter() may return this instead of a GO_TO_* to mean "exit, and play the
+ * album I recorded with db_summary_play_album_on_exit()". The play cannot
+ * happen inside the carousel: ordering the album needs the app buffer, and
+ * this screen holds a claim on it until cleanup() runs. album_covers() does it
+ * on the way out, once carousel_run() has returned. Below every GO_TO_* and
+ * MENU_* value in root_menu.h, which stop at -10, so it never collides with
+ * one. */
+#define CAROUSEL_PLAY_ALBUM    (-20)
+/* on_context() recorded a slide for its menu, which runs once the carousel has
+ * let go of the app buffer the menu's rows need. The model's own entry point
+ * shows it and opens the carousel again. Below root_menu.h's values too. */
+#define CAROUSEL_CONTEXT       (-21)
+
+/* The seam between the generic coverflow engine and the data it shows. */
+struct carousel_model {
+    int  (*build_index)(void);                         /* build the slide data; SUCCESS/ERROR_* */
+    int  (*count)(void);                               /* number of slides */
+    unsigned int (*art_key)(int index);                /* art_cache key, or 0 */
+    int  (*enter)(int index);                          /* select: drill in; returns GO_TO_* */
+    int  (*jump_prev)(void);                           /* jump to prev section (letter/year) */
+    int  (*jump_next)(void);                           /* jump to next section */
+    void (*draw_text)(void);                           /* center-slide caption */
+    void (*sort_next)(void);                           /* cycle sort order forward + resort */
+    void (*sort_prev)(void);                           /* cycle sort order backward + resort */
+    void (*set_initial)(const char *selected_file);    /* position on entry (resume/now-playing) */
+    /* Optional (NULL = not provided). Keep the engine loop/init free of any
+     * direct calls into a specific model's code. */
+    int  (*on_menu)(void);   /* MENU-hold: run the in-screen menu; GO_TO_* or CAROUSEL_MENU_* */
+    int  (*on_context)(int index); /* SELECT-hold: CAROUSEL_CONTEXT, see above */
+    void (*prepare)(void);   /* one-off post-init setup (e.g. cache-version bookkeeping) */
+    void (*speak)(int index); /* say a slide, once it comes to rest */
+    bool owns_cache_version;                           /* honours pf_cfg.cache_version */
+    const char *title;                                 /* status-bar title */
+};
+
+/* Engine-owned persistent config for the album carousel (cache version + resume
+ * slide). Not user settings -- those live in global_settings; this is internal
+ * cache/resume state the engine persists and the album model reads/writes. */
+struct pf_config_t
+{
+     int cache_version;
+     int last_album;
+};
+
+/* --- Shared engine state the models read/write (owned by the engine) -------- */
+extern struct pf_config_t pf_cfg;  /* engine's persistent cache/resume config */
+extern struct db_summary_t carousel_idx;  /* this carousel's index buffer */
+extern int   center_index;         /* engine's current slide */
+extern int   pf_bold_font;         /* caption bold font (draw_text) */
+extern pix_t pf_fg_color;          /* caption colour (draw_text) */
+/* Transient "resume to this slide on next open" signal, set by the album
+ * model's enter() and consumed by its set_initial(). Album indices only --
+ * artist_portraits.c keeps its own, since the two index different arrays. */
+extern int   pf_resume_album_index;
+extern bool  pf_resume_last_album;
+
+/* --- Engine entry + helpers the models call -------------------------------- */
+/* Run the coverflow carousel over `m`. The thin public entry points
+ * album_covers()/artist_portraits() wrap this, selecting the model. */
+int  carousel_run(const struct carousel_model *m, const char *selected_file);
+void set_current_slide(int index);
+void set_scroll_line(const char *str, enum pf_scroll_line_type type);
+/* 'str', or with Scrolling off, as much as fits the caption in the current
+ * font with "..." -- which set_scroll_line() then centres and never moves.
+ * 'buf' is TEXT_FIT_BUF bytes. */
+const char *carousel_caption_fit(const char *str, char *buf, size_t size);
+int  get_scroll_line_offset(enum pf_scroll_line_type type);
+/* True when the caption needs building again -- a different slide, or a
+ * different `variant` (whatever else the model's caption text depends on;
+ * pass 0 if nothing does). A model calls this once per draw and re-runs
+ * set_scroll_line() when it says yes.
+ *
+ * The engine keeps this rather than each model, because it has to be forgotten
+ * at exactly the moment the scroll lines are, and that moment belongs to
+ * init(). A model holding it in a function-local static instead kept it across
+ * screens: reopening onto the slide you left answered "unchanged", so
+ * set_scroll_line() never ran, and a caption too long for the box sat still at
+ * the previous session's offset. */
+bool carousel_caption_changed(int index, int variant);
+/* Clip drawing to the inset caption box; offsets from get_scroll_line_offset()
+ * are relative to it. Enter before setting the font or colour, and pass the
+ * returned viewport back to carousel_text_end() when the caption is drawn. */
+struct viewport *carousel_text_begin(void);
+void carousel_text_end(struct viewport *saved);
+/* Where the caption's lines go, centred in the space the band opens up. y2 is
+ * meaningful only when two_lines is set. */
+void carousel_caption_layout(bool two_lines, struct pf_caption *out);
+/* build_artist_index() belongs to the index builder -- see
+ * database/db_summary.h. */
+/* Persist the engine's pf_cfg to its config file (album model calls this after
+ * changing last_album / triggering a cache rebuild). */
+void pf_config_save(void);
+
+/* Engine restart operations the album model drives (re-sort, in-screen rebuild).
+ * These wrap the render thread / slide cache / buffer lifecycle so model code
+ * never touches those internals directly. */
+/* Settle any in-progress scroll animation to the idle state. Call before
+ * capturing the current slide, since a mid-scroll settle changes which slide is
+ * current. */
+void carousel_settle(void);
+/* Restart the render pipeline over the current index buffer. If `compare` is
+ * non-NULL, the album index is re-sorted with it in the safe window after the
+ * loader thread is stopped and before the slide cache is rebuilt. */
+void carousel_reload(int (*compare)(const void *, const void *));
+/* Full teardown (cleanup) + rebuild (init) of the engine. Returns false if the
+ * rebuild failed. */
+bool carousel_reinit(void);
+/* Re-apply the geometry settings (zoom / margins / tilt) to the slide layout
+ * in place, keeping the current slide -- for a visual settings change that
+ * doesn't need an index rebuild. */
+void carousel_refresh(void);
+/* Throw away every decoded slide, for a caller that has changed how one should
+ * look. They are treated as they are loaded, so the ones already in the buffer
+ * keep the old treatment until something evicts them. */
+void carousel_drop_slides(void);
+
+#endif /* _CAROUSEL_H_ */

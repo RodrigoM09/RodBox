@@ -44,6 +44,15 @@ struct IAPContextButtons {
 
 struct IAPActiveEvent;
 
+struct IAPRemoteButtons {
+    struct IAPContextButtons buttons;
+    uint32_t                 held_since;
+    uint32_t                 last_packet;
+    int8_t                   direction;
+    IAPBool                  seeking;
+    IAPBool                  active;
+};
+
 typedef IAPBool (*IAPActiveEventReadyCallback)(struct IAPContext* ctx, struct IAPActiveEvent* event);
 
 struct IAPActiveEvent {
@@ -78,7 +87,8 @@ struct IAPContext {
     /* _iap_feed_packet */
     int32_t handling_trans_id;
     /* iap.c */
-    struct IAPContextButtons context_button_state;
+    /* Context and Audio buttons keep separate states */
+    struct IAPRemoteButtons      remote_buttons[2];
     struct IAPPlatformArtwork    artwork;
     size_t                       artwork_cursor;
     uint16_t                     trans_id;
@@ -86,7 +96,12 @@ struct IAPContext {
     int32_t                      artwork_trans_id;
     uint16_t                     artwork_data_command;
     uint8_t                      artwork_data_lingo;
+    uint32_t                     db_record_index;
+    uint32_t                     db_record_end;
+    int32_t                      db_record_trans_id;
+    uint8_t                      db_record_type;
     uint8_t                      trans_id_support; /* TransIDSupport */
+    uint8_t                      auth_major;       /* accessory's auth protocol */
     /* notification.c */
     /* DisplayRemote::SetRemoteEventNotification */
     uint32_t enabled_notifications_3;

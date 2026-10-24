@@ -42,6 +42,9 @@
 #include "core_alloc.h"
 #include "pcm_mixer.h"
 #include "dsp_core.h"
+#include "usb_log.h"
+#include "usb.h"
+#include "usb_audio.h"
 
 #define LOGF_ENABLE
 #include "logf.h"
@@ -404,6 +407,10 @@ static int frames_dropped = 0;
 /* for blocking normal playback */
 static bool usbaudio_active = false;
 
+/* The stream as the USB log reports it, once per STREAM_LOG_PACKETS packets */
+#define STREAM_LOG_PACKETS 1000
+static unsigned int st_packets, st_errors, st_min, st_max, st_feedbacks;
+
 /* Schematic view of the RX situation:
  * (in case NR_BUFFERS = 4)
  *
@@ -487,6 +494,7 @@ static void set_playback_sampling_frequency(unsigned long f)
 
     logf("usbaudio: set playback sampling frequency to %lu Hz for a requested %lu Hz",
         hw_freq_sampr[as_playback_freq_idx], f);
+    usb_log(USB_LOG_RATE, 0, 0, f, hw_freq_sampr[as_playback_freq_idx]);
 
     mixer_set_frequency(hw_freq_sampr[as_playback_freq_idx]);
 }
@@ -515,13 +523,29 @@ static void usb_audio_init(void)
     }
 }
 
-int usb_audio_request_buf(void)
+/*
+ * Claim the receive and DSP buffers, once, at boot.
+ *
+ * This must not run on the USB thread. core_alloc() of ~129K after audio_init()
+ * is met by shrinking the audio buffer, and that callback stops playback with a
+ * synchronous queue_send -- issued from inside the SET_CONFIGURATION handler it
+ * blocks the USB thread mid-control-transfer and the player stops responding.
+ * usb_storage's transfer buffer is claimed at boot for the same reason.
+ *
+ * Called from the application layer once the settings are loaded and before
+ * audio_init(), so the audio buffer does not exist yet and nothing is shrunk.
+ * Idempotent: a second call with the buffers already held does nothing.
+ */
+int usb_audio_alloc_buffers(void)
 {
-    // stop playback first thing
-    audio_stop();
+    if (rx_buffer_handle > 0 && dsp_buf_handle > 0)
+        return 0;
+
+    /* No audio_stop() here: this runs before audio_init(), so the audio queue
+     * does not exist yet and nothing can be playing to stop. */
 
     // attempt to allocate the receive buffers
-    rx_buffer_handle = core_alloc(REAL_BUF_SIZE);
+    rx_buffer_handle = core_alloc(REAL_BUF_SIZE + 31);
     if (rx_buffer_handle < 0)
     {
         alloc_failed = true;
@@ -535,7 +559,17 @@ int usb_audio_request_buf(void)
         core_pin(rx_buffer_handle);
 
         // get the pointer to the actual buffer location
-        rx_buffer = core_get_data(rx_buffer_handle);
+        // aligned to a cache line, so that no neighbour's write-back lands
+        // on a packet
+        rx_buffer = (void *)ALIGN_UP((uintptr_t)core_get_data(rx_buffer_handle), 32);
+#ifdef UNCACHED_ADDR
+        /* The controller writes packets straight to memory, so the CPU reads
+         * them uncached, as usb_storage does; read through the cache, the
+         * same stale buffer plays for ever. Controllers that manage the
+         * cache themselves leave UNCACHED_ADDR undefined. */
+        rx_buffer = UNCACHED_ADDR(rx_buffer);
+        commit_discard_dcache();
+#endif
     }
 
     dsp_buf_handle = core_alloc(NR_BUFFERS * REAL_DSP_BUF_SIZE);
@@ -558,14 +592,14 @@ int usb_audio_request_buf(void)
     return 0;
 }
 
-void usb_audio_free_buf(void)
+/*
+ * Whether the buffers claimed at boot are there. The driver cannot make them
+ * itself -- see usb_audio_alloc_buffers() -- so a setting switched on since
+ * boot leaves this false until the player is restarted.
+ */
+bool usb_audio_buffers_ready(void)
 {
-    // logf("usbaudio: free buffer");
-    rx_buffer_handle = core_free(rx_buffer_handle);
-    rx_buffer = NULL;
-
-    dsp_buf_handle = core_free(dsp_buf_handle);
-    dsp_buf = NULL;
+    return rx_buffer_handle > 0 && dsp_buf_handle > 0;
 }
 
 unsigned int usb_audio_get_out_ep(void)
@@ -669,6 +703,8 @@ static void playback_audio_get_more(const void **start, size_t *size)
     if(rx_play_idx == rx_usb_idx)
     {
         logf("usbaudio: playback underflow");
+        if (!playback_audio_underflow)
+            usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_UNDERFLOW, 0, 0, 0);
         playback_audio_underflow = true;
         *start = NULL;
         *size = 0;
@@ -681,17 +717,8 @@ static void playback_audio_get_more(const void **start, size_t *size)
     *size = dsp_buf_size[rx_play_idx];
     rx_play_idx = (rx_play_idx + 1) % NR_BUFFERS;
 
-    /* if usb RX buffers had overflowed, we can start to receive again
-     * guard against IRQ to avoid race with completion usb completion (although
-     * this function is probably running in IRQ context anyway) */
-    int oldlevel = disable_irq_save();
-    if(usb_rx_overflow)
-    {
-        logf("usbaudio: recover usb rx overflow");
-        usb_rx_overflow = false;
-        usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
-    }
-    restore_irq(oldlevel);
+    /* a slot is free again; reception itself never stopped */
+    usb_rx_overflow = false;
 }
 
 static void usb_audio_start_playback(void)
@@ -719,6 +746,11 @@ static void usb_audio_start_playback(void)
     samples_received = 0;
     samples_received_last = 0;
 
+    st_packets = st_errors = st_max = st_feedbacks = 0;
+    st_min = ~0u;
+    usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_START, 0,
+            hw_freq_sampr[as_playback_freq_idx], 0);
+
     // TODO: implement recording from the USB stream
 #if (INPUT_SRC_CAPS != 0)
     audio_set_input_source(AUDIO_SRC_PLAYBACK, SRCF_PLAYBACK);
@@ -734,12 +766,18 @@ static void usb_audio_start_playback(void)
 static void usb_audio_stop_playback(void)
 {
     logf("usbaudio: stop playback");
+    usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_STOP, 0, 0, 0);
     if(usb_audio_playing)
     {
         mixer_channel_stop(PCM_MIXER_CHAN_USBAUDIO);
         usb_audio_playing = false;
     }
     send_fb = false;
+    /* The transfer queued for the next packet stays primed when the host
+     * stops sending, and the next start primes on top of it: drop it. The
+     * completion handler re-arms only at alternate 1, so nothing re-queues
+     * it. */
+    usb_drv_reset_endpoint(EP_ISO_OUT, false);
 }
 
 /*
@@ -750,6 +788,7 @@ static void usb_audio_stop_playback(void)
  */
 static int usb_audio_set_interface(int intf, int alt)
 {
+    usb_log(USB_LOG_ALT, intf, alt, 0, 0);
     if(intf == usb_interface)
     {
         if(alt != 0)
@@ -770,7 +809,10 @@ static int usb_audio_set_interface(int intf, int alt)
         usb_as_playback_intf_alt = alt;
 
         if(usb_as_playback_intf_alt == 1)
+        {
+            usb_log_sync();
             usb_audio_start_playback();
+        }
         else
             usb_audio_stop_playback();
         logf("usbaudio: use playback alternate %d", alt);
@@ -871,9 +913,8 @@ static bool usb_audio_as_ctrldata_endpoint_request(struct usb_ctrlrequest* req, 
 
         default:
             logf("usbaudio: unhandled ep req 0x%x", req->bRequest);
+            return false;
     }
-
-    return true;
 }
 
 static bool usb_audio_endpoint_request(struct usb_ctrlrequest* req, uint8_t* reqdata, size_t reqdata_size)
@@ -1170,9 +1211,14 @@ static int usb_audio_init_connection(void)
 {
     logf("usbaudio: init connection");
 
-    // make sure we can get the buffers first...
-    if (usb_audio_request_buf())
+    /* Claimed at boot, or not at all: allocating here stalls the USB
+     * thread -- see usb_audio_alloc_buffers(). */
+    if (!usb_audio_buffers_ready())
+    {
+        logf("usbaudio: no buffers, restart with the setting on");
+        usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_NO_BUFFERS, 0, 0, 0);
         return -1;
+    }
 
     usbaudio_active = true;
     dsp = dsp_get_config(CODEC_IDX_AUDIO);
@@ -1205,7 +1251,6 @@ static void usb_audio_disconnect(void)
         return;
 
     usb_audio_stop_playback();
-    usb_audio_free_buf();
     usbaudio_active = false;
 }
 
@@ -1296,6 +1341,29 @@ static void usb_audio_transfer_complete(int ep, int dir, int status, int length)
  *
  * Return true if the transfer is handled, false otherwise.
  */
+static void start_mixer(void)
+{
+    static const struct mixer_play_cbs cbs = {
+        .get_more = playback_audio_get_more,
+    };
+    mixer_channel_play_data(PCM_MIXER_CHAN_USBAUDIO, &cbs, NULL, 0);
+#ifdef HAVE_CS42L55
+    /* pcmbuf_play_stop() leaves the codec powered down, and a USB connect
+     * stops playback; the CS42L55 leaves PDN_CODEC only with MCLK running. */
+    audiohw_idle_powerup();
+#endif
+}
+
+/* Playback is started here, on the USB thread, once the transfer interrupt
+ * has prebuffered enough */
+static void usb_audio_notify_event(intptr_t data)
+{
+    (void)data;
+    usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_THREAD_START, 0, 0, 0);
+    if (usb_audio_playing && !playback_audio_underflow)
+        start_mixer();
+}
+
 static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int length)
 {
     (void) dir;
@@ -1313,16 +1381,51 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
             last_frame = usb_drv_get_frame_number();
         }
 
+        if (dir == USB_DIR_OUT)
+        {
+            if (st_packets == 0)
+                usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_FIRST_RX, 0, length, status);
+            st_packets++;
+            if (status != 0)
+                st_errors++;
+            if ((unsigned)length < st_min)
+                st_min = length;
+            if ((unsigned)length > st_max)
+                st_max = length;
+        }
+        if (dir == USB_DIR_OUT && st_packets % STREAM_LOG_PACKETS == 0)
+            usb_log(USB_LOG_STREAM, MIN(frames_dropped, 255),
+                    MIN(st_errors, 65535u), st_packets,
+                    MIN(st_min, 65535u) | st_max << 16);
+
         // If audio and feedback EPs happen to have the same base number (with opposite directions, of course),
         // we will get replies to the feedback here, don't want that to be interpreted as data.
-        if (length <= 4)
+        if (dir != USB_DIR_OUT)
         {
             return true;
         }
 
         logf("usbaudio: frame: %d bytes: %d", usb_drv_get_frame_number(), length);
-        if(status != 0)
-            return true; /* FIXME how to handle error here ? */
+        /* Nothing to play, but the endpoint is re-armed regardless: every
+         * packet that returns without it ends reception for good. */
+        if (status != 0 || length < 4)
+        {
+            usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
+            retval = true;
+            goto feedback;
+        }
+
+        /* A full ring drops the packet and keeps receiving. Full is one slot
+         * short of the ring, so that it never reads as empty, and so that the
+         * slot playback is still reading is never written. */
+        bool full = (rx_usb_idx + 1) % NR_BUFFERS == rx_play_idx;
+        if (full)
+        {
+            if (!usb_rx_overflow)
+                usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_OVERFLOW, 0, 0, 0);
+            usb_rx_overflow = true;
+            goto queued;
+        }
 
         /* store length, queue buffer */
         rx_buf_size[rx_usb_idx] = length;
@@ -1346,29 +1449,18 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
         rx_usb_idx = (rx_usb_idx + 1) % NR_BUFFERS;
 
+    queued:;
         /* guard against IRQ to avoid race with completion audio completion */
         int oldlevel = disable_irq_save();
-        /* setup a new transaction except if we ran out of buffers */
-        if(rx_usb_idx != rx_play_idx)
-        {
-            logf("usbaudio: new transaction");
-            usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
-        }
-        else
-        {
-            logf("usbaudio: rx overflow");
-            usb_rx_overflow = true;
-        }
-        /* if audio underflowed and prebuffering is done, restart audio */
+        usb_drv_recv_nonblocking(EP_ISO_OUT, rx_buffer, BUFFER_SIZE);
+        /* If audio underflowed and prebuffering is done, restart audio -- on
+         * the USB thread: starting playback in this interrupt hangs the 5G. */
         if(playback_audio_underflow && prebuffering_done())
         {
             logf("usbaudio: prebuffering done");
+            usb_log(USB_LOG_AUDIO, USB_LOG_AUDIO_PREBUFFERED, 0, 0, 0);
             playback_audio_underflow = false;
-            usb_rx_overflow = false;
-            static const struct mixer_play_cbs cbs = {
-                .get_more = playback_audio_get_more,
-            };
-            mixer_channel_play_data(PCM_MIXER_CHAN_USBAUDIO, &cbs, NULL, 0);
+            usb_signal_class_notify(USB_DRIVER_AUDIO, 0);
         }
         restore_irq(oldlevel);
         retval =  true;
@@ -1380,6 +1472,7 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
 
     // send feedback value every N frames!
     // NOTE: important that we need to queue this up _the frame before_ it's needed - on MacOS especially!
+feedback:
     if ((usb_drv_get_frame_number()+1) % FEEDBACK_UPDATE_RATE_FRAMES == 0 && send_fb)
     {
         if (!sent_fb_this_frame)
@@ -1415,6 +1508,11 @@ static bool usb_audio_fast_transfer_complete(int ep, int dir, int status, int le
             encodeFBfixedpt(sendFf, samples_fb, usb_drv_port_speed());
             logf("usbaudio: frame %d fbval 0x%02X%02X%02X%02X", usb_drv_get_frame_number(), sendFf[3], sendFf[2], sendFf[1], sendFf[0]);
             usb_drv_send_nonblocking(EP_ISO_FEEDBACK_IN, sendFf, usb_drv_port_speed()?4:3);
+            if (st_feedbacks++ % 64 == 0)
+                usb_log(USB_LOG_FEEDBACK, 0, 0,
+                        sendFf[0] | sendFf[1] << 8 | sendFf[2] << 16 |
+                        (usb_drv_port_speed() ? (uint32_t)sendFf[3] << 24 : 0),
+                        usb_drv_port_speed() ? 4 : 3);
 
             // debug screen counters
             //
@@ -1470,6 +1568,7 @@ struct usb_class_driver usb_cdrv_audio = {
     .disconnect = usb_audio_disconnect,
     .transfer_complete = usb_audio_transfer_complete,
     .fast_transfer_complete = usb_audio_fast_transfer_complete,
+    .notify_event = usb_audio_notify_event,
     .control_request = usb_audio_control_request,
     .set_interface = usb_audio_set_interface,
     .get_interface = usb_audio_get_interface,

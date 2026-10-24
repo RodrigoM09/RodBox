@@ -117,6 +117,137 @@ int usb_drv_port_speed(void);
 void usb_drv_cancel_all_transfers(void);
 void usb_drv_set_test_mode(int mode);
 bool usb_drv_connected(void);
+
+/* The controller's own capability registers, raw, and whether they say it
+ * can be a USB host. Read once in usb_drv_init(), the only time the
+ * controller is known to be clocked, so nregs is 0 until the first cable
+ * insertion since boot. */
+struct usb_drv_hw_info {
+    int nregs;
+    bool host_capable;
+    int host_units;         /* ARC: root ports; DesignWare: host channels */
+    struct {
+        const char *name;
+        uint32_t val;
+    } regs[4];
+};
+const struct usb_drv_hw_info *usb_drv_get_hw_info(void);
+
+/* The host probe: the controller as a USB host to one device on its root
+ * port. The target's usb_host_probe_enable() clocks the controller and
+ * calls the driver's start and stop; only the USB thread calls it, and only
+ * with the device stack disabled. usb_drv_host_poll() may be called from any
+ * thread; it resets a newly connected device once, holding the driver's lock
+ * through the reset so the probe cannot be stopped under it. The poll,
+ * usb_drv_host_control(), start and stop all take that lock, and the first
+ * two sleep through their waits, so none may run in an interrupt. */
+struct usb_drv_host_status {
+    bool active;
+    bool host_mode;         /* the controller reports itself a host */
+    bool vbus;
+    bool connected;
+    bool enabled;
+    int line;               /* 0 SE0, 1 J, 2 K, 3 SE1 */
+    const char *speed;
+    int resets;
+    int nregs;
+    struct {
+        const char *name;
+        uint32_t val;
+    } regs[4];
+};
+/* What enumerating the device found. usb_drv_host_poll() runs
+ * usb_host_enumerate() once, after the reset that enables the port. The
+ * enumeration itself is shared (usbstack/usb_host.c), over
+ * usb_drv_host_control(). A hub on the port is enumerated at address 1 and
+ * the first device on its ports at address 2; everything but the hub_*
+ * fields then describes that device. A full-speed device behind a
+ * high-speed hub is reached through the hub's transaction translator. */
+struct usb_drv_host_enum {
+    int result;             /* 0 not run, 1 done, -1 failed at step */
+    const char *step;       /* the request that failed */
+    uint32_t token;         /* its transfer status, raw */
+    int addr;               /* the device's address */
+    bool high_speed;        /* the device's own speed, not the port's */
+    uint8_t dev[18];
+    int cfg_total;          /* wTotalLength; cfg_len is less if truncated */
+    int cfg_len;
+    const uint8_t *cfg;
+    char manufacturer[32];
+    char product[32];
+    int hub_ports;          /* 0: no hub */
+    int hub_port;           /* the port the device is on */
+    uint16_t hub_vid, hub_pid;
+    int hub_tt;             /* bDeviceProtocol: 1 one translator, 2 many */
+};
+const struct usb_drv_host_enum *usb_host_get_enum(void);
+void usb_host_enumerate(void);
+void usb_host_enum_clear(void);
+/* Whether a device behind a hub is still on its port; true with no hub */
+bool usb_host_hub_device_present(void);
+
+/* A control transfer to endpoint 0 of a high- or full-speed device. Returns
+ * the data-stage byte count, or -1; usb_drv_host_last_status() then holds
+ * the controller's raw status for the stage that failed. */
+int usb_drv_host_control(int addr, int reqtype, int req, int value,
+                         int index, void *data, int len);
+uint32_t usb_drv_host_last_status(void);
+/* How transfers to the device at addr reach it, set before the first:
+ * endpoint 0's packet size (64 until the device descriptor says otherwise;
+ * one too large ends an IN stage at the device's first packet), its speed,
+ * and for a full-speed device behind a high-speed hub, that hub's address
+ * and the port it is on. tt_hub is 0 for a device on the player's own
+ * port. Addresses run to USB_DRV_HOST_ADDRS - 1. */
+#define USB_DRV_HOST_ADDRS 3
+struct usb_drv_host_route {
+    int mps;
+    bool high_speed;
+    int tt_hub, tt_port;
+};
+void usb_drv_host_set_route(int addr, const struct usb_drv_host_route *r);
+/* Whether the player's own port runs at high speed */
+bool usb_drv_host_high_speed(void);
+
+/* An isochronous OUT stream with an optional feedback IN endpoint. fill()
+ * runs from an interrupt (the tick on ARC, start of microframe on
+ * DesignWare) and writes frames sample frames to dst; the count follows the
+ * feedback, or nominal without it. begin(), if given, runs first each time
+ * and returning false skips that refill. lost(), if given, runs once from the interrupt
+ * when the device disconnects; the stream stops refilling but stays running
+ * until stopped. */
+struct usb_drv_host_iso {
+    int addr;
+    int ep_out, mps_out, interval_out;  /* in (micro)frames, 1-8 */
+    int ep_fb, mps_fb, interval_fb;     /* ep_fb 0: no feedback */
+    int frame_bytes;                    /* one sample frame, all channels */
+    uint32_t nominal;                   /* samples per (micro)frame, 16.16 */
+    bool (*begin)(void);
+    void (*fill)(uint8_t *dst, int frames);
+    void (*lost)(void);
+};
+struct usb_drv_host_iso_stats {
+    bool running;
+    bool lost;              /* the device disconnected */
+    uint32_t feedback;      /* in use, samples per (micro)frame, 16.16 */
+    uint32_t fb_raw;        /* last value received */
+    unsigned fb_ok, fb_bad;
+    unsigned frames;        /* frames queued, OUT packets on DesignWare */
+    unsigned underruns;     /* times the refill fell behind the controller */
+    unsigned errors;        /* transactions completed with an error bit */
+};
+bool usb_drv_host_iso_start(const struct usb_drv_host_iso *iso);
+void usb_drv_host_iso_stop(void);
+/* A new sample rate: feedback restarts from this 16.16 nominal. */
+void usb_drv_host_iso_set_nominal(uint32_t nominal);
+/* The most bytes the controller sends in one OUT packet to a device of
+ * this speed at this interval */
+int usb_drv_host_iso_max_packet(bool high_speed, int interval_out);
+void usb_drv_host_iso_get_stats(struct usb_drv_host_iso_stats *st);
+
+void usb_drv_host_start(void);
+void usb_drv_host_stop(void);
+void usb_drv_host_poll(struct usb_drv_host_status *st);
+
 #ifdef USB_HAS_ISOCHRONOUS
 /* returns the last received frame number (the 11-bit number contained in the last SOF):
  * - full-speed: the host sends one SOF every 1ms (so 1000 SOF/s)
@@ -142,6 +273,10 @@ int usb_drv_batch_deinit(void);
 int usb_drv_batch_start(void);
 /* stop processing */
 int usb_drv_batch_stop(void);
+/* since the last call: times every queued packet had gone out before the
+ * queue was refilled (always 0 where only one packet is queued), and
+ * packets the controller finished with an error */
+void usb_drv_batch_take_counts(uint32_t *ran_empty, uint32_t *failed);
 
 /* USB_STRING_INITIALIZER(u"Example String") */
 #define USB_STRING_INITIALIZER(S) { \

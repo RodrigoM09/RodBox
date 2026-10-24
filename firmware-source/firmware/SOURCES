@@ -965,6 +965,9 @@ target/arm/s5l8702/lcd-asm-s5l8702.S
 /* USB Stack */
 #if defined(HAVE_USBSTACK) && (!defined(BOOTLOADER) || defined(HAVE_BOOTLOADER_USB_MODE))
 usbstack/usb_core.c
+#ifndef BOOTLOADER
+usbstack/usb_log.c
+#endif
 #ifdef USB_ENABLE_STORAGE
 usbstack/usb_storage.c
 #endif
@@ -993,6 +996,14 @@ usbstack/iap/libiap/span.c
 usbstack/iap/notification.c
 usbstack/iap/platform.c
 usbstack/usb_iap.c
+usbstack/usb_iap2.c
+usbstack/usb_iap2_control.c
+#endif
+#ifdef HAVE_USB_HOST
+usbstack/usb_host.c
+#endif
+#ifdef HAVE_USB_HOST_AUDIO
+usbstack/usb_host_audio.c
 #endif
 #if CONFIG_USBOTG == USBOTG_M66591
 drivers/m66591.c
@@ -1554,7 +1565,6 @@ target/arm/as3525/sansa-fuzev2/button-fuzev2.c
 target/arm/as3525/dbop-as3525.c
 #ifndef BOOTLOADER
 target/arm/as3525/sansa-fuzev2/powermgmt-fuzev2.c
-target/arm/as3525/sansa-fuzev2/dock-fuzev2.c
 target/arm/as3525/lcd-as-e200v2-fuze-fuzev2.S
 #endif /* !BOOTLOADER */
 #endif /* SANSA_FUZEV2 */
@@ -1704,7 +1714,9 @@ target/arm/s5l8702/ipod6g/serial-6g.c
 #ifndef BOOTLOADER
 target/arm/s5l8702/ipod6g/audio-6g.c
 target/arm/s5l8702/ipod6g/cscodec-6g.c
+#ifdef HAVE_MIKEY_REMOTE
 target/arm/s5l8702/ipod6g/mikey-6g.c
+#endif
 #endif /* BOOTLOADER */
 #endif /* IPOD_6G */
 
@@ -2214,6 +2226,9 @@ kernel/thread.c
 #endif
 kernel/thread-common.c
 kernel/tick.c
+#if !defined(BOOTLOADER) && (defined(CPU_PP502x) || CONFIG_CPU == S5L8702)
+kernel/hang_catch.c
+#endif
 #ifdef INCLUDE_TIMEOUT_API
 kernel/timeout.c
 #endif

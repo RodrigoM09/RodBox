@@ -39,9 +39,6 @@ static inline void core_sleep(void)
     /* SCU_CPUPD = 0xdeedbabe; */
 }
 
-/* The DWDMA's clock, on while any of its users holds it */
-void rk27xx_dwdma_clock(bool on);
-
 /* Write DCache back to RAM for the given range and remove cache lines
  * from DCache afterwards */
 void commit_discard_dcache_range(const void *base, unsigned int size);
