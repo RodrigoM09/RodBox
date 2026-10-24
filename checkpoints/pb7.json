@@ -1,0 +1,9 @@
+{
+  "checkpoint": "pb7",
+  "description": "Report unexpected USB write lengths as failed commands",
+  "source_status": "exact-cumulative-step-export",
+  "note": "homepod-pb7-usbwrite; only this isolated change added to the previous accepted source checkpoint.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "17 focused cases; native build; user playback/resume/remote; post-reboot normal USB/remount/filesystem acceptance passed."
+}
