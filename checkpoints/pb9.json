@@ -1,0 +1,9 @@
+{
+  "checkpoint": "pb9",
+  "description": "Reject invalid playlist insertion positions",
+  "source_status": "exact-cumulative-step-export",
+  "note": "homepod-pb9-plguard; only this isolated change added to the previous accepted source checkpoint.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "21 guard cases; native build; user playback/queue/shuffle/resume/controls; post-reboot USB/remount/filesystem acceptance passed."
+}
