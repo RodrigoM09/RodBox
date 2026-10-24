@@ -1,0 +1,9 @@
+{
+  "checkpoint": "legacy-rockpod-integration",
+  "description": "Archive selected RockPod Cover Flow and flash changes",
+  "source_status": "partial-historical-evidence",
+  "note": "Selected code informed this legacy stage, not the complete RockPod USB/MFi system. Exported source becomes the exact final menu2 tree in the next checkpoint.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
