@@ -1,0 +1,9 @@
+{
+  "checkpoint": "legacy-remote1",
+  "description": "Archive initial headset decoder correction",
+  "source_status": "partial-historical-evidence",
+  "note": "Intermediate full source is not independently preserved. Raw hardware trace/installation logs and private device data are excluded.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
