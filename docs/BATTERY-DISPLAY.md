@@ -11,7 +11,10 @@ Choose **Settings > Appearance > Interface Elements > Battery Display**:
 The selected mode applies while on battery, charging or connected over USB.
 Charging changes the battery glyph; it never controls whether the percentage
 is visible. Scrim's menu percentage remains visible during volume adjustment.
-Now Playing keeps its battery display within the artwork-free left margin.
+Now Playing uses the same top-right battery coordinates as the menu: the icon
+at x=289 and the combined percentage at x=249. Percentage-only mode aligns at
+x=279. The follow-up corrects PB13's initial placement in the left margin. It
+adds no opaque panel over album art and does not move the volume overlay.
 The separate detailed battery/charging footer on the USB connection screen is
 retained in every mode. That screen also follows the top-indicator preference
 using plain drawing and the built-in font after the storage ACK, with no theme,

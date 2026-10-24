@@ -3,6 +3,11 @@
 Status: prepared and host-tested; not installed. Deployment is deferred while
 the player finishes its sound-analysis scan.
 
+The accompanying theme follow-up moves Now Playing's battery display to the
+same top-right position as the menu. Apply that WPS file with the next backed-up
+installation; it has not been deployed while the scan runs. The battery setting
+and the detailed USB footer remain unchanged.
+
 When the running firmware sees its external power input change from absent to
 present, it requests a normal backlight wake. This covers a USB charger or a
 computer, including a full battery or a source not yet qualified as a charger.
