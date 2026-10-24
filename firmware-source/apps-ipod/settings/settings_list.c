@@ -1033,7 +1033,7 @@ const struct settings_list settings[] = {
 #endif
 #ifdef HAVE_MIKEY_REMOTE
     OFFON_SETTING(0, remote_track_skip, LANG_REMOTE_TRACK_SKIP,
-                  true, "remote track skip", mikey_set_track_skip),
+                  false, "remote track skip", mikey_set_track_skip),
 #endif
 
 

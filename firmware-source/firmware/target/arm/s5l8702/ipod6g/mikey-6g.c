@@ -212,7 +212,186 @@ static void mikey_decode_vol(unsigned char evt, unsigned char dn,
 /* Per-poll decode state, kept apart from the thread's power/mode
  * bookkeeping so the register-to-button logic is a pure function of
  * (state, reg4, reg5). */
+#define MIKEY_LOCAL_CENTER_OFF_POLLS 3
+static void mikey_local_decode_vol(unsigned char evt, unsigned char dn,
+                             bool *held, int *click, bool *press_seen)
+{
+    if (*click > 0 && --*click == 0)
+        *held = false;
+    if (!(evt & dn))
+        *press_seen = false;
+    else if (!*press_seen)
+    {
+        *press_seen = true;
+        *held = true;
+        *click = MIKEY_CLICK_POLLS;
+    }
+}
+
+/* Phantom-load failsafe: some passive cables present a DC load on the
+ * mic line that Mikey decodes as a volume button, producing a press
+ * edge the moment the detection engine arms and never a release (seen
+ * in the wild as volume ramping to zero on its own). A press edge this
+ * early cannot be a human, so it suppresses that button until a
+ * release edge proves a real remote is attached. This is the
+ * edge-event analog of the center button's "armed" guard, which
+ * already keeps mic-less TRS plugs (a permanent mic-line short) from
+ * reading as a stuck center button. */
+#define MIKEY_ARM_WINDOW_POLLS  10      /* 200ms after (re)arming */
+
+/* Per-poll decode state, kept apart from the thread's power/mode
+ * bookkeeping so the register-to-button logic is a pure function of
+ * (state, reg4, reg5). */
+struct mikey_local_decode {
+    bool armed;          /* need a released reading before first press */
+    bool vol_up, vol_dn;
+    int up_click, dn_click;
+    int arm_window;      /* polls left of phantom-press suppression window */
+    bool up_suppressed, dn_suppressed;
+    bool up_press_seen, dn_press_seen;
+    bool center_down;    /* debounced "press already reported" */
+    int center_off;      /* consecutive released polls */
+    int center_pulse;    /* click pulse countdown */
+    int center_pending;  /* wait briefly to classify shared mic-line signals */
+    int volume_quiet;    /* suppress center transients around volume events */
+    int center_volume_quiet; /* reject trailing phantom volume reports */
+};
+
+static void mikey_local_decode_reset(struct mikey_local_decode *d)
+{
+    d->armed = false;
+    d->vol_up = d->vol_dn = false;
+    d->up_click = d->dn_click = 0;
+    d->arm_window = MIKEY_ARM_WINDOW_POLLS;
+    d->up_suppressed = d->dn_suppressed = false;
+    d->up_press_seen = d->dn_press_seen = false;
+    d->center_down = false;
+    d->center_off = MIKEY_LOCAL_CENTER_OFF_POLLS;
+    d->center_pulse = 0;
+    d->center_pending = d->volume_quiet = d->center_volume_quiet = 0;
+}
+
+/* Apply the phantom-load failsafe to one volume button's edge bits:
+ * a press edge (without a same-poll release) inside the arm window
+ * marks the button suppressed; suppressed press edges are stripped
+ * until a release edge lifts the suppression. */
+static unsigned char mikey_local_vol_gate(struct mikey_local_decode *d, unsigned char evt,
+                                    unsigned char dn, unsigned char up,
+                                    bool *suppressed)
+{
+    if (evt & up)
+        *suppressed = false;
+    else if ((evt & dn) && d->arm_window > 0)
+        *suppressed = true;
+
+    if (*suppressed)
+        evt &= ~dn;
+    return evt;
+}
+
+/* Decode one poll's register pair into a button mask. Volume is NOT
+ * gated on the reg4 identified-remote bit: that bit proved to be
+ * unit-dependent (reliably latched on one 6G, never seen on two other
+ * 120GB units where gating on it broke volume entirely), so it is
+ * only surfaced in the hardware debug screen for now. */
+static int mikey_local_decode_poll(struct mikey_local_decode *d,
+                             unsigned char btn, unsigned char evt)
+{
+    /* Local 1MORE profile, based on the captured hardware trace:
+     * reg4 bit 0 distinguishes center (0x05) from volume sense (0x04).
+     * A center release can also produce a spurious reg5 volume edge. */
+    bool raw_center = (btn & MIKEY_BTN_CENTER) != 0;
+    if (raw_center)
+        d->center_volume_quiet = 15;
+    else if (d->center_volume_quiet > 0)
+        d->center_volume_quiet--;
+    if (d->center_volume_quiet > 0)
+    {
+        evt &= ~0x0f;
+        d->vol_up = d->vol_dn = false;
+        d->up_click = d->dn_click = 0;
+        d->up_press_seen = d->dn_press_seen = false;
+    }
+
+    evt = mikey_local_vol_gate(d, evt, MIKEY_EVT_VOLUP_DN, MIKEY_EVT_VOLUP_UP,
+                         &d->up_suppressed);
+    evt = mikey_local_vol_gate(d, evt, MIKEY_EVT_VOLDN_DN, MIKEY_EVT_VOLDN_UP,
+                         &d->dn_suppressed);
+    if (d->arm_window > 0)
+        d->arm_window--;
+
+    mikey_local_decode_vol(evt, MIKEY_EVT_VOLUP_DN,
+                     &d->vol_up, &d->up_click, &d->up_press_seen);
+    mikey_local_decode_vol(evt, MIKEY_EVT_VOLDN_DN,
+                     &d->vol_dn, &d->dn_click, &d->dn_press_seen);
+
+    /* reg4 can read pressed while the mode settles; don't report the
+     * center button until it has been seen released once */
+    bool raw = raw_center;
+    if (!raw)
+        d->armed = true;
+
+    /* Some compatible remotes assert the center sense during a volume
+     * operation. Classify a center edge for 120ms before emitting it so a
+     * slightly later volume report can cancel it. Require a clean release
+     * after volume activity; a delayed/stuck center sense is not a click. */
+    if (evt & (MIKEY_EVT_VOLUP_DN | MIKEY_EVT_VOLUP_UP |
+               MIKEY_EVT_VOLDN_DN | MIKEY_EVT_VOLDN_UP))
+        d->volume_quiet = 15; /* 300ms after the last volume report */
+    else if (d->volume_quiet > 0)
+        d->volume_quiet--;
+
+    if (d->volume_quiet > 0 || d->vol_up || d->vol_dn)
+    {
+        d->center_pending = d->center_pulse = 0;
+        d->center_down = raw;
+        d->center_off = raw ? 0 : MIKEY_LOCAL_CENTER_OFF_POLLS;
+    }
+    else
+    {
+        if (raw && d->armed)
+        {
+            if (!d->center_down && d->center_off >= MIKEY_LOCAL_CENTER_OFF_POLLS)
+                d->center_pending = 6; /* 120ms classification window */
+            d->center_down = true;
+            d->center_off = 0;
+        }
+        else
+        {
+            if (d->center_off < MIKEY_LOCAL_CENTER_OFF_POLLS)
+                d->center_off++;
+            if (d->center_off >= MIKEY_LOCAL_CENTER_OFF_POLLS)
+                d->center_down = false;
+        }
+        if (d->center_pending > 0 && --d->center_pending == 0)
+            d->center_pulse = MIKEY_CENTER_PULSE_POLLS;
+    }
+
+    bool center = false;
+    if (d->center_pulse > 0)
+    {
+        center = true;
+        d->center_pulse--;
+    }
+
+    /* All buttons report as multimedia keys: handled globally by
+     * default_event_handler on every screen, so volume and play/pause
+     * work in menus, WPS and plugins alike, matching the OF. */
+    return (center    ? BUTTON_MULTIMEDIA_PLAYPAUSE   : 0)
+         | (d->vol_up ? BUTTON_MULTIMEDIA_VOLUME_UP   : 0)
+         | (d->vol_dn ? BUTTON_MULTIMEDIA_VOLUME_DOWN : 0);
+}
+
+/* The chip only ACKs the bus while something occupies the jack, so
+ * presence can't be probed at boot; it is probed here whenever the
+ * jack is occupied. A few insertion transients may NAK before the
+ * first ACK; a model without the chip (2007) NAKs forever, so after
+ * the retry budget the poll backs way off to stay out of the way. */
+#define MIKEY_PROBE_TRIES   25          /* ~2.5s of HZ/10 retries */
+
+
 struct mikey_decode {
+    struct mikey_local_decode local;
     bool armed;          /* need a released reading before first press */
     bool vol_up, vol_dn;
     int up_click, dn_click;
@@ -240,6 +419,7 @@ struct mikey_decode {
  * half of a double click, which reports as a plain play/pause. */
 static void mikey_decode_reset(struct mikey_decode *d)
 {
+    mikey_local_decode_reset(&d->local);
     d->armed = false;
     d->vol_up = d->vol_dn = false;
     d->up_click = d->dn_click = 0;
@@ -365,6 +545,8 @@ static unsigned char mikey_line_gate(struct mikey_decode *d,
 static int mikey_decode_poll(struct mikey_decode *d,
                              unsigned char btn, unsigned char evt)
 {
+    if (!track_skip)
+        return mikey_local_decode_poll(&d->local, btn, evt);
     evt = mikey_line_gate(d, btn, evt);
     evt = mikey_vol_gate(d, evt, MIKEY_EVT_VOLUP_DN, MIKEY_EVT_VOLUP_UP,
                          &d->up_suppressed);

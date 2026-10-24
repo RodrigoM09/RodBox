@@ -74,12 +74,8 @@
 %Vl(Paused,136,56,48,52,-)
 %dr(0,0,16,52,!ffffff,-,15,3)%dr(32,0,16,52,!ffffff,-,15,3)
 #
-# Volume overlay
-%Vl(Volume,0,0,320,35,5)%Vg(000000,000000,ffffff)
-%Vs(gradient) 
-%Vs(gradient) 
-%Vs(gradient) 
-%Vl(Volume,8,6,304,24,4)%Vg(000000,000000,ffffff)%Vf(ffffff)
-%Vs(gradient)%?pv<M|N|N>%arO
-%Vl(Volume,40,15,240,6,-)%Vf(!ffffff)
-%dr(0,0,240,6,000000)%pv(0,0,240,6,image,vwf,backdrop,vbg)
+# Volume display stays in the left margin so it does not cover the artwork.
+%Vl(Volume,0,0,80,35,3)%Vg(000000,000000,ffffff)
+%Vs(gradient)
+%Vl(Volume,4,7,72,22,3)%Vf(!ffffff)%Vb(000000)
+%pv dB

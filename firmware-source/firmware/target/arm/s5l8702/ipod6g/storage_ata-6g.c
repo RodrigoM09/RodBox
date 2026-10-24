@@ -1187,13 +1187,18 @@ void ata_spin(void)
 
 void ata_set_storage_mode(int mode)
 {
-    /* 0=auto, 1=HDD, 2=SSD */
-    if (mode == 2)
-        ata_ssd_mode = true;
-    else if (mode == 1)
-        ata_ssd_mode = false;
-    else /* auto */
-        ata_ssd_mode = ata_disk_isssd();
+    bool ssd = (mode == 2) || (mode == 0 && ata_disk_isssd());
+    mutex_lock(&ata_mutex);
+    if (ssd != ata_ssd_mode && !ata_powered)
+    {
+        if (IS_ERR(ata_power_up()))
+        {
+            mutex_unlock(&ata_mutex);
+            return;
+        }
+    }
+    ata_ssd_mode = ssd;
+    mutex_unlock(&ata_mutex);
 }
 
 bool ata_get_ssd_mode(void)
@@ -1358,7 +1363,7 @@ int ata_event(long id, intptr_t data)
              * clock-gate sleep when backlight is off */
             if (ata_ssd_mode && !ata_powered && !ssd_deep_asleep
                 && !is_backlight_on(true)
-                && TIME_AFTER(current_tick, ssd_sleep_tick + 10 * HZ))
+                && TIME_AFTER(current_tick, ssd_sleep_tick + 30 * HZ))
             {
                 mutex_lock(&ata_mutex);
                 if (!ata_powered && !ssd_deep_asleep)

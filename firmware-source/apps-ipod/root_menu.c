@@ -1048,10 +1048,26 @@ static struct menu_callback_with_desc root_menu_desc = {
  * are an on-disk format and not free to rename with the code. "pictureflow" is
  * the screen now called Album covers; changing it would drop the row from
  * every config.cfg already out there. */
+static int database_update_now(void)
+{
+    if (!tagcache_get_stat()->ready)
+    {
+        splash(HZ * 2, ID2P(LANG_TAGCACHE_BUSY));
+        return 0;
+    }
+    tagcache_update();
+    splash(HZ * 2, ID2P(LANG_TAGCACHE_FORCE_UPDATE_SPLASH));
+    return 0;
+}
+
+MENUITEM_FUNCTION(database_update_menu, 0, "Update Now",
+                  database_update_now, NULL, Icon_Audio);
+
 static struct menu_table menu_table[] = {
     { "pictureflow", &album_covers_item },
     { "artistportraits", &artist_portraits_item },
     { "database", &db_browser },
+    { "database_update", &database_update_menu },
     { "files", &file_browser },
     { "wps", &wps_item },
     { "reading", &continue_reading },

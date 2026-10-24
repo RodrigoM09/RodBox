@@ -311,6 +311,7 @@ static void button_tick(void)
                            key */
 
                         if (enable_sw_poweroff &&
+                            !(btn & BUTTON_MULTIMEDIA) &&
                             (btn & POWEROFF_BUTTON
 #ifdef RC_POWEROFF_BUTTON
                                     || btn == RC_POWEROFF_BUTTON
