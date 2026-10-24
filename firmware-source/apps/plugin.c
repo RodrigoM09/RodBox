@@ -890,6 +890,10 @@ static const struct plugin_api rockbox_api = {
     &target_hw_h264_api,
 #endif
 
+#ifdef HAVE_DISK_STORAGE
+    storage_get_ssd_mode,
+#endif
+
     /* new stuff at the end, sort into place next time
        the API gets incompatible */
 };

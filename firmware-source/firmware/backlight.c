@@ -40,6 +40,9 @@
 #include "backlight.h"
 #include "lcd.h"
 #include "screendump.h"
+#if defined(IPOD_6G) && !defined(SIMULATOR)
+#include "storage.h"
+#endif
 
 #ifdef HAVE_REMOTE_LCD
 #include "lcd-remote.h"
@@ -528,6 +531,10 @@ static void backlight_update_state(void)
         backlight_setup_fade_up();
 #else
         backlight_hw_on();
+#endif
+#if defined(IPOD_6G) && !defined(SIMULATOR)
+        if (storage_get_ssd_mode())
+            storage_post_event(Q_STORAGE_PRE_WAKE, 0);
 #endif
     }
 }

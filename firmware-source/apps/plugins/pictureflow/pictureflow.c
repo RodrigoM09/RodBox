@@ -5,6 +5,7 @@
 *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
 *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
 *                     \/            \/     \/    \/            \/
+* $Id$
 *
 * Copyright (C) 2007 Jonas Hurrelmann (j@outpo.st)
 * Copyright (C) 2007 Nicolas Pennequin
@@ -229,6 +230,34 @@ typedef unsigned char pix_t;
 typedef fb_data pix_t;
 #endif  /* LCD_DEPTH >= 8 */
 
+#ifdef HAVE_LCD_COLOR
+static pix_t pf_bg_color;     /* theme background, replaces G_BRIGHT(0) */
+static pix_t pf_fg_color;     /* theme foreground, replaces G_BRIGHT(255) */
+static pix_t pf_lss_color;    /* selector start color for gradient */
+static pix_t pf_lse_color;    /* selector end color for gradient */
+static pix_t pf_lst_color;    /* selector text color */
+
+/* Pre-extracted RGB565 channel masks for fade_color() performance */
+static unsigned int pf_bg_rb;  /* pf_bg_color & 0xf81f */
+static unsigned int pf_bg_g;   /* pf_bg_color & 0x7e0 */
+
+/* Interpolate between pf_bg_color (brightness=0) and pf_fg_color (brightness=255) */
+static inline pix_t pf_color_mix(int brightness)
+{
+    int bg_r = RGB_UNPACK_RED(pf_bg_color);
+    int bg_g = RGB_UNPACK_GREEN(pf_bg_color);
+    int bg_b = RGB_UNPACK_BLUE(pf_bg_color);
+    int fg_r = RGB_UNPACK_RED(pf_fg_color);
+    int fg_g = RGB_UNPACK_GREEN(pf_fg_color);
+    int fg_b = RGB_UNPACK_BLUE(pf_fg_color);
+    return LCD_RGBPACK(
+        bg_r + (fg_r - bg_r) * brightness / 255,
+        bg_g + (fg_g - bg_g) * brightness / 255,
+        bg_b + (fg_b - bg_b) * brightness / 255
+    );
+}
+#endif
+
 /* for fixed-point arithmetic, we need minimum 32-bit long
    long long (64-bit) might be useful for multiplication and division */
 #define PFreal long
@@ -253,7 +282,7 @@ typedef fb_data pix_t;
 #define DISPLAY_LEFT_R (PFREAL_HALF - LCD_WIDTH * PFREAL_HALF)
 #define MAXSLIDE_LEFT_R (PFREAL_HALF - DISPLAY_WIDTH * PFREAL_HALF)
 
-#define SLIDE_CACHE_SIZE 64 /* probably more than can be loaded */
+#define SLIDE_CACHE_SIZE 100
 
 #define MAX_SLIDES_COUNT 10
 
@@ -268,6 +297,15 @@ typedef fb_data pix_t;
 #define EMPTY_SLIDE_BMP PLUGIN_DEMOS_DIR "/pictureflow_emptyslide.bmp"
 #define SPLASH_BMP PLUGIN_DEMOS_DIR "/pictureflow_splash.bmp"
 
+/* Ordered Bayer dithering for 24-bit to RGB565 conversion */
+#ifdef HAVE_LCD_COLOR
+static const unsigned char pf_dither_table[16] =
+    {   0,192, 48,240, 12,204, 60,252,  3,195, 51,243, 15,207, 63,255 };
+#define PF_DITHERY(y) (pf_dither_table[(y) & 15] & 0xAA)
+#define PF_DITHERX(x) (pf_dither_table[(x) & 15])
+#define PF_DITHERXDY(x,dy) (PF_DITHERX(x) ^ dy)
+#endif
+
 /* some magic numbers for cache_version. */
 #define CACHE_REBUILD   0
 
@@ -279,7 +317,7 @@ typedef fb_data pix_t;
 #define ERROR_USER_ABORT    -4
 
 /* current version for cover cache */
-#define CACHE_VERSION 4
+#define CACHE_VERSION 5
 #define CONFIG_VERSION 1
 #define CONFIG_FILE "pictureflow.cfg"
 #define INDEX_HDR "PFID"
@@ -290,6 +328,7 @@ struct pf_config_t
      /* config values */
      int slide_spacing;
      int center_margin;
+     int slide_tuck;
 
      int num_slides;
      int zoom;
@@ -297,18 +336,25 @@ struct pf_config_t
      int auto_wps;
      int last_album;
 
-     int backlight_mode;
+
      int cache_version;
 
      int show_album_name;
      int sort_albums_by;
      int year_sort_order;
      bool show_year;
+     bool parallel_slides;
 
      bool resize;
      bool show_fps;
+     bool show_statusbar;
 
      bool update_albumart;
+
+     int scroll_speed;
+     int transition_speed;
+
+     bool text_crossfade;
 };
 
 struct pf_index_t {
@@ -496,6 +542,8 @@ static struct configdata config[] =
       NULL },
     { TYPE_INT, 0, MAX_MARGIN, { .int_p = &pf_cfg.center_margin }, "center margin",
       NULL },
+    { TYPE_INT, 0, DISPLAY_WIDTH / 2, { .int_p = &pf_cfg.slide_tuck }, "slide tuck",
+      NULL },
     { TYPE_INT, 0, MAX_SLIDES_COUNT, { .int_p = &pf_cfg.num_slides }, "slides count",
       NULL },
     { TYPE_INT, 0, 300, { .int_p = &pf_cfg.zoom }, "zoom", NULL },
@@ -506,7 +554,6 @@ static struct configdata config[] =
       show_album_name_conf },
     { TYPE_INT, 0, 2, { .int_p = &pf_cfg.auto_wps }, "auto wps", NULL },
     { TYPE_INT, 0, 999999, { .int_p = &pf_cfg.last_album }, "last album", NULL },
-    { TYPE_INT, 0, 1, { .int_p = &pf_cfg.backlight_mode }, "backlight", NULL },
     { TYPE_INT, 0, 999999, { .int_p = &aa_cache.idx }, "art cache pos", NULL },
     { TYPE_INT, 0, 999999, { .int_p = &aa_cache.inspected }, "art cache inspected", NULL },
     { TYPE_ENUM, 0, 4, { .int_p = &pf_cfg.sort_albums_by }, "sort albums by",
@@ -514,7 +561,14 @@ static struct configdata config[] =
     { TYPE_ENUM, 0, 2, { .int_p = &pf_cfg.year_sort_order }, "year order",
       year_sort_order_conf },
     { TYPE_BOOL, 0, 1, { .bool_p = &pf_cfg.show_year }, "show year", NULL },
-    { TYPE_BOOL, 0, 1, { .bool_p = &pf_cfg.update_albumart }, "update albumart", NULL }
+    { TYPE_BOOL, 0, 1, { .bool_p = &pf_cfg.parallel_slides }, "parallel slides",
+      NULL },
+    { TYPE_BOOL, 0, 1, { .bool_p = &pf_cfg.show_statusbar }, "show statusbar", NULL },
+    { TYPE_BOOL, 0, 1, { .bool_p = &pf_cfg.update_albumart }, "update albumart", NULL },
+    { TYPE_INT, 100, 400, { .int_p = &pf_cfg.scroll_speed }, "scroll speed", NULL },
+    { TYPE_INT, 100, 400, { .int_p = &pf_cfg.transition_speed }, "transition speed",
+      NULL },
+    { TYPE_BOOL, 0, 1, { .bool_p = &pf_cfg.text_crossfade }, "text crossfade", NULL }
 };
 
 #define CONFIG_NUM_ITEMS (sizeof(config) / sizeof(struct configdata))
@@ -523,6 +577,14 @@ static struct configdata config[] =
 
 static pix_t *buffer; /* for now it always points to the lcd framebuffer */
 static uint8_t reflect_table[REFLECT_HEIGHT];
+static int pf_height;           /* viewport height (LCD_HEIGHT minus status bar) */
+static int pf_half_height;      /* pf_height / 2 */
+static int pf_lower_half;       /* pf_height - pf_half_height, rows below center */
+static int pf_reflect_height;   /* pf_height - DISPLAY_HEIGHT */
+static int pf_display_offs;     /* pf_half_height - pf_reflect_height */
+static int pf_vp_y;             /* viewport y-offset (status bar height) */
+static struct viewport pf_vp;   /* PF rendering viewport (below status bar) */
+static struct frame_buffer_t pf_framebuffer; /* bypass backdrop in clear_viewport */
 static struct slide_data center_slide;
 static struct slide_data left_slides[MAX_SLIDES_COUNT];
 static struct slide_data right_slides[MAX_SLIDES_COUNT];
@@ -533,6 +595,7 @@ static int fade;
 static int center_index = 0; /* index of the slide that is in the center */
 static int itilt;
 static PFreal offsetX;
+static PFreal auto_slide_spacing;
 static PFreal offsetY;
 static int number_of_slides;
 static bool is_initial_slide = true;
@@ -688,14 +751,15 @@ static void config_save(int cache_version, bool update_albumart)
 
 static void config_set_defaults(struct pf_config_t *cfg)
 {
-     cfg->slide_spacing = DISPLAY_WIDTH / 4;
-     cfg->center_margin = (LCD_WIDTH - DISPLAY_WIDTH) / 12;
-     cfg->num_slides = 4;
+     cfg->slide_spacing = DISPLAY_WIDTH / 4;  /* kept for config compat */
+     cfg->center_margin = 0;
+     cfg->slide_tuck = DISPLAY_WIDTH / 4;
+     cfg->num_slides = 4;   /* 3 visible + 1 animation buffer per side */
      cfg->zoom = 100;
      cfg->show_fps = false;
      cfg->auto_wps = 0;
      cfg->last_album = 0;
-     cfg->backlight_mode = 0;
+
      cfg->resize = true;
      cfg->cache_version = CACHE_REBUILD;
      cfg->show_album_name = (LCD_HEIGHT > 100)
@@ -703,7 +767,12 @@ static void config_set_defaults(struct pf_config_t *cfg)
      cfg->sort_albums_by = SORT_BY_ARTIST_AND_NAME;
      cfg->year_sort_order = ASCENDING;
      cfg->show_year = false;
+     cfg->parallel_slides = true;
+     cfg->show_statusbar = true;
      cfg->update_albumart = false;
+     cfg->scroll_speed = 200;
+     cfg->transition_speed = 200;
+     cfg->text_crossfade = true;
 }
 
 static inline PFreal fmul(PFreal a, PFreal b)
@@ -895,12 +964,16 @@ static void output_row_8_transposed(uint32_t row, void * row_in,
 #else
     struct uint8_rgb *qp = (struct uint8_rgb*)row_in;
     unsigned r, g, b;
-    for (; dest < end; dest += ctx->bm->height)
+    int col = 0;
+    uint8_t dy = PF_DITHERY(row);
+    for (; dest < end; dest += ctx->bm->height, col++)
     {
-        r = scale_subpixel_lcd(qp->red, 5);
-        g = scale_subpixel_lcd(qp->green, 6);
-        b = scale_subpixel_lcd((qp++)->blue, 5);
-        *dest = FB_RGBPACK_LCD(r,g,b);
+        int delta = ctx->dither ? PF_DITHERXDY(col, dy) : 127;
+        r = (31 * qp->red + (qp->red >> 3) + delta) >> 8;
+        g = (63 * qp->green + (qp->green >> 2) + delta) >> 8;
+        b = (31 * qp->blue + (qp->blue >> 3) + delta) >> 8;
+        qp++;
+        *dest = FB_RGBPACK_LCD(r, g, b);
     }
 #endif
 }
@@ -919,13 +992,19 @@ static void output_row_32_transposed(uint32_t row, void * row_in,
 #else
     struct uint32_argb *qp = (struct uint32_argb*)row_in;
     int r, g, b;
-    for (; dest < end; dest += ctx->bm->height)
+    int col = 0;
+    uint8_t dy = PF_DITHERY(row);
+    for (; dest < end; dest += ctx->bm->height, col++)
     {
-        r = scale_subpixel_lcd(SC_OUT(qp->r, ctx), 5);
-        g = scale_subpixel_lcd(SC_OUT(qp->g, ctx), 6);
-        b = scale_subpixel_lcd(SC_OUT(qp->b, ctx), 5);
+        int delta = ctx->dither ? PF_DITHERXDY(col, dy) : 127;
+        r = SC_OUT(qp->r, ctx);
+        g = SC_OUT(qp->g, ctx);
+        b = SC_OUT(qp->b, ctx);
         qp++;
-        *dest = FB_RGBPACK_LCD(r,g,b);
+        r = (31 * r + (r >> 3) + delta) >> 8;
+        g = (63 * g + (g >> 2) + delta) >> 8;
+        b = (31 * b + (b >> 3) + delta) >> 8;
+        *dest = FB_RGBPACK_LCD(r, g, b);
     }
 #endif
 }
@@ -937,17 +1016,20 @@ static void output_row_32_transposed_fromyuv(uint32_t row, void * row_in,
     pix_t *dest = (pix_t*)ctx->bm->data + row;
     pix_t *end = dest + ctx->bm->height * ctx->bm->width;
     struct uint32_argb *qp = (struct uint32_argb*)row_in;
-    for (; dest < end; dest += ctx->bm->height)
+    int col = 0;
+    uint8_t dy = PF_DITHERY(row);
+    for (; dest < end; dest += ctx->bm->height, col++)
     {
         unsigned r, g, b, y, u, v;
+        int delta = ctx->dither ? PF_DITHERXDY(col, dy) : 127;
         y = SC_OUT(qp->b, ctx);
         u = SC_OUT(qp->g, ctx);
         v = SC_OUT(qp->r, ctx);
         qp++;
         yuv_to_rgb(y, u, v, &r, &g, &b);
-        r = scale_subpixel_lcd(r, 5);
-        g = scale_subpixel_lcd(g, 6);
-        b = scale_subpixel_lcd(b, 5);
+        r = (31 * r + (r >> 3) + delta) >> 8;
+        g = (63 * g + (g >> 2) + delta) >> 8;
+        b = (31 * b + (b >> 3) + delta) >> 8;
         *dest = FB_RGBPACK_LCD(r, g, b);
     }
 }
@@ -1049,10 +1131,10 @@ static void update_scroll_lines(void)
 static void init_reflect_table(void)
 {
     int i;
-    for (i = 0; i < REFLECT_HEIGHT; i++)
+    for (i = 0; i < pf_reflect_height; i++)
         reflect_table[i] =
-            (768 * (REFLECT_HEIGHT - i) + (5 * REFLECT_HEIGHT / 2)) /
-            (5 * REFLECT_HEIGHT);
+            (768 * (pf_reflect_height - i) + (5 * pf_reflect_height / 2)) /
+            (5 * pf_reflect_height);
 }
 
 
@@ -1902,6 +1984,8 @@ static bool track_buffer_avail(size_t needed)
 
 static int pf_tcs_retrieve_track_title(int string_index, int disc_num, int track_num)
 {
+    (void)disc_num;
+    (void)track_num;
     char file_name[MAX_PATH];
     char *track_title = NULL;
     int str_len;
@@ -1922,18 +2006,9 @@ static int pf_tcs_retrieve_track_title(int string_index, int disc_num, int track
     if (!track_buffer_avail(max_len))
         return 0;
 
-    if (track_num > 0)
-    {
-        if (disc_num > 0)
-            str_len = rb->snprintf(pf_tracks.names + string_index, max_len,
-                "%d.%02d: %s", disc_num, track_num, track_title);
-        else
-            str_len = rb->snprintf(pf_tracks.names + string_index, max_len,
-                "%d: %s", track_num, track_title);
-    }
-    else
-        str_len = rb->snprintf(pf_tracks.names + string_index, max_len,
-            "%s", track_title);
+    /* iPod Classic 6G custom: title only, no disc/track number prefix */
+    str_len = rb->snprintf(pf_tracks.names + string_index, max_len,
+        "%s", track_title);
     return str_len;
 }
 
@@ -2109,8 +2184,13 @@ static void draw_splashscreen(unsigned char * buf_tmp, size_t buf_tmp_size)
     int ret = rb->read_bmp_file(SPLASH_BMP, &logo, buf_tmp_size,
                                 FORMAT_NATIVE, NULL);
 #if LCD_DEPTH > 1
+#ifdef HAVE_LCD_COLOR
+    rb->lcd_set_background(pf_bg_color);
+    rb->lcd_set_foreground(pf_fg_color);
+#else
     rb->lcd_set_background(N_BRIGHT(0));
     rb->lcd_set_foreground(N_BRIGHT(255));
+#endif
 #else
     rb->lcd_set_drawmode(PICTUREFLOW_DRMODE);
 #endif
@@ -2145,8 +2225,13 @@ static void draw_progressbar(int step, int count, char *msg)
     if (msg != NULL)
     {
 #if LCD_DEPTH > 1
+#ifdef HAVE_LCD_COLOR
+        rb->lcd_set_background(pf_bg_color);
+        rb->lcd_set_foreground(pf_fg_color);
+#else
         rb->lcd_set_background(N_BRIGHT(0));
         rb->lcd_set_foreground(N_BRIGHT(255));
+#endif
 #else
         rb->lcd_set_drawmode(PICTUREFLOW_DRMODE);
 #endif
@@ -2158,7 +2243,11 @@ static void draw_progressbar(int step, int count, char *msg)
         y += (txt_h + 5);
     }
 #if LCD_DEPTH > 1
+#ifdef HAVE_LCD_COLOR
+    rb->lcd_set_foreground(pf_color_mix(100));
+#else
     rb->lcd_set_foreground(N_BRIGHT(100));
+#endif
 #endif
     rb->lcd_drawrect(x, y, w+2, bar_height);
 #if LCD_DEPTH > 1
@@ -2167,7 +2256,11 @@ static void draw_progressbar(int step, int count, char *msg)
 
     rb->lcd_fillrect(x+1, y+1, step * w / count, bar_height-2);
 #if LCD_DEPTH > 1
+#ifdef HAVE_LCD_COLOR
+    rb->lcd_set_foreground(pf_fg_color);
+#else
     rb->lcd_set_foreground(N_BRIGHT(255));
+#endif
 #endif
     rb->lcd_update();
     rb->yield();
@@ -2223,7 +2316,7 @@ static bool incremental_albumart_cache(bool verbose)
 
     int idx, ret;
     unsigned int hash_artist, hash_album;
-    unsigned int format = FORMAT_NATIVE;
+    unsigned int format = FORMAT_NATIVE | FORMAT_DITHER;
 
     if (pf_cfg.resize)
         format |= FORMAT_RESIZE|FORMAT_KEEP_ASPECT;
@@ -2357,7 +2450,13 @@ static int create_empty_slide(bool force)
  */
 static void thread(void)
 {
+    /* SSD mode: poll more frequently since disk access is cheap */
+#ifdef HAVE_DISK_STORAGE
+    long sleep_time = (rb->storage_get_ssd_mode())
+                      ? HZ : 5 * HZ;
+#else
     long sleep_time = 5 * HZ;
+#endif
     struct queue_event ev;
     while (1) {
         rb->queue_wait_w_tmo(&thread_q, &ev, sleep_time);
@@ -2656,7 +2755,6 @@ static int read_pfraw(char* filename, int prio)
         return -1;
     }
 
-    rb->yield(); /* allow audio to play when fast scrolling */
     struct dim *bm = rb->buflib_get_data(&buf_ctx, hid);
 
     bm->width = bmph.width;
@@ -2773,7 +2871,7 @@ bool load_new_slide(void)
             pf_sldcache.cache[ind_].index - 1 == pf_sldcache.cache[next_].index);
 
         pf_sldcache.right_idx = _SEEK_RIGHT_WHILE(pf_sldcache.right_idx,
-            pf_sldcache.cache[ind_].index - 1 == pf_sldcache.cache[next_].index);
+            pf_sldcache.cache[ind_].index + 1 == pf_sldcache.cache[next_].index);
         if (pf_sldcache.right_idx == -1 || pf_sldcache.left_idx == -1)
             goto fatal_fail;
 
@@ -2785,7 +2883,8 @@ bool load_new_slide(void)
 
         int prio_l = center - left + 1;
         int prio_r = right - center + 1;
-        if ((prio_l < prio_r || right >= number_of_slides) && left > 0)
+        if ((prio_l < prio_r
+             || right >= number_of_slides - 1) && left > 0)
         {
             if (pf_sldcache.free == -1 && !free_slide_prio(prio_l))
             {
@@ -2901,7 +3000,7 @@ static void reset_slides(void)
     for (i = 0; i < pf_cfg.num_slides; i++) {
         struct slide_data *si = &left_slides[i];
         si->angle = itilt;
-        si->cx = -(offsetX + pf_cfg.slide_spacing * i * PFREAL_ONE);
+        si->cx = -(offsetX + auto_slide_spacing * i);
         si->cy = offsetY;
         si->slide_index = center_index - 1 - i;
         si->distance = 0;
@@ -2910,7 +3009,7 @@ static void reset_slides(void)
     for (i = 0; i < pf_cfg.num_slides; i++) {
         struct slide_data *si = &right_slides[i];
         si->angle = -itilt;
-        si->cx = offsetX + pf_cfg.slide_spacing * i * PFREAL_ONE;
+        si->cx = offsetX + auto_slide_spacing * i;
         si->cy = offsetY;
         si->slide_index = center_index + 1 + i;
         si->distance = 0;
@@ -2935,10 +3034,11 @@ static void recalc_offsets(void)
     PFreal xs = PFREAL_HALF - DISPLAY_WIDTH * PFREAL_HALF;
     PFreal zo;
     PFreal xp = (DISPLAY_WIDTH * PFREAL_HALF - PFREAL_HALF +
-                pf_cfg.center_margin * PFREAL_ONE) * pf_cfg.zoom / 100;
+                pf_cfg.center_margin * PFREAL_ONE) * pf_cfg.zoom / 100
+                - pf_cfg.slide_tuck * PFREAL_ONE;
     PFreal cosr, sinr;
 
-    itilt = 70 * IANGLE_MAX / 360;      /* approx. 70 degrees tilted */
+    itilt = (pf_cfg.parallel_slides ? 55 : 70) * IANGLE_MAX / 360;
     cosr = fcos(-itilt);
     sinr = fsin(-itilt);
     zo = CAM_DIST_R * 100 / pf_cfg.zoom - CAM_DIST_R +
@@ -2947,11 +3047,41 @@ static void recalc_offsets(void)
         zo + fmuln(xs, sinr, PFREAL_SHIFT - 2, 0), PFREAL_SHIFT - 2, 0)
         / CAM_DIST;
     offsetY = DISPLAY_WIDTH / 2 * (fsin(itilt) + PFREAL_ONE / 2);
+
+    /* auto-compute side slide spacing for 3 visible slides per side.
+     * We distribute 3 visible slides across 2 intervals from offsetX
+     * to cx_last (the world-space cx where the last slide's far edge
+     * reaches the screen border).
+     */
+    {
+        PFreal cx_last;
+        if (pf_cfg.parallel_slides) {
+            /* In parallel mode, each slide is rendered at cx=0 then
+             * shifted by screen_cx = CAM_DIST*cx/(CAM_DIST_R+zo).
+             * Find the canonical far-edge position (right bitmap edge
+             * of a right slide rendered at cx=0), then invert the
+             * shift to find the cx that reaches the screen border. */
+            PFreal edge_r = fdiv(CAM_DIST * fmul(-xs, cosr),
+                CAM_DIST_R + zo + fmul(-xs, sinr));
+            PFreal target = -DISPLAY_LEFT_R - edge_r;
+            /* Invert: cx = target * (CAM_DIST_R+zo) / CAM_DIST_R
+             *            = target + target * zo / CAM_DIST_R */
+            cx_last = target
+                + fmuln(target, zo, PFREAL_SHIFT - 2, 0) / CAM_DIST;
+        } else {
+            cx_last = (-DISPLAY_LEFT_R) * 100 / pf_cfg.zoom
+                             + fmul(xs, cosr);
+        }
+        PFreal span = cx_last - offsetX;
+        if (span < PFREAL_ONE)
+            span = PFREAL_ONE;
+        auto_slide_spacing = span / 2;
+    }
 }
 
 /**
-   Fade the given color by spreading the fb_data
-   to an uint, multiply and compress the result back to a fb_data.
+   Fade the given color toward the theme background color.
+   a = 256 means fully opaque (original color), a = 0 means fully bg.
  */
 static inline pix_t fade_color(pix_t c, unsigned a)
 {
@@ -2959,25 +3089,29 @@ static inline pix_t fade_color(pix_t c, unsigned a)
     unsigned int result;
     c = swap16(c);
     a = (a + 2) & 0x1fc;
-    result = ((c & 0xf81f) * a) & 0xf81f00;
-    result |= ((c & 0x7e0) * a) & 0x7e000;
+    unsigned int inv_a = 0x100 - a;
+    result = (((c & 0xf81f) * a + pf_bg_rb * inv_a)) & 0xf81f00;
+    result |= (((c & 0x7e0) * a + pf_bg_g * inv_a)) & 0x7e000;
     result >>= 8;
     return swap16(result);
 
 #elif LCD_PIXELFORMAT == RGB565
     unsigned int result;
     a = (a + 2) & 0x1fc;
-    result = ((c & 0xf81f) * a) & 0xf81f00;
-    result |= ((c & 0x7e0) * a) & 0x7e000;
+    unsigned int inv_a = 0x100 - a;
+    result = (((c & 0xf81f) * a + pf_bg_rb * inv_a)) & 0xf81f00;
+    result |= (((c & 0x7e0) * a + pf_bg_g * inv_a)) & 0x7e000;
     result >>= 8;
     return result;
 
-#elif (LCD_PIXELFORMAT == RGB888 || LCD_PIXELFORMAT == XRGB8888) // FIXME: check this
+#elif (LCD_PIXELFORMAT == RGB888 || LCD_PIXELFORMAT == XRGB8888)
     unsigned int pixel = FB_UNPACK_SCALAR_LCD(c);
+    unsigned int bg = FB_UNPACK_SCALAR_LCD(pf_bg_color);
     unsigned int result;
     a = (a + 2) & 0x1fc;
-    result  = ((pixel & 0xff00ff) * a) & 0xff00ff00;
-    result |= ((pixel & 0x00ff00) * a) & 0x00ff0000;
+    unsigned int inv_a = 0x100 - a;
+    result  = (((pixel & 0xff00ff) * a + (bg & 0xff00ff) * inv_a)) & 0xff00ff00;
+    result |= (((pixel & 0x00ff00) * a + (bg & 0x00ff00) * inv_a)) & 0x00ff0000;
     result >>= 8;
     return FB_SCALARPACK(result);
 
@@ -3010,6 +3144,15 @@ static inline pix_t fade_color(pix_t c, unsigned a)
  * optimized by saving the numerator and denominator of the fraction, which can
  * then be incremented by (z + zo) and sin(r) respectively.
  */
+
+/* Clear only the PictureFlow viewport area (not the status bar).
+ * Uses screen->clear_viewport() which fills with bg_pattern,
+ * unlike lcd_fillrect(DRMODE_SOLID) which fills with fg_pattern. */
+static void pf_clear_display(void)
+{
+    rb->screens[SCREEN_MAIN]->clear_viewport();
+}
+
 static void render_slide(struct slide_data *slide, const int alpha)
 {
     struct dim *bmp = surface(slide->slide_index);
@@ -3028,10 +3171,10 @@ static void render_slide(struct slide_data *slide, const int alpha)
     uint8_t reftab[REFLECT_HEIGHT]; /* on stack, which is in IRAM on several targets */
 
     if (alpha == 256) { /* opaque -> copy table */
-        rb->memcpy(reftab, reflect_table, sizeof(reftab));
+        rb->memcpy(reftab, reflect_table, pf_reflect_height);
     } else {            /* precalculate faded table */
         int i, lalpha;
-        for (i = 0; i < REFLECT_HEIGHT; i++) {
+        for (i = 0; i < pf_reflect_height; i++) {
             lalpha = reflect_table[i];
             reftab[i] = (MULUQ(lalpha, alpha) + 129) >> 8;
         }
@@ -3041,35 +3184,54 @@ static void render_slide(struct slide_data *slide, const int alpha)
     PFreal sinr = fsin(slide->angle);
     PFreal zo = PFREAL_ONE * slide->distance + CAM_DIST_R * 100 / pf_cfg.zoom
         - CAM_DIST_R - fmuln(MAXSLIDE_LEFT_R, fabs(sinr), PFREAL_SHIFT - 2, 0);
+
+    /* For parallel rendering, project the slide as if cx=0 (canonical tilt),
+     * then shift horizontally to the true screen position. */
+    PFreal screen_cx = (pf_cfg.parallel_slides && slide->angle != 0)
+        ? fdiv(CAM_DIST * slide->cx, CAM_DIST_R + zo) : 0;
+    PFreal render_cx = (screen_cx != 0) ? 0 : slide->cx;
+
     PFreal xs = slide_left, xsnum, xsnumi, xsden, xsdeni;
-    PFreal xp = fdiv(CAM_DIST * (slide->cx + fmul(xs, cosr)),
+    PFreal xp = fdiv(CAM_DIST * (render_cx + fmul(xs, cosr)),
         (CAM_DIST_R + zo + fmul(xs,sinr)));
 
     /* Since we're finding the screen position of the left edge of the slide,
      * we round up.
      */
+    xp += screen_cx;
     int xi = (fmax(DISPLAY_LEFT_R, xp) - DISPLAY_LEFT_R + PFREAL_ONE - 1)
         >> PFREAL_SHIFT;
     xp = DISPLAY_LEFT_R + xi * PFREAL_ONE;
     if (xi >= w) {
         return;
     }
-    xsnum = CAM_DIST * (slide->cx - xp) - fmuln(xp, zo, PFREAL_SHIFT - 2, 0);
-    xsden = fmuln(xp, sinr, PFREAL_SHIFT - 2, 0) - CAM_DIST * cosr;
+    PFreal xp_local = xp - screen_cx;
+    xsnum = CAM_DIST * (render_cx - xp_local)
+        - fmuln(xp_local, zo, PFREAL_SHIFT - 2, 0);
+    xsden = fmuln(xp_local, sinr, PFREAL_SHIFT - 2, 0) - CAM_DIST * cosr;
     xs = fdiv(xsnum, xsden);
 
     xsnumi = -CAM_DIST_R - zo;
     xsdeni = sinr;
     int x;
     int dy = PFREAL_ONE;
+    const int half_height = pf_half_height;
+    const int lower_half = pf_lower_half;
+    const int display_offs = pf_display_offs;
+    const int reflect_height = pf_reflect_height;
+    const bool perspective = (zo != 0 || slide->angle != 0);
+    const int p_start_upper = (sh - 1 - display_offs) * PFREAL_ONE;
+    const int p_start_lower = (sh - display_offs) * PFREAL_ONE;
+    const int plim2_max = MIN(sh + reflect_height, sh * 2) * PFREAL_ONE;
     for (x = xi; x < w; x++) {
-        int column = (xs - slide_left) / PFREAL_ONE;
+        int column = (unsigned)(xs - slide_left) >> PFREAL_SHIFT;
         if (column >= sw)
             break;
-        if (zo || slide->angle)
+        if (perspective) {
             dy = (CAM_DIST_R + zo + fmul(xs, sinr)) / CAM_DIST;
+        }
 
-        const pix_t *ptr = &src[column * bmp->height];
+        const pix_t *ptr = &src[column * sh];
 
 #if LCD_STRIDEFORMAT == VERTICAL_STRIDE
 #define PIXELSTEP_Y   1
@@ -3079,9 +3241,9 @@ static void render_slide(struct slide_data *slide, const int alpha)
 #define LCDADDR(x, y) (&buffer[(y)*BUFFER_WIDTH + (x)])
 #endif
 
-        int p = (bmp->height-1-DISPLAY_OFFS) * PFREAL_ONE;
-        int plim = MAX(0, p - (LCD_HEIGHT/2-1) * dy);
-        pix_t *pixel = LCDADDR(x, (LCD_HEIGHT/2)-1 );
+        int p = p_start_upper;
+        int plim = MAX(0, p - (half_height-1) * dy);
+        pix_t *pixel = LCDADDR(x, half_height-1 );
 
         if (alpha == 256) {
             while (p >= plim) {
@@ -3096,11 +3258,10 @@ static void render_slide(struct slide_data *slide, const int alpha)
                 pixel -= PIXELSTEP_Y;
             }
         }
-        p = (bmp->height-DISPLAY_OFFS) * PFREAL_ONE;
-        plim = MIN(sh * PFREAL_ONE, p + (LCD_HEIGHT/2) * dy);
-        int plim2 = MIN(MIN(sh + REFLECT_HEIGHT, sh * 2) * PFREAL_ONE,
-                        p + (LCD_HEIGHT/2) * dy);
-        pixel = LCDADDR(x, (LCD_HEIGHT/2) );
+        p = p_start_lower;
+        plim = MIN(sh * PFREAL_ONE, p + lower_half * dy);
+        int plim2 = MIN(plim2_max, p + lower_half * dy);
+        pixel = LCDADDR(x, half_height );
 
         if (alpha == 256) {
             while (p < plim) {
@@ -3123,7 +3284,7 @@ static void render_slide(struct slide_data *slide, const int alpha)
             pixel += PIXELSTEP_Y;
         }
 
-        if (zo || slide->angle)
+        if (perspective)
         {
             xsnum += xsnumi;
             xsden += xsdeni;
@@ -3328,9 +3489,13 @@ static void show_next_slide(void)
 */
 static void render_all_slides(void)
 {
+#ifdef HAVE_LCD_COLOR
+    mylcd_set_background(pf_bg_color);
+#else
     mylcd_set_background(G_BRIGHT(0));
+#endif
     /* TODO: Optimizes this by e.g. invalidating rects */
-    mylcd_clear_display();
+    pf_clear_display();
 
     int nleft = pf_cfg.num_slides;
     int nright = pf_cfg.num_slides;
@@ -3354,17 +3519,45 @@ static void render_all_slides(void)
     } else {
         /* the first and last slide must fade in/fade out */
 
+        /* Check if the transitioning slide will be re-rendered later for
+         * z-order correction.  If so, skip its first render to avoid
+         * drawing an entire slide that gets immediately overwritten. */
+        bool skip_right_0 = false, skip_left_0 = false;
+        if (step > 0) {
+            PFreal cd = (center_slide.cx >= 0) ? center_slide.cx
+                                                : -center_slide.cx;
+            PFreal td = (right_slides[0].cx >= 0) ? right_slides[0].cx
+                                                    : -right_slides[0].cx;
+            skip_right_0 = (td < cd);
+        } else if (step < 0) {
+            PFreal cd = (center_slide.cx >= 0) ? center_slide.cx
+                                                : -center_slide.cx;
+            PFreal td = (left_slides[0].cx >= 0) ? left_slides[0].cx
+                                                   : -left_slides[0].cx;
+            skip_left_0 = (td < cd);
+        }
+
         /* if step<0 and nleft==1, left_slides[0] is fading in  */
         alpha = ((step > 0) ? 0 : ((nleft == 1) ? 256 : 128)) - fade / 2;
         for (index = nleft - 1; index >= 0; index--) {
+            if (index == 0 && skip_left_0) {
+                alpha += 128;
+                if (alpha > 256) alpha = 256;
+                continue;
+            }
             if (alpha > 0)
                 render_slide(&left_slides[index], alpha);
             alpha += 128;
             if (alpha > 256) alpha = 256;
         }
         /* if step>0 and nright==1, right_slides[0] is fading in  */
-        alpha = ((step > 0) ? ((nright == 1) ? 128 : 0) : -128) + fade / 2;
+        alpha = ((step > 0) ? ((nright == 1) ? 128 : 0) : -64) + fade / 2;
         for (index = nright - 1; index >= 0; index--) {
+            if (index == 0 && skip_right_0) {
+                alpha += 128;
+                if (alpha > 256) alpha = 256;
+                continue;
+            }
             if (alpha > 0)
                 render_slide(&right_slides[index], alpha);
             alpha += 128;
@@ -3375,6 +3568,22 @@ static void render_all_slides(void)
     if (step != 0 && pf_cfg.num_slides <= 2) /* fading out center slide */
         alpha = (step > 0) ? 256 - fade / 2 : 128 + fade / 2;
     render_slide(&center_slide, alpha);
+    /* During animation, re-render the transitioning slide on top once
+     * it is closer to screen center than the outgoing center slide.
+     * This gives a smooth z-order transition instead of a sudden flip. */
+    if (step > 0) {
+        PFreal cd = (center_slide.cx >= 0) ? center_slide.cx : -center_slide.cx;
+        PFreal td = (right_slides[0].cx >= 0) ? right_slides[0].cx
+                                               : -right_slides[0].cx;
+        if (td < cd)
+            render_slide(&right_slides[0], 256);
+    } else if (step < 0) {
+        PFreal cd = (center_slide.cx >= 0) ? center_slide.cx : -center_slide.cx;
+        PFreal td = (left_slides[0].cx >= 0) ? left_slides[0].cx
+                                              : -left_slides[0].cx;
+        if (td < cd)
+            render_slide(&left_slides[0], 256);
+    }
 }
 
 
@@ -3400,7 +3609,9 @@ static void update_scroll_animation(void)
         fi = fmin(fi, max);
 
         int ia = IANGLE_MAX * (fi - max / 2) / (max * 2);
-        speed = 512 + 16384 * (PFREAL_ONE + fsin(ia)) / PFREAL_ONE;
+        int accel = 16384 * (PFREAL_ONE + fsin(ia)) / PFREAL_ONE;
+        speed = 512 * pf_cfg.transition_speed / 100
+              + accel * pf_cfg.scroll_speed / 100;
     }
 
     slide_frame += speed * step;
@@ -3420,6 +3631,14 @@ static void update_scroll_animation(void)
         center_index = index;
         rb->queue_post(&thread_q, EV_WAKEUP, 0);
         slide_frame = index << 16;
+        /* Recalculate pos/tick/ftick/fade for the snapped slide_frame.
+         * Without this, stale pre-snap values cause a one-frame alpha
+         * discontinuity (flash) at boundary crossings. */
+        pos = (step < 0) ? 65535 : 0;
+        neg = 65536 - pos;
+        tick = (step < 0) ? neg : pos;
+        ftick = (tick * PFREAL_ONE) >> 16;
+        fade = pos / 256;
         center_slide.slide_index = center_index;
         for (i = 0; i < pf_cfg.num_slides; i++)
             left_slides[i].slide_index = center_index - 1 - i;
@@ -3444,8 +3663,8 @@ static void update_scroll_animation(void)
         struct slide_data *si = &left_slides[i];
         si->angle = itilt;
         si->cx =
-            -(offsetX + pf_cfg.slide_spacing * i * PFREAL_ONE + step
-                        * pf_cfg.slide_spacing * ftick);
+            -(offsetX + auto_slide_spacing * i + step
+                        * fmul(auto_slide_spacing, ftick));
         si->cy = offsetY;
     }
 
@@ -3453,8 +3672,8 @@ static void update_scroll_animation(void)
         struct slide_data *si = &right_slides[i];
         si->angle = -itilt;
         si->cx =
-            offsetX + pf_cfg.slide_spacing * i * PFREAL_ONE - step
-                      * pf_cfg.slide_spacing * ftick;
+            offsetX + auto_slide_spacing * i - step
+                      * fmul(auto_slide_spacing, ftick);
         si->cy = offsetY;
     }
 
@@ -3522,62 +3741,53 @@ static int display_settings_menu(void)
     int old_val;
 
     MENUITEM_STRINGLIST(display_menu, ID2P(LANG_DISPLAY), NULL,
-                        ID2P(LANG_BACKLIGHT),
                         ID2P(LANG_DISPLAY_FPS),
-                        ID2P(LANG_SPACING),
                         ID2P(LANG_CENTRE_MARGIN),
                         ID2P(LANG_NUMBER_OF_SLIDES),
                         ID2P(LANG_ZOOM),
-                        ID2P(LANG_RESIZE_COVERS));
-
-    static const struct opt_items backlight_options[] = {
-        { STR(LANG_ALWAYS_ON) },
-        { STR(LANG_NORMAL) }};
+                        ID2P(LANG_SPACING),
+                        ID2P(LANG_RESIZE_COVERS),
+                        "Show Statusbar",
+                        "Scroll Speed %",
+                        "Transition Speed %",
+                        "Text Crossfade");
 
     do {
         selection=rb->do_menu(&display_menu, &selection, NULL, false);
         switch(selection) {
             case 0:
-                rb->set_option(rb->str(LANG_BACKLIGHT),
-                        &pf_cfg.backlight_mode, RB_INT, backlight_options, 2, NULL);
-                if(pf_cfg.backlight_mode == 0)
-                    backlight_ignore_timeout();
-                else
-                    backlight_use_settings();
-                break;
-            case 1:
                 old_val = pf_cfg.show_fps;
                 rb->set_bool(rb->str(LANG_DISPLAY_FPS), &pf_cfg.show_fps);
                 if (old_val != pf_cfg.show_fps)
                     reset_track_list();
                 break;
-            case 2:
-                old_val = pf_cfg.slide_spacing;
-                rb->set_int(rb->str(LANG_SPACING), "", 1,
-                            &pf_cfg.slide_spacing,
-                            NULL, 1, 0, 100, NULL );
-                adjust_album_display_for_setting(old_val, pf_cfg.slide_spacing);
-                break;
-            case 3:
+            case 1:
                 old_val = pf_cfg.center_margin;
                 rb->set_int(rb->str(LANG_CENTRE_MARGIN), "", 1,
                             &pf_cfg.center_margin,
                             NULL, 1, 0, 80, NULL );
                 adjust_album_display_for_setting(old_val, pf_cfg.center_margin);
                 break;
-            case 4:
-                old_val = pf_cfg.num_slides;
+            case 2:
+                old_val = pf_cfg.slide_tuck;
                 rb->set_int(rb->str(LANG_NUMBER_OF_SLIDES), "", 1,
-                        &pf_cfg.num_slides, NULL, 1, 1, MAX_SLIDES_COUNT, NULL );
-                adjust_album_display_for_setting(old_val, pf_cfg.num_slides);
+                        &pf_cfg.slide_tuck, NULL, 1, 0,
+                        DISPLAY_WIDTH / 2, NULL );
+                adjust_album_display_for_setting(old_val, pf_cfg.slide_tuck);
                 break;
-            case 5:
+            case 3:
                 old_val = pf_cfg.zoom;
                 rb->set_int(rb->str(LANG_ZOOM), "", 1, &pf_cfg.zoom,
                             NULL, 1, 10, 300, NULL );
                 adjust_album_display_for_setting(old_val, pf_cfg.zoom);
                 break;
-            case 6:
+            case 4:
+                old_val = pf_cfg.parallel_slides;
+                rb->set_bool(rb->str(LANG_SPACING), &pf_cfg.parallel_slides);
+                adjust_album_display_for_setting(old_val,
+                                                 pf_cfg.parallel_slides);
+                break;
+            case 5:
                 old_val = pf_cfg.resize;
                 rb->set_bool(rb->str(LANG_RESIZE_COVERS), &pf_cfg.resize);
                 if (old_val == pf_cfg.resize) /* changed? */
@@ -3594,6 +3804,29 @@ static int display_settings_menu(void)
                 configfile_save(CONFIG_FILE, config,
                                 CONFIG_NUM_ITEMS, CONFIG_VERSION);
                 return -3; /* re-init */
+            case 6:
+                old_val = pf_cfg.show_statusbar;
+                rb->set_bool("Show Statusbar", &pf_cfg.show_statusbar);
+                if (old_val != pf_cfg.show_statusbar)
+                {
+                    configfile_save(CONFIG_FILE, config,
+                                    CONFIG_NUM_ITEMS, CONFIG_VERSION);
+                    return -3; /* re-init to recompute layout */
+                }
+                break;
+            case 7:
+                rb->set_int("Scroll Speed %", "", 1,
+                            &pf_cfg.scroll_speed,
+                            NULL, 25, 100, 400, NULL );
+                break;
+            case 8:
+                rb->set_int("Transition Speed %", "", 1,
+                            &pf_cfg.transition_speed,
+                            NULL, 25, 100, 400, NULL );
+                break;
+            case 9:
+                rb->set_bool("Text Crossfade", &pf_cfg.text_crossfade);
+                break;
             case MENU_ATTACHED_USB:
                 return PLUGIN_USB_CONNECTED;
         }
@@ -3618,9 +3851,9 @@ static int settings_menu(void)
                         ID2P(LANG_DISPLAY));
 
     static const struct opt_items album_name_options[] = {
-        { STR(LANG_HIDE_INFO) },
-        { STR(LANG_SHOW_AT_THE_BOTTOM_NEW) },
-        { STR(LANG_SHOW_AT_THE_TOP_NEW) },
+        { STR(LANG_HIDE_ALBUM_TITLE) },
+        { STR(LANG_SHOW_AT_THE_BOTTOM) },
+        { STR(LANG_SHOW_AT_THE_TOP) },
         { STR(LANG_SHOW_ALL_AT_THE_TOP) },
         { STR(LANG_SHOW_ALL_AT_THE_BOTTOM) },
     };
@@ -3693,7 +3926,11 @@ static int main_menu(void)
     int result, curr_album, old_val;
 
 #if LCD_DEPTH > 1
+#ifdef HAVE_LCD_COLOR
+    rb->lcd_set_foreground(pf_fg_color);
+#else
     rb->lcd_set_foreground(N_BRIGHT(255));
+#endif
 #endif
 
     MENUITEM_STRINGLIST(main_menu, "PictureFlow", NULL,
@@ -3797,13 +4034,15 @@ static int main_menu(void)
     }
 }
 
-#define ZOOMIN_FRAME_COUNT  19
-#define ZOOMIN_FRAME_DIST   -5
-#define ZOOMIN_FRAME_ANGLE  1
-#define ZOOMIN_FRAME_FADE   13
+/* iPod Classic 6G custom: faster cover animation (~2x)
+   Same total movement, half the frames */
+#define ZOOMIN_FRAME_COUNT  10
+#define ZOOMIN_FRAME_DIST   -10
+#define ZOOMIN_FRAME_ANGLE  2
+#define ZOOMIN_FRAME_FADE   25
 
-#define ROTATE_FRAME_COUNT  15
-#define ROTATE_FRAME_ANGLE  16
+#define ROTATE_FRAME_COUNT  8
+#define ROTATE_FRAME_ANGLE  30
 
 #define KEYFRAME_COUNT ZOOMIN_FRAME_COUNT + ROTATE_FRAME_COUNT
 
@@ -3886,28 +4125,24 @@ static void reverse_animation(void)
 }
 
 /**
-   Draw a blue gradient at y with height h
+   Draw the selection highlight bar at y with height h
  */
 static inline void draw_gradient(int y, int h)
 {
+#ifdef HAVE_LCD_COLOR
+    mylcd_set_foreground(pf_lss_color);
+    mylcd_fillrect(0, y, LCD_WIDTH, h);
+#else
     int r, inc, c;
     inc = (100 << 8) / h;
     c = 0;
-    pf_tracks.sel_pulse = (pf_tracks.sel_pulse+1) % 10;
-    int c2 = pf_tracks.sel_pulse - 5;
-    for (r=0; r<h; r++) {
-#ifdef HAVE_LCD_COLOR
-        mylcd_set_foreground(G_PIX(c2+80-(c >> 9), c2+100-(c >> 9),
-                                           c2+250-(c >> 8)));
-#else
-        mylcd_set_foreground(G_BRIGHT(c2+160-(c >> 8)));
-#endif
-        mylcd_hline(0, LCD_WIDTH, r+y);
-        if ( r > h/2 )
-            c-=inc;
-        else
-            c+=inc;
+    for (r = 0; r < h; r++) {
+        int bright = (r > h/2) ? (h - r) : r;
+        bright = bright * 255 / (h/2);
+        mylcd_set_foreground(G_BRIGHT(160 * bright / 255));
+        mylcd_hline(0, LCD_WIDTH, r + y);
     }
+#endif
 }
 
 
@@ -3919,25 +4154,25 @@ static void track_list_yh(int char_height)
     {
         case ALBUM_NAME_HIDE:
             pf_tracks.list_y = (needs_space ? char_height : 0);
-            pf_tracks.list_h = LCD_HEIGHT - pf_tracks.list_y;
+            pf_tracks.list_h = pf_height - pf_tracks.list_y;
             break;
         case ALBUM_NAME_BOTTOM:
             pf_tracks.list_y = (needs_space ? char_height : 0);
-            pf_tracks.list_h = LCD_HEIGHT - pf_tracks.list_y - (char_height * 3);
+            pf_tracks.list_h = pf_height - pf_tracks.list_y - (char_height * 3);
             break;
         case ALBUM_AND_ARTIST_TOP:
             pf_tracks.list_y = char_height * 3;
-            pf_tracks.list_h = LCD_HEIGHT - pf_tracks.list_y -
+            pf_tracks.list_h = pf_height - pf_tracks.list_y -
                            (needs_space ? char_height : 0);
             break;
         case ALBUM_AND_ARTIST_BOTTOM:
             pf_tracks.list_y = (needs_space ? char_height : 0);
-            pf_tracks.list_h = LCD_HEIGHT - pf_tracks.list_y - (char_height * 3);
+            pf_tracks.list_h = pf_height - pf_tracks.list_y - (char_height * 3);
             break;
         case ALBUM_NAME_TOP:
         default:
             pf_tracks.list_y = char_height * 3;
-            pf_tracks.list_h = LCD_HEIGHT - pf_tracks.list_y -
+            pf_tracks.list_h = pf_height - pf_tracks.list_y -
                            (needs_space ? char_height : 0);
             break;
     }
@@ -3972,14 +4207,18 @@ static void draw_album_text(void);
 static void show_track_list_loading(void)
 {
     int x = (LCD_WIDTH - mylcd_getstringsize(rb->str(LANG_WAIT), NULL, NULL)) / 2;
+#ifdef HAVE_LCD_COLOR
+    mylcd_set_foreground(pf_fg_color);
+#else
     mylcd_set_foreground(G_BRIGHT(255));
+#endif
     int char_height = rb->screens[SCREEN_MAIN]->getcharheight();
     track_list_yh(char_height);
     mylcd_putsxy(x, pf_tracks.list_y + (pf_tracks.list_h  - char_height) / 2,
                  rb->str(LANG_WAIT));
     draw_album_text();
     mylcd_update();
-    mylcd_clear_display();
+    pf_clear_display();
 }
 
 /**
@@ -3987,11 +4226,13 @@ static void show_track_list_loading(void)
  */
 static bool show_track_list(void)
 {
-    mylcd_clear_display();
+    pf_clear_display();
     if ( center_slide.slide_index != pf_tracks.cur_idx ) {
+        if (!rb->storage_get_ssd_mode()
 #ifdef HAVE_TC_RAMCACHE
-        if (!rb->tagcache_is_in_ram())
+            && !rb->tagcache_is_in_ram()
 #endif
+        )
             show_track_list_loading();
         create_track_index(center_slide.slide_index);
         if (pf_tracks.count == 0)
@@ -4020,15 +4261,23 @@ static bool show_track_list(void)
             }
             draw_gradient(titletxt_y, titletxt_h);
             titletxt_x = get_scroll_line_offset(PF_SCROLL_TRACK);
-            color = 255;
+#ifdef HAVE_LCD_COLOR
+            mylcd_set_foreground(pf_lst_color);
+#else
+            mylcd_set_foreground(G_BRIGHT(255));
+#endif
         }
         else {
             titletxt_w = mylcd_getstringsize(trackname, NULL, NULL);
             titletxt_x = (LCD_WIDTH-titletxt_w)/2;
             fade = (abs(pf_tracks.sel - track_i) * 200 / pf_tracks.count);
             color = 250 - fade;
+#ifdef HAVE_LCD_COLOR
+            mylcd_set_foreground(pf_color_mix(color));
+#else
+            mylcd_set_foreground(G_BRIGHT(color));
+#endif
         }
-        mylcd_set_foreground(G_BRIGHT(color));
         mylcd_putsxy(titletxt_x,titletxt_y,trackname);
         titletxt_y += titletxt_h;
     }
@@ -4193,9 +4442,11 @@ static bool track_list_ready(void)
 {
     if (pf_state != pf_show_tracks)
     {
+        if (!rb->storage_get_ssd_mode()
 #ifdef HAVE_TC_RAMCACHE
-        if (!rb->tagcache_is_in_ram())
+            && !rb->tagcache_is_in_ram()
 #endif
+        )
             rb->splash(0, ID2P(LANG_WAIT));
         create_track_index(center_slide.slide_index);
         if (pf_tracks.count == 0)
@@ -4243,13 +4494,15 @@ static void context_menu_cleanup(void)
 {
     FOR_NB_SCREENS(i)
         rb->viewportmanager_theme_undo(i, false);
+    rb->sb_set_persistent_title("Cover Flow", Icon_NOICON, SCREEN_MAIN);
+    rb->lcd_set_viewport(&pf_vp);
     if (pf_state != pf_show_tracks)
         free_borrowed_tracks();
 #ifdef USEGSLIB
     grey_show(true);
 #elif LCD_DEPTH > 1 && defined(HAVE_LCD_COLOR)
-    rb->lcd_set_background(N_BRIGHT(0));
-    rb->lcd_set_foreground(N_BRIGHT(255));
+    rb->lcd_set_background(pf_bg_color);
+    rb->lcd_set_foreground(pf_fg_color);
 #endif
     mylcd_set_drawmode(DRMODE_FG);
 }
@@ -4349,7 +4602,7 @@ static bool start_playback(bool return_to_WPS)
             return false;
         }
         if (shuffle)
-            start_index = rb->playlist_shuffle(0, pf_tracks.sel);
+            start_index = rb->playlist_shuffle(*rb->current_tick, pf_tracks.sel);
     }
     rb->playlist_start(start_index, 0, 0);
     old_shuffle = shuffle;
@@ -4387,11 +4640,17 @@ static void draw_album_text(void)
         if (step < 0) c = 255-c;
         if (c > 128 ) { /* half way to next slide .. still not perfect! */
             albumtxt_index = center_index+step;
-            c = (c-128)*2;
+            if (pf_cfg.text_crossfade)
+                c = (c-128)*2;
+            else
+                c = 255;
         }
         else {
             albumtxt_index = center_index;
-            c = (128-c)*2;
+            if (pf_cfg.text_crossfade)
+                c = (128-c)*2;
+            else
+                c = 255;
         }
     }
     else {
@@ -4407,7 +4666,11 @@ static void draw_album_text(void)
     } else
         rb->snprintf(album_and_year, sizeof(album_and_year), "%s", albumtxt);
 
+#ifdef HAVE_LCD_COLOR
+    mylcd_set_foreground(pf_color_mix(c));
+#else
     mylcd_set_foreground(G_BRIGHT(c));
+#endif
     if (albumtxt_index != prev_albumtxt_index || pf_cfg.show_year != prev_show_year) {
         set_scroll_line(album_and_year, PF_SCROLL_ALBUM);
         prev_albumtxt_index = albumtxt_index;
@@ -4421,7 +4684,9 @@ static void draw_album_text(void)
             break;
         case ALBUM_NAME_BOTTOM:
         case ALBUM_AND_ARTIST_BOTTOM:
-            albumtxt_y = (LCD_HEIGHT - (char_height * 5 / 2));
+            albumtxt_y = pf_cfg.show_statusbar
+                ? (pf_height - (char_height * 9 / 4))
+                : (pf_height - (char_height * 5 / 2));
             break;
         case ALBUM_NAME_TOP:
         default:
@@ -4435,13 +4700,15 @@ static void draw_album_text(void)
     if ((pf_cfg.show_album_name == ALBUM_AND_ARTIST_TOP)
         || (pf_cfg.show_album_name == ALBUM_AND_ARTIST_BOTTOM)){
 
-        if (album_idx != (int) pf_idx.album_untagged_idx)
+        /* iPod Classic 6G custom: compare seek (unique per album) instead
+           of name_idx (byte offset that can collide after sort/dedup) */
+        if (pf_idx.album_index[albumtxt_index].seek != pf_idx.album_untagged_seek)
             mylcd_putsxy(albumtxt_x, albumtxt_y, album_and_year);
 
         artisttxt = get_album_artist(albumtxt_index);
         set_scroll_line(artisttxt, PF_SCROLL_ARTIST);
         artisttxt_x = get_scroll_line_offset(PF_SCROLL_ARTIST);
-        int y_offset = char_height + char_height/2;
+        int y_offset = char_height * 3 / 4;
         mylcd_putsxy(artisttxt_x, albumtxt_y + y_offset, artisttxt);
     } else {
         mylcd_putsxy(albumtxt_x, albumtxt_y, album_and_year);
@@ -4477,8 +4744,40 @@ static bool init(void)
     config_set_defaults(&pf_cfg); /* must appear before configfile_save */
     configfile_load(CONFIG_FILE, config, CONFIG_NUM_ITEMS, CONFIG_VERSION);
 
-    if(pf_cfg.backlight_mode == 0)
-        backlight_ignore_timeout(); /* restore in cleanup */
+    /* Compute viewport and rendering layout based on show_statusbar setting */
+    if (pf_cfg.show_statusbar)
+    {
+        FOR_NB_SCREENS(i)
+            rb->viewportmanager_theme_enable(i, true, NULL);
+        rb->viewport_set_defaults(&pf_vp, SCREEN_MAIN);
+        FOR_NB_SCREENS(i)
+            rb->viewportmanager_theme_undo(i, false);
+    }
+    else
+    {
+        rb->viewport_set_fullscreen(&pf_vp, SCREEN_MAIN);
+    }
+    pf_vp.buffer = &pf_framebuffer;
+    pf_vp.x = 0;
+    pf_vp.width = LCD_WIDTH;
+
+    pf_vp_y = pf_cfg.show_statusbar ? pf_vp.y : 0;
+    pf_height = pf_cfg.show_statusbar ? pf_vp.height : LCD_HEIGHT;
+    pf_half_height = LCD_HEIGHT / 2 - pf_vp_y + (pf_cfg.show_statusbar ? 8 : 0);
+    pf_lower_half = pf_height - pf_half_height;
+    pf_reflect_height = REFLECT_HEIGHT;
+    pf_display_offs = DISPLAY_OFFS;
+
+#ifdef HAVE_LCD_COLOR
+    pf_bg_color = (pix_t)rb->global_settings->bg_color;
+    pf_fg_color = (pix_t)rb->global_settings->fg_color;
+    pf_lss_color = (pix_t)rb->global_settings->lss_color;
+    pf_lse_color = (pix_t)rb->global_settings->lse_color;
+    pf_lst_color = (pix_t)rb->global_settings->lst_color;
+    pf_bg_rb = pf_bg_color & 0xf81f;
+    pf_bg_g  = pf_bg_color & 0x7e0;
+#endif
+
 
 #if PF_PLAYBACK_CAPABLE
     buf = rb->plugin_get_buffer(&buf_size);
@@ -4554,8 +4853,10 @@ static bool init(void)
 
     number_of_slides = pf_idx.album_ct;
 
-    size_t aa_bufsz = ALIGN_DOWN(pf_idx.buf_sz / 4, sizeof(long));
-    if (aa_bufsz < DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(pix_t))
+    size_t aa_min = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(pix_t);
+    size_t aa_bufsz = ALIGN_DOWN(MAX(aa_min * 3, pf_idx.buf_sz / 8),
+                                 sizeof(long));
+    if (aa_bufsz < aa_min)
     {
         error_wait("Not enough memory for album art cache");
         return false;
@@ -4584,8 +4885,6 @@ static bool init(void)
         config_save(CACHE_REBUILD, false);
         error_wait("Could not create album art cache");
     }
-    else if(aa_cache.inspected < pf_idx.album_ct)
-        rb->splash(HZ * 2, "Updating album art cache in background");
 
     if (pf_cfg.cache_version != CACHE_VERSION)
         config_save(CACHE_VERSION, pf_cfg.update_albumart);
@@ -4603,6 +4902,7 @@ static bool init(void)
     }
 
     buffer = LCD_BUF;
+    buffer += pf_vp_y * BUFFER_WIDTH; /* offset below status bar */
 
     pf_state = pf_idle;
 
@@ -4690,11 +4990,26 @@ static int pictureflow_main(void)
     bool instant_update;
 
     while (true) {
+        /* Render Cover Flow after the status bar updates the framebuffer. */
+        instant_update = (pf_state == pf_scrolling ||
+                          pf_state == pf_cover_in ||
+                          pf_state == pf_cover_out);
+
+
+        button = rb->get_custom_action(CONTEXT_PLUGIN
+#ifndef USE_CORE_PREVNEXT
+            |(pf_state == pf_show_tracks ? 1 : 0)
+#endif
+            ,instant_update ? 0 : HZ/16,
+            get_context_map);
+
+
+        /* SBS rendering in get_custom_action resets the viewport to default.
+         * Restore ours so LCD API calls use the correct coordinates. */
+        rb->lcd_set_viewport(&pf_vp);
+
         current_update = *rb->current_tick;
         frames++;
-
-        /* Initial rendering */
-        instant_update = false;
 
         update_scroll_lines();
 
@@ -4703,18 +5018,26 @@ static int pictureflow_main(void)
             case pf_scrolling:
                 update_scroll_animation();
                 render_all_slides();
-                instant_update = true;
                 break;
             case pf_cover_in:
                 update_cover_in_animation();
                 render_all_slides();
-                instant_update = true;
+                if (center_slide.slide_index != pf_tracks.cur_idx
+                    && (rb->storage_get_ssd_mode()
+#ifdef HAVE_TC_RAMCACHE
+                        || rb->tagcache_is_in_ram()
+#endif
+                    ))
+                {
+                    create_track_index(center_slide.slide_index);
+                    if (pf_tracks.count > 0)
+                        reset_track_list();
+                }
                 break;
             case pf_cover_out:
                 show_tracks_while_browsing = false;
                 update_cover_out_animation();
                 render_all_slides();
-                instant_update = true;
                 break;
             case pf_show_tracks:
                 if (!show_track_list() && !prompt_reinit())
@@ -4756,7 +5079,7 @@ static int pictureflow_main(void)
 
             if (pf_cfg.show_album_name == ALBUM_NAME_TOP ||
                 pf_cfg.show_album_name == ALBUM_AND_ARTIST_TOP)
-                fpstxt_y = LCD_HEIGHT -
+                fpstxt_y = pf_height -
                            rb->screens[SCREEN_MAIN]->getcharheight();
             else
                 fpstxt_y = 0;
@@ -4766,20 +5089,18 @@ static int pictureflow_main(void)
 
 
         /* Copy offscreen buffer to LCD and give time to other threads */
-        if (is_initial_slide == false)
+        if (!is_initial_slide)
             mylcd_update();
         rb->yield();
 
-        /*/ Handle buttons */
-        button = rb->get_custom_action(CONTEXT_PLUGIN
-#ifndef USE_CORE_PREVNEXT
-            |(pf_state == pf_show_tracks ? 1 : 0)
-#endif
-            ,instant_update ? 0 : HZ/16,
-            get_context_map);
-
         switch (button) {
         case PF_QUIT:
+            if (pf_state == pf_show_tracks)
+            {
+                pf_state = pf_cover_out;
+                free_borrowed_tracks();
+                break;
+            }
             return PLUGIN_OK;
         case PF_WPS:
             return PLUGIN_GOTO_WPS;
@@ -4796,9 +5117,15 @@ static int pictureflow_main(void)
             else if (pf_state == pf_cover_out)
                 skip_animation_to_idle_state();
             else if (pf_state == pf_idle || pf_state == pf_scrolling)
-                return PLUGIN_OK;
+                return PLUGIN_GOTO_WPS;
             break;
         case PF_MENU:
+            if (pf_state == pf_show_tracks)
+            {
+                pf_state = pf_cover_out;
+                free_borrowed_tracks();
+                break;
+            }
 #ifdef USEGSLIB
             grey_show(false);
 #endif
@@ -4807,11 +5134,27 @@ static int pictureflow_main(void)
             ret = main_menu();
             FOR_NB_SCREENS(i)
                 rb->viewportmanager_theme_undo(i, false);
+            rb->sb_set_persistent_title("Cover Flow", Icon_NOICON, SCREEN_MAIN);
+            rb->lcd_set_viewport(&pf_vp);
 
             if (ret == -3)
             {
+                /* Pop the main loop's theme push before reinit */
+                FOR_NB_SCREENS(i)
+                    rb->viewportmanager_theme_undo(i, false);
                 if (!reinit())
                     return PLUGIN_OK;
+                /* Push with new setting (reinit loaded new config) */
+                FOR_NB_SCREENS(i)
+                    rb->viewportmanager_theme_enable(i,
+                        pf_cfg.show_statusbar, NULL);
+                rb->sb_set_persistent_title("Cover Flow", Icon_NOICON, SCREEN_MAIN);
+                rb->lcd_set_viewport(&pf_vp);
+#ifdef HAVE_LCD_COLOR
+                mylcd_set_background(pf_bg_color);
+                mylcd_set_foreground(pf_fg_color);
+#endif
+                mylcd_set_drawmode(DRMODE_FG);
             }
             else if (ret == -2)
                 return PLUGIN_GOTO_WPS;
@@ -4971,6 +5314,12 @@ enum plugin_status plugin_start(const void *parameter)
     struct viewport *vp_main = rb->lcd_set_viewport(NULL);
     lcd_fb = vp_main->buffer->fb_ptr;
 
+    /* Create a framebuffer wrapper identical to the default but at a different
+     * address. lcd_clear_viewport() checks (vp->buffer == &lcd_framebuffer_default)
+     * by pointer — with our own struct, it fills with bg_pattern instead of
+     * copying from the theme backdrop buffer. */
+    pf_framebuffer = *vp_main->buffer;
+
     int ret;
     const char *file = parameter;
     bool file_id3 = (parameter && (((char *) parameter)[0] == '/'));
@@ -4984,11 +5333,26 @@ enum plugin_status plugin_start(const void *parameter)
 
     if (init())
     {
+        /* Push theme state for main loop */
+        FOR_NB_SCREENS(i)
+            rb->viewportmanager_theme_enable(i, pf_cfg.show_statusbar, NULL);
+        rb->sb_set_persistent_title("Cover Flow", Icon_NOICON, SCREEN_MAIN);
+        rb->lcd_set_viewport(&pf_vp);
+#ifdef HAVE_LCD_COLOR
+        mylcd_set_background(pf_bg_color);
+        mylcd_set_foreground(pf_fg_color);
+#endif
+        mylcd_set_drawmode(DRMODE_FG);
+
         set_initial_slide(file_id3 ? file : NULL); /* may call splash */
 #ifdef USEGSLIB
         grey_show(true);
 #endif
         ret = pictureflow_main();
+
+        rb->lcd_set_viewport(NULL);
+        FOR_NB_SCREENS(i)
+            rb->viewportmanager_theme_undo(i, false);
     }
     else
         ret = PLUGIN_OK;

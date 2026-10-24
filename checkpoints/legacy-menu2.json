@@ -1,0 +1,9 @@
+{
+  "checkpoint": "legacy-menu2",
+  "description": "Preserve legacy Update Now menu and storage integration",
+  "source_status": "preserved-source-export",
+  "note": "Cover Flow was removed from the preferred menu; Update Now updates the database. Generic storage behavior is not a measured power claim.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}

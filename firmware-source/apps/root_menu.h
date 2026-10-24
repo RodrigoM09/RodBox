@@ -65,7 +65,8 @@ enum {
     GO_TO_SYSTEM_SCREEN,
     GO_TO_SHORTCUTMENU,
     GO_TO_MUSIC_FOLDER,
-    GO_TO_AUDIOBOOKS_FOLDER
+    GO_TO_AUDIOBOOKS_FOLDER,
+    GO_TO_PICTUREFLOW
 };
 #ifndef PLUGIN
 extern struct menu_item_ex root_menu_;
