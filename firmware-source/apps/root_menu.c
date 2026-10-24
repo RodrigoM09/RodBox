@@ -128,6 +128,13 @@ static int browser(void* param)
 
     switch ((intptr_t)param)
     {
+        case GO_TO_MUSIC_FOLDER:
+        case GO_TO_AUDIOBOOKS_FOLDER:
+            filter = global_settings.dirfilter;
+            strcpy(folder, (intptr_t)param == GO_TO_MUSIC_FOLDER ?
+                          "/Music/" : "/Audiobooks/");
+            push_current_activity(ACTIVITY_FILEBROWSER);
+        break;
         case GO_TO_FILEBROWSER:
             filter = global_settings.dirfilter;
             if (global_settings.browse_current &&
@@ -495,6 +502,8 @@ static const struct root_items items[] = {
     [GO_TO_PLAYLIST_VIEWER] = { playlist_view, NULL, &playlist_options },
     [GO_TO_SYSTEM_SCREEN] = { miscscrn, &info_menu, &system_menu },
     [GO_TO_SHORTCUTMENU] = { do_shortcut_menu, NULL, NULL },
+    [GO_TO_MUSIC_FOLDER] = { browser, (void*)GO_TO_MUSIC_FOLDER, &file_menu },
+    [GO_TO_AUDIOBOOKS_FOLDER] = { browser, (void*)GO_TO_AUDIOBOOKS_FOLDER, &file_menu },
 
 };
 #define NUM_ITEMS (int)(sizeof(items)/sizeof(*items))
@@ -503,6 +512,10 @@ static int item_callback(int action,
                          const struct menu_item_ex *this_item,
                          struct gui_synclist *this_list);
 
+MENUITEM_RETURNVALUE(music_folder_menu, "Music", GO_TO_DBBROWSER,
+                     NULL, Icon_Audio);
+MENUITEM_RETURNVALUE(audiobooks_folder_menu, "Audiobooks", GO_TO_AUDIOBOOKS_FOLDER,
+                     NULL, Icon_Audio);
 MENUITEM_RETURNVALUE(shortcut_menu, ID2P(LANG_SHORTCUTS), GO_TO_SHORTCUTMENU,
                         NULL, Icon_Bookmark);
 
@@ -566,6 +579,8 @@ static struct menu_table menu_table[] = {
     { "plugins", &rocks_browser },
     { "system_menu", &system_menu_ },
     { "shortcuts", &shortcut_menu },
+    { "music", &music_folder_menu },
+    { "audiobooks", &audiobooks_folder_menu },
 };
 #define MAX_MENU_ITEMS (sizeof(menu_table) / sizeof(struct menu_table))
 static struct menu_item_ex *root_menu__[MAX_MENU_ITEMS];
@@ -972,6 +987,8 @@ void root_menu(void)
 #ifdef HAVE_TAGCACHE
             case GO_TO_DBBROWSER:
 #endif
+            case GO_TO_MUSIC_FOLDER:
+            case GO_TO_AUDIOBOOKS_FOLDER:
             case GO_TO_FILEBROWSER:
             case GO_TO_PLAYLISTS_SCREEN:
                 global_status.last_browser = previous_browser = next_screen;

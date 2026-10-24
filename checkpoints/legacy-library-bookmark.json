@@ -1,0 +1,9 @@
+{
+  "checkpoint": "legacy-library-bookmark",
+  "description": "Preserve database Music and latest-only bookmark source",
+  "source_status": "preserved-source-export",
+  "note": "Legacy app layer with database Music and bookmark behavior; later PodBox native per-book progress superseded it.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
