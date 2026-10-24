@@ -51,7 +51,9 @@ or power loss; keep the normal device backup. No music database initialization
 is needed for this algorithm upgrade.
 
 The menu's persistent key is `music_analyze`. The supplied opt-in example places
-it after `database_update`. Existing custom orders are preserved unless that
+Now Playing before Update Now and Analyze Music Now: Music, Audiobooks, Now
+Playing, Update Now, Analyze Music Now, Settings, System. Analyze Music Now
+remains after `database_update`. Existing custom orders are preserved unless that
 key is deliberately added through the menu editor or a configuration merge.
 
 ## Verification and next acceptance step

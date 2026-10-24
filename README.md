@@ -8,7 +8,7 @@ RodBox is built on the work of the Rockbox community, Anthony Fletcher's PodBox,
 
 - PodBox's `apps-ipod` application layer: Music browsing, artwork rows/cache, native per-book audiobook progress and chapters, viewers and reorganized settings.
 - Native Scrim with local volume-display, menu-title and icon adjustments.
-- A Music / Audiobooks / Update Now / Analyze Music Now / Now Playing / Settings / System menu when the supplied menu order is applied. **Update Now updates the music database, not the firmware.** Analyze Music Now opens the on-device acoustic analyser; see [analysis and its limits](docs/NATIVE-ANALYSIS.md).
+- A Music / Audiobooks / Now Playing / Update Now / Analyze Music Now / Settings / System menu when the supplied menu order is applied. **Update Now updates the music database, not the firmware.** Analyze Music Now opens the on-device acoustic analyser; see [analysis and its limits](docs/NATIVE-ANALYSIS.md).
 - Trace-informed headset-button decoding, bounded volume events and single/double/triple-click actions adapted around that decoder.
 - Storage-mode transition safeguards that wake using the old mode before switching.
 - A Shuffle Songs correction that starts a new music queue when coming from an audiobook, while preserving ordinary queue/replace behavior.
