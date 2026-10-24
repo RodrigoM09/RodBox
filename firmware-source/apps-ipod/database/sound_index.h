@@ -75,8 +75,13 @@ struct sound_record
     uint8_t  tonal_clarity;
     uint8_t  harmonic_change;
 
-    uint8_t  pad[6];
+    uint8_t  analysis_revision; /* Algorithm revision; 0 is upstream legacy. */
+    uint8_t  pad[5];
 };
+
+/* Same 64-byte layout. Update legacy measurements once, without discarding
+ * the readable finished index or rebuilding the music database. */
+#define SOUND_ANALYSIS_REVISION 1
 
 #define SOUND_F_SETTLED  0x01  /* The tempo met beat_probe_settled() */
 #define SOUND_F_NO_LOCK  0x02  /* No tempo; period_ms is 0 and means nothing */

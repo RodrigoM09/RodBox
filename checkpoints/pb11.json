@@ -1,0 +1,22 @@
+{
+  "checkpoint": "pb11",
+  "version": "rodbox-pb11-analysis-261024",
+  "target": "ipod6g",
+  "change": "Focused native acoustic-analysis corrections, compatible algorithm revision marker and main-menu incremental analysis action",
+  "validation": {
+    "native_build": "passed",
+    "synthetic_probe_checks": 58,
+    "index_upgrade_resume_cache_tests": "passed",
+    "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer",
+    "installation": "passed; installed files verified after remount and filesystem verified",
+    "before_after_backups": "complete private snapshots verified; only core, build information and main-menu configuration changed",
+    "device_analysis": "pending",
+    "device_playback": "pending"
+  },
+  "limits": [
+    "No neural model is installed or included",
+    "Dynamic station engine remains unfinished and is excluded from this checkpoint",
+    "No listening benchmark, runtime or battery measurement",
+    "Hop, chroma and beat tracker are controlled fixtures in the probe host tests"
+  ]
+}

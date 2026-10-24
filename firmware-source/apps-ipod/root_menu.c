@@ -53,6 +53,7 @@
 #include "screens/covers/album_covers.h"
 #include "screens/system/db_search.h"
 #include "screens/system/file_search.h"
+#include "screens/system/sound_scan.h"
 #include "dircache.h"                 /* whether the file search has a source */
 #include "screens/browse/album_charts.h"
 #include "screens/browse/book_shelf.h"
@@ -1063,11 +1064,24 @@ static int database_update_now(void)
 MENUITEM_FUNCTION(database_update_menu, 0, "Update Now",
                   database_update_now, NULL, Icon_Audio);
 
+/* Update, rather than rebuild: keep measurements of unchanged tracks and let
+ * the existing scan screen handle confirmation, power and interrupted runs.
+ * This is the player's acoustic analyser, not desktop neural inference. */
+static int analyze_music_now(void)
+{
+    sound_scan_screen(false);
+    return 0;
+}
+
+MENUITEM_FUNCTION(analyze_music_menu, 0, "Analyze Music Now",
+                  analyze_music_now, NULL, Icon_Audio);
+
 static struct menu_table menu_table[] = {
     { "pictureflow", &album_covers_item },
     { "artistportraits", &artist_portraits_item },
     { "database", &db_browser },
     { "database_update", &database_update_menu },
+    { "music_analyze", &analyze_music_menu },
     { "files", &file_browser },
     { "wps", &wps_item },
     { "reading", &continue_reading },

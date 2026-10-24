@@ -76,6 +76,7 @@ struct key_entry
     uint32_t size;
     uint32_t ordinal;   /* Position in the working file */
     uint8_t  seen;      /* The run reached this track. See sound_index_seen() */
+    uint8_t  analysis_revision;
 };
 
 static int          part_fd = -1;
@@ -164,6 +165,7 @@ void sound_index_fill(struct sound_record *out, uint64_t key, uint32_t mtime,
     out->size      = size;
     out->genre_key = genre_key;
     out->year      = (uint16_t)(year > 0 ? year : 0);
+    out->analysis_revision = SOUND_ANALYSIS_REVISION;
 
     out->period_ms     = (uint16_t)s->period_ms;
     out->loudness_db10 = (int16_t)s->loudness_db10;
@@ -305,6 +307,7 @@ static void table_append(struct key_entry *t, const struct sound_record *r,
     t[table_used].key = r->key;
     t[table_used].mtime = r->mtime;
     t[table_used].size = r->size;
+    t[table_used].analysis_revision = r->analysis_revision;
     t[table_used].ordinal = (uint32_t)table_used;
     t[table_used].seen = seen;
     table_used++;
@@ -580,6 +583,9 @@ bool sound_index_done(uint64_t key, uint32_t mtime, uint32_t size)
 
     if (t != NULL && i >= 0)
     {
+        if (t[i].analysis_revision != SOUND_ANALYSIS_REVISION)
+            return false;
+
         if (t[i].size != size)
             return false;
 
@@ -625,6 +631,7 @@ bool sound_index_add(const struct sound_record *r)
 
         t[at].mtime = r->mtime;
         t[at].size = r->size;
+        t[at].analysis_revision = r->analysis_revision;
         t[at].seen = 1;
 
         /* The key set is unchanged, so a sorted table stays sorted and the

@@ -8,7 +8,7 @@ RodBox is built on the work of the Rockbox community, Anthony Fletcher's PodBox,
 
 - PodBox's `apps-ipod` application layer: Music browsing, artwork rows/cache, native per-book audiobook progress and chapters, viewers and reorganized settings.
 - Native Scrim with local volume-display, menu-title and icon adjustments.
-- A Music / Audiobooks / Update Now / Now Playing / Settings / System menu. **Update Now updates the music database, not the firmware.**
+- A Music / Audiobooks / Update Now / Analyze Music Now / Now Playing / Settings / System menu when the supplied menu order is applied. **Update Now updates the music database, not the firmware.** Analyze Music Now opens the on-device acoustic analyser; see [analysis and its limits](docs/NATIVE-ANALYSIS.md).
 - Trace-informed headset-button decoding, bounded volume events and single/double/triple-click actions adapted around that decoder.
 - Storage-mode transition safeguards that wake using the old mode before switching.
 - A Shuffle Songs correction that starts a new music queue when coming from an audiobook, while preserving ordinary queue/replace behavior.
@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest source checkpoint: **PB10**, `homepod-pb10-plmove-261024`. PB7–PB9 passed user playback/resume/control checks and post-reboot normal USB transfer/remount/filesystem verification. PB10 passed the native build, 21 guard tests, 50,000 differential cases and installation-time persistence/filesystem checks; its own post-restart hardware/USB acceptance remains pending at publication.
+Latest source checkpoint: **PB11 test build**, `rodbox-pb11-analysis-261024`, with focused on-device analysis corrections and a main-menu analysis action. Its host probe/index tests and native build pass; device analysis and playback acceptance remain pending. The dynamic station engine and optional neural analysis are separate unfinished work, not shipped features. PB7–PB10 passed user playback/resume/control checks and post-reboot normal USB transfer/remount/filesystem verification.
 
 The small playlist optimization's Mac benchmark is not an iPod speed or battery measurement. Digital audio and accessory code inherited from PodBox is present in source but was not comprehensively exercised, and optional DAC/car modes were left off. Explicit iFlash-brand recognition remains staged pending actual ATA identification; existing generic flash detection may already cover the adapter. Legacy Rockbox games/plugins are not available through PodBox's replacement app layer.
 

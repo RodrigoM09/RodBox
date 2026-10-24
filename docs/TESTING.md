@@ -10,6 +10,8 @@ python3 tests/usb/test_write_length.py firmware-source/firmware/usbstack/usb_sto
 python3 tests/usb/test_endpoints.py firmware-source/firmware/drivers/usb-designware.c
 python3 tests/playlist/test_guard.py firmware-source/apps-ipod/playlist/playlist.c
 python3 tests/playlist/test_compare_benchmark.py firmware-source/apps-ipod/playlist/playlist.c
+python3 tests/analysis/test_probe.py
+python3 tests/analysis/test_index.py
 ```
 
 Host C harnesses require clang and use AddressSanitizer/UndefinedBehaviorSanitizer. External hardware services are mocked. They exercise the extracted active function bodies; they are not a USB bus, decoder or storage-device emulator. Never send deliberately malformed write traffic to a filesystem containing your music.
@@ -24,4 +26,4 @@ Back up firmware/settings/progress first. Add one isolated change; build and run
 
 Safely eject, fully restart, then check music playback, queue order, shuffle from an audiobook, headset controls and audiobook resume. Reconnect and repeat normal USB/remount/filesystem checks under the newly running firmware. Installation-time transfer checks run under the old firmware until restart; do not label them post-reboot acceptance.
 
-PB7–PB9 completed that sequence. PB10 completed host/build/install checks but post-restart physical and USB acceptance remained pending at publication. No calibrated analog-output test, noise-floor measurement, long battery comparison or comprehensive digital-dock validation was completed.
+PB7–PB10 completed that sequence. PB10's post-restart checks included 24 KiB boundary transfers and a 4 MiB transfer verified after remount, followed by read-only filesystem verification. PB11's analysis corrections pass 58 synthetic probe checks, legacy index upgrade/resume/cache tests and the native build. Its on-device analysis and playback acceptance are pending. See [NATIVE-ANALYSIS.md](NATIVE-ANALYSIS.md). No calibrated analog-output test, noise-floor measurement, long battery comparison or comprehensive digital-dock validation was completed.
