@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest source checkpoint: **PB11 test build**, `rodbox-pb11-analysis-261024`, with focused on-device analysis corrections and a main-menu analysis action. Its host probe/index tests and native build pass; device analysis and playback acceptance remain pending. The dynamic station engine and optional neural analysis are separate unfinished work, not shipped features. PB7–PB10 passed user playback/resume/control checks and post-reboot normal USB transfer/remount/filesystem verification.
+Latest source checkpoint: **PB12 test build**, `rodbox-pb12-power-261024`. It corrects PB11's connected-power pause and adds battery/connection visibility and the analysis icon; see [power/display notes](docs/POWER-AND-BATTERY.md). Its native build, seven power/control cases and Scrim parser checks pass; device acceptance remains pending. PB11's acoustic probe/index tests pass, but its on-device scan was blocked by the power check. The dynamic station engine and optional neural analysis are separate unfinished work, not shipped features. PB7–PB10 passed user playback/resume/control checks and post-reboot normal USB transfer/remount/filesystem verification.
 
 The small playlist optimization's Mac benchmark is not an iPod speed or battery measurement. Digital audio and accessory code inherited from PodBox is present in source but was not comprehensively exercised, and optional DAC/car modes were left off. Explicit iFlash-brand recognition remains staged pending actual ATA identification; existing generic flash detection may already cover the adapter. Legacy Rockbox games/plugins are not available through PodBox's replacement app layer.
 

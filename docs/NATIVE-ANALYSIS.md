@@ -1,5 +1,8 @@
 # Analyze Music Now (PB11 test build)
 
+PB11's first on-device scan paused despite connected power. PB12 corrects that
+gate and adds display feedback; see [POWER-AND-BATTERY.md](POWER-AND-BATTERY.md).
+
 The main-menu action updates PodBox's existing on-device sound index. It does
 not initialize the music database, download music, change EQ or run a neural
 model. Run **Update Now** first after adding music, wait for the database update

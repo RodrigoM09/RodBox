@@ -29,9 +29,12 @@
 #include "system/activity.h"
 #include "system/shutdown.h"
 #include "widgets/splash.h"
+#include "powermgmt.h"
+#include "power.h"
 
 int usb_keypad_mode;
 static bool usb_hid;
+static void usb_battery_draw(bool force);
 
 static int handle_usb_events(void)
 {
@@ -58,6 +61,9 @@ static int handle_usb_events(void)
             send_event(GUI_EVENT_ACTIONUPDATE, NULL);
         }
 
+        /* Includes HID idle actions as well as ordinary SYS_TIMEOUT. */
+        if (button != SYS_USB_DISCONNECTED)
+            usb_battery_draw(false);
         switch(button)
         {
             case SYS_USB_DISCONNECTED:
@@ -167,6 +173,45 @@ static void usb_screens_draw(void)
                          str(LANG_USB_EJECT_BEFORE_DISCONNECT));
 }
 
+/* Run only after the storage ACK. Built-in font and a small plain viewport:
+ * no theme, font paging, album art or disk access while the Mac owns storage.
+ * Repaint only when the percentage/charge state changes. */
+static void usb_battery_draw(bool force)
+{
+    static int last_level = -2;
+    static bool last_charging;
+    int level = battery_level();
+    bool charging = charging_state();
+    char text[64];
+    if (!force && level == last_level && charging == last_charging)
+        return;
+    last_level = level;
+    last_charging = charging;
+    if (level >= 0)
+        snprintf(text, sizeof(text), "Battery: %d%% | %s", level,
+                 charging ? "Charging" : "USB connected");
+    else
+        snprintf(text, sizeof(text), "Battery: ? | USB connected");
+    FOR_NB_SCREENS(i)
+    {
+        struct screen *screen = &screens[i];
+        struct viewport vp;
+        viewport_set_defaults(&vp, screen->screen_type);
+        vp.font = FONT_SYSFIXED;
+        vp.x = 0;
+        vp.y = screen->lcdheight - SYSFONT_HEIGHT - 8;
+        vp.width = screen->lcdwidth;
+        vp.height = SYSFONT_HEIGHT + 8;
+        struct viewport *old = screen->set_viewport(&vp);
+        screen->clear_viewport();
+        int width;
+        font_getstringsize(text, &width, NULL, FONT_SYSFIXED);
+        screen->putsxy(width < vp.width ? (vp.width-width)/2 : 0, 4, text);
+        screen->update_viewport();
+        screen->set_viewport(old);
+    }
+}
+
 void gui_usb_screen_run(bool early_usb, intptr_t seqnum)
 {
 
@@ -213,6 +258,7 @@ void gui_usb_screen_run(bool early_usb, intptr_t seqnum)
     }
 
     usb_acknowledge(SYS_USB_CONNECTED_ACK, seqnum);
+    usb_battery_draw(true);
 
     while (1)
     {
@@ -221,6 +267,7 @@ void gui_usb_screen_run(bool early_usb, intptr_t seqnum)
         /* Reached only on a USB-HID keypad mode switch; repaint (the message's
          * glyphs are already cached from the pre-handoff draw above). */
         usb_screens_draw();
+        usb_battery_draw(true);
     }
 
     FOR_NB_SCREENS(i)

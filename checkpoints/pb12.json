@@ -1,0 +1,21 @@
+{
+  "checkpoint": "pb12",
+  "version": "rodbox-pb12-power-261024",
+  "target": "ipod6g",
+  "change": "Fix analysis power-presence gate; show charging/USB battery state; add Scrim analysis icon",
+  "validation": {
+    "native_build": "passed",
+    "scan_power_control_cases": 7,
+    "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer",
+    "scrim_skin_parser": "both files passed",
+    "installation": "file hashes passed after remount; filesystem verified",
+    "device_analysis": "pending",
+    "device_display": "pending",
+    "post_restart_usb": "pending"
+  },
+  "limits": [
+    "External power presence does not measure available current",
+    "No charging-hardware or current-limit changes",
+    "No neural model or unfinished station engine included"
+  ]
+}

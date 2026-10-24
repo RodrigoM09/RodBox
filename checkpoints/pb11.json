@@ -10,7 +10,7 @@
     "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer",
     "installation": "passed; installed files verified after remount and filesystem verified",
     "before_after_backups": "complete private snapshots verified; only core, build information and main-menu configuration changed",
-    "device_analysis": "pending",
+    "device_analysis": "blocked by connected-power pause; corrected in PB12",
     "device_playback": "pending"
   },
   "limits": [

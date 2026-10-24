@@ -30,5 +30,6 @@ All publication commits are new sanitized exports, not fabricated original commi
 | pb9 | Reject invalid playlist insertion positions | exact-cumulative-step-export |
 | pb10 | Move paired playlist index tails as overlapping-safe blocks | exact-cumulative-step-export |
 | pb11 | Correct quiet/stereo energy, tempo-lock lifetime and sample duration; add Analyze Music Now and revision-aware refresh | native-build-and-synthetic-tests; device acceptance pending |
+| pb12 | Use external-power presence for analysis; show battery/charging/USB state and Scrim analysis icon | native build, seven power cases and skin-parser checks; device acceptance pending |
 
 Each checkpoint has a matching `checkpoints/<name>.json`. PB1–PB3 are validated artifact reconstructions; PB5 is explicitly rolled back. PB10 passed the user's restart/playback checks; PB11 analysis and hardware acceptance remain pending. See BUGS-AND-LESSONS.md for failure/rollback context and CREDITS.md for the imported/inherited code chain.
