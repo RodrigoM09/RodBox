@@ -1,6 +1,6 @@
 # PB16: protect USB storage from automatic idle sleep
 
-Status: built and host-tested; installation and physical acceptance pending.
+Status: installed, verified after two remounts and backed up; physical restart and runtime acceptance pending.
 
 Review of a long-transfer failure found an idle-policy weakness. The power
 manager blocks ordinary automatic shutdown while USB is connected, but that is
@@ -63,3 +63,11 @@ PodBox, with inherited RockPod flash sleep/wake adaptations credited in
 [CREDITS.md](../CREDITS.md). This focused RodBox policy/error-handling fix and its
 regression harness were developed with AI assistance and independent agent
 review. Existing GPL notices remain intact.
+
+Installation checks verified both complete firmware snapshots and the filesystem.
+An intervening restart into the preceding build updated resume, playback and font
+cache state; those differences were preserved and documented separately from the
+two deliberately replaced core/information files. The preceding build was still
+running during installation. A host power-log check found no full system sleep
+during the later failing transfer; display sleep alone does not establish the
+cause. Bulk-transfer acceptance remains pending after restart.
