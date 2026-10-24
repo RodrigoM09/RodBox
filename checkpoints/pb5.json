@@ -1,0 +1,9 @@
+{
+  "checkpoint": "pb5",
+  "description": "Try USB endpoint validation (later rolled back)",
+  "source_status": "exact-saved-step-delta-rolled-back",
+  "note": "Host checks and build passed, but filesystem corruption was found on reconnect. Causation was not established; this historical experiment is not the accepted successor to PB4.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
