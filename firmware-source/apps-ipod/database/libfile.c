@@ -186,7 +186,11 @@ bool libfile_finish(struct libfile_writer *w, bool ok)
         ok = lseek(w->fd, 0, SEEK_SET) == 0
              && write(w->fd, &w->hdr, sizeof(w->hdr))
                 == (ssize_t)sizeof(w->hdr);
-    close(w->fd);
+    /* Never replace the last good file after a failed cache flush/close. */
+    if (ok && fsync(w->fd) < 0)
+        ok = false;
+    if (close(w->fd) < 0)
+        ok = false;
     w->fd = -1;
 
     if (ok)

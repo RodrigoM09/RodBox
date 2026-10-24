@@ -36,5 +36,6 @@ All publication commits are new sanitized exports, not fabricated original commi
 | pb15 | Clear stale theme battery/clock pixels from the USB header before drawing one indicator | installed with verified before/after recovery checkpoints; native build and 24 actual-renderer framebuffer cases passed; physical acceptance pending |
 | pb16 | Keep USB storage awake, recheck idle policy under the ATA lock and return failed wakes before transfer I/O | native build and 132 host scenario/configuration executions passed; installed/backed up and booted; small USB probe/readbacks passed, next write failed; sustained reliability unresolved |
 | pb17 | Release ATA reset locks on power-up failure | prepared, not installed; native build and 220 actual-function scenario/configuration executions passed |
+| pb18 | Preserve previous library/index files after failed final flush or close | prepared, not installed; native build and actual-function fault-injection tests passed |
 
 Each checkpoint has a matching `checkpoints/<name>.json`. PB1–PB3 are validated artifact reconstructions; PB5 is explicitly rolled back. PB10 passed the user's restart/playback checks; PB11 analysis and hardware acceptance remain pending. See BUGS-AND-LESSONS.md for failure/rollback context and CREDITS.md for the imported/inherited code chain.

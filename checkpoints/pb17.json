@@ -3,14 +3,16 @@
   "version": "rodbox-pb17-resetlock-261024",
   "target": "ipod6g",
   "change": "Release the recursive ATA mutex on failed power-up in soft, hard and internal reset",
-  "status": "prepared; not installed",
+  "status": "prepared; staging checksum failed before publication; active PB16 unchanged",
   "core_sha256": "afabb852f81bb3c8fa8f938635f0064224f975a7532eef73de34c6d3babda9a6",
   "validation": {
     "native_build": "passed",
     "actual_function_scenarios": 55,
     "host_configurations": 4,
     "scenario_executions": 220,
-    "physical_acceptance": "pending"
+    "physical_acceptance": "pending",
+    "before_install_snapshot": "complete, SHA-256 verified",
+    "installation": "not installed; stopped on staging readback mismatch"
   },
   "limits": [
     "Mocks do not prove physical USB/card reliability",

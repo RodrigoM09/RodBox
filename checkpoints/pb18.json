@@ -1,0 +1,20 @@
+{
+  "checkpoint": "pb18",
+  "version": "rodbox-pb18-safefinish-261024",
+  "target": "ipod6g",
+  "change": "Do not publish generic library or sound-index replacement after failed flush/close",
+  "status": "prepared; not installed",
+  "core_sha256": "062f4652c166c072ecdd374c8956c03731ba57e1ab488a044625ef54f15fea4c",
+  "validation": {
+    "native_build": "passed",
+    "generic_actual_finalizer_cases": 8,
+    "sound_index_resume_cache_and_flush_close_faults": "passed with ASan/UBSan",
+    "old_finalizer_regressions": "failed as expected",
+    "device_acceptance": "pending"
+  },
+  "limits": [
+    "Filesystem errors must be surfaced by lower layers",
+    "Does not resolve or prove cause of USB bulk write failure",
+    "No file format, DSP, bootloader or partition changes"
+  ]
+}

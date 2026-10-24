@@ -27,3 +27,9 @@ These functions and the existing error macros come from Rockbox through the
 credited PodBox/RockPod code chain. This focused cleanup and actual-function
 regression coverage were prepared with AI assistance. Review is ongoing; a full
 firmware audit has not been completed. See [credits](../CREDITS.md).
+
+A subsequent installation attempt stopped on a temporary-file checksum mismatch
+before publishing either firmware file. The installed PB16 core remains unchanged
+and matches its expected hash. Small writes are affected too; keep PB17 prepared
+until the transport/storage problem can be diagnosed. The fresh complete
+before-installation backup was verified successfully.

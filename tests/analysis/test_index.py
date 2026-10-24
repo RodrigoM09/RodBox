@@ -15,6 +15,13 @@ HARNESS = r'''
 #include <string.h>
 #include <unistd.h>
 #include "database/sound_index.h"
+#undef fsync
+#undef close
+extern int fsync(int);
+extern int close(int);
+static int fail_sync, fail_close;
+int test_fsync(int fd) {if(fail_sync){fail_sync=0;return -1;}return fsync(fd);}
+int test_close(int fd) {int rc=close(fd);if(fail_close){fail_close=0;return -1;}return rc;}
 static void *allocation;
 int core_alloc(size_t n) {assert(!allocation);allocation=calloc(1,n);return allocation?1:0;}
 void *core_get_data(int h) {assert(h==1);return allocation;}
@@ -62,7 +69,20 @@ int main(void) {
  sound_index_reader_close(&reader);
  assert(sound_index_begin(1,false)==SOUND_OK);
  assert(sound_index_done(123,100,2000));sound_index_close();
- puts("PASS: legacy index upgrade, interrupted upgrade/resume, record identity, cache invalidation and unchanged-track reuse; ASan/UBSan");
+ /* A delayed flush/close error must not publish the replacement index. */
+ for(int failure=0;failure<2;failure++) {
+  assert(sound_index_begin(3,false)==SOUND_OK);
+  r.key=456+failure;assert(sound_index_add(&r));
+  if(failure==0)fail_sync=1;else fail_close=1;
+  assert(sound_index_finish(false)==SOUND_ERR_IO);
+  assert(access("sound.part",F_OK)==0);
+  assert(access("sound.dat.new",F_OK)!=0);
+  assert(sound_index_reader_open(&reader)==SOUND_OK && reader.count==1);
+  assert(sound_index_find(&reader,123,&out));
+  assert(!sound_index_find(&reader,r.key,&out));
+  sound_index_reader_close(&reader);sound_index_close();
+ }
+ puts("PASS: index upgrade/resume/cache and flush/close failure preservation; ASan/UBSan");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='rodbox-index-') as tmp:
@@ -82,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix='rodbox-index-') as tmp:
     binary = d/'index'
     subprocess.run(['clang', '-std=c11', '-D_DARWIN_C_SOURCE', '-O1', '-g',
                     '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
-                    '-fno-omit-frame-pointer', '-I'+str(d),
+                    '-fno-omit-frame-pointer', '-Dfsync=test_fsync', '-Dclose=test_close', '-I'+str(d),
                     '-I'+str(ROOT/'apps-ipod'), str(d/'index.c'),
                     str(ROOT/'apps-ipod/database/sound_index.c'),
                     '-o', str(binary)], check=True)
