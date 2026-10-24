@@ -1090,10 +1090,9 @@ static void albums_note_path(int idx_id, const char *filename)
         return;
     *sep = '\0';                     /* track file -> album folder */
     r->art_hash = art_cache_dir_hash(dir);
-    sep = strrchr(dir, '/');
-    if (!sep || sep == dir)
-        return;
-    *sep = '\0';                     /* album -> artist folder */
+    char artist_dir[MAX_PATH];
+    art_cache_artist_dir(dir, artist_dir, sizeof(artist_dir));
+    strlcpy(dir, artist_dir, sizeof(dir));
     r->artist_art_hash = art_cache_dir_hash(dir);
 }
 

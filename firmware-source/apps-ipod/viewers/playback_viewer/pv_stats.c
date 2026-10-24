@@ -408,21 +408,17 @@ static unsigned int folder_hash(const char *path, bool up)
         return 0;
     n = (size_t)(slash - path);
 
-    if (up)
-    {
-        /* Step to the parent by finding the slash before this one. */
-        while (n > 0 && path[n - 1] != '/')
-            n--;
-        if (n <= 1)
-            return 0;       /* no distinct parent: a flat or rooted layout */
-        n--;
-    }
-
     if (n == 0 || n >= sizeof(dir))
         return 0;
 
     memcpy(dir, path, n);
     dir[n] = '\0';
+    if (up)
+    {
+        char artist_dir[MAX_PATH];
+        art_cache_artist_dir(dir, artist_dir, sizeof(artist_dir));
+        return art_cache_dir_hash(artist_dir);
+    }
     return art_cache_dir_hash(dir);
 }
 #endif /* HAVE_ALBUMART */

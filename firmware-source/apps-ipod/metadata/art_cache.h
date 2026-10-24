@@ -57,6 +57,7 @@ struct art_cache_header
 
 /* Start the background cache thread. Call once at startup, after tagcache. */
 void art_cache_init(void);
+void art_cache_artist_dir(const char *album_dir, char *out, size_t size);
 
 #ifdef DBTOOL
 /* tools/artcache_pb: one caching pass with no thread, recording the

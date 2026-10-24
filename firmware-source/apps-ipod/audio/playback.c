@@ -2136,12 +2136,9 @@ static int load_cached_albumart(struct mp3entry *track_id3,
 
     if (artist)
     {
-        /* Up one level. A track sitting at the volume root has no parent to
-         * rise to, and truncating to "" would key on the whole volume. */
-        char *psep = strrchr(dir, '/');
-        if (!psep || psep == dir)
-            return ERR_UNSUPPORTED_TYPE;
-        *psep = '\0';
+        char artist_dir[MAX_PATH];
+        art_cache_artist_dir(dir, artist_dir, sizeof(artist_dir));
+        strlcpy(dir, artist_dir, sizeof(dir));
     }
 
     if (!art_cache_lookup(dir, wps_size_idx, path, sizeof(path), &is_fallback)

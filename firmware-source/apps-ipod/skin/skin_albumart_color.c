@@ -972,11 +972,9 @@ static unsigned int track_folder_hash(const char *path, bool artist)
 
         if (artist)
         {
-            char *psep = strrchr(dir, '/');
-
-            if (!psep || psep == dir)
-                return 0;
-            *psep = '\0';
+            char artist_dir[MAX_PATH];
+            art_cache_artist_dir(dir, artist_dir, sizeof(artist_dir));
+            strlcpy(dir, artist_dir, sizeof(dir));
         }
         return art_cache_dir_hash(dir);
     }

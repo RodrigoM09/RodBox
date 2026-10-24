@@ -392,6 +392,7 @@ static int mikey_local_decode_poll(struct mikey_local_decode *d,
 
 struct mikey_decode {
     struct mikey_local_decode local;
+    bool local_center;
     bool armed;          /* need a released reading before first press */
     bool vol_up, vol_dn;
     int up_click, dn_click;
@@ -420,6 +421,7 @@ struct mikey_decode {
 static void mikey_decode_reset(struct mikey_decode *d)
 {
     mikey_local_decode_reset(&d->local);
+    d->local_center = false;
     d->armed = false;
     d->vol_up = d->vol_dn = false;
     d->up_click = d->dn_click = 0;
@@ -545,64 +547,23 @@ static unsigned char mikey_line_gate(struct mikey_decode *d,
 static int mikey_decode_poll(struct mikey_decode *d,
                              unsigned char btn, unsigned char evt)
 {
+    /* Keep the trace-tested 1MORE classification and phantom-volume guards.
+     * Count only the rising edge of each classified pulse. */
+    int local = mikey_local_decode_poll(&d->local, btn, evt);
+    bool center = (local & BUTTON_MULTIMEDIA_PLAYPAUSE)
+                   == BUTTON_MULTIMEDIA_PLAYPAUSE;
     if (!track_skip)
-        return mikey_local_decode_poll(&d->local, btn, evt);
-    evt = mikey_line_gate(d, btn, evt);
-    evt = mikey_vol_gate(d, evt, MIKEY_EVT_VOLUP_DN, MIKEY_EVT_VOLUP_UP,
-                         &d->up_suppressed);
-    evt = mikey_vol_gate(d, evt, MIKEY_EVT_VOLDN_DN, MIKEY_EVT_VOLDN_UP,
-                         &d->dn_suppressed);
-    if (d->arm_window > 0)
-        d->arm_window--;
-
-    mikey_decode_vol(evt, MIKEY_EVT_VOLUP_DN, MIKEY_EVT_VOLUP_UP,
-                     &d->vol_up, &d->up_click);
-    mikey_decode_vol(evt, MIKEY_EVT_VOLDN_DN, MIKEY_EVT_VOLDN_UP,
-                     &d->vol_dn, &d->dn_click);
-
-    /* reg4 can read pressed while the mode settles; don't report the
-     * center button until it has been seen released once */
-    bool raw = (btn & MIKEY_BTN_CENTER) != 0;
-    if (!raw)
-        d->armed = true;
-
-    /* click-only: a fixed pulse at each debounced rise, either at once or
-     * once the window has closed on the number of clicks it collected */
-    if (raw && d->armed)
     {
-        if (!d->center_down && d->center_off >= MIKEY_CENTER_OFF_POLLS)
-        {
-            if (track_skip)
-            {
-                /* The deadline moves only on a click that counts. A fourth
-                 * cannot change the verdict, so refreshing the window for it
-                 * would let sustained clicking hold the window open for as
-                 * long as it went on and report nothing at all. */
-                if (d->clicks < MIKEY_MULTI_MAX)
-                {
-                    d->clicks++;
-                    d->click_tick = current_tick;
-                }
-            }
-            else
-            {
-                d->pulse_btn = BUTTON_MULTIMEDIA_PLAYPAUSE;
-                d->center_pulse = MIKEY_CENTER_PULSE_POLLS;
-            }
-        }
-        d->center_down = true;
-        d->center_off = 0;
+        d->clicks = 0;
+        d->local_center = center;
+        return local;
     }
-    else
+    if (center && !d->local_center && d->clicks < MIKEY_MULTI_MAX)
     {
-        if (d->center_off < MIKEY_CENTER_OFF_POLLS)
-            d->center_off++;
-        if (d->center_off >= MIKEY_CENTER_OFF_POLLS)
-            d->center_down = false;
+        d->clicks++;
+        d->click_tick = current_tick;
     }
-
-    /* Window closed. A count of one is a plain play/pause, which is also
-     * where a stray count lands if the setting is turned off mid-sequence. */
+    d->local_center = center;
     if (d->clicks > 0
         && TIME_AFTER(current_tick, d->click_tick + MIKEY_MULTI_WINDOW))
     {
@@ -612,21 +573,19 @@ static int mikey_decode_poll(struct mikey_decode *d,
         d->center_pulse = MIKEY_CENTER_PULSE_POLLS;
         d->clicks = 0;
     }
-
-    int center = BUTTON_NONE;
+    int result = local & ~BUTTON_MULTIMEDIA_PLAYPAUSE;
+    /* Multimedia codes share a marker bit: preserve it on volume reports. */
+    if ((local & BUTTON_MULTIMEDIA_VOLUME_UP) == BUTTON_MULTIMEDIA_VOLUME_UP)
+        result |= BUTTON_MULTIMEDIA_VOLUME_UP;
+    if ((local & BUTTON_MULTIMEDIA_VOLUME_DOWN) == BUTTON_MULTIMEDIA_VOLUME_DOWN)
+        result |= BUTTON_MULTIMEDIA_VOLUME_DOWN;
     if (d->center_pulse > 0)
     {
-        center = d->pulse_btn;
+        result |= d->pulse_btn;
         d->center_pulse--;
     }
+    return result;
 
-    /* All buttons report as multimedia keys: handled globally by
-     * default_event_handler on every screen, so volume, play/pause and
-     * the track skips work in menus, WPS and games alike, matching the
-     * OF. */
-    return center
-         | (d->vol_up ? BUTTON_MULTIMEDIA_VOLUME_UP   : 0)
-         | (d->vol_dn ? BUTTON_MULTIMEDIA_VOLUME_DOWN : 0);
 }
 
 /* ---- the register scope (button.h) ----------------------------------- */

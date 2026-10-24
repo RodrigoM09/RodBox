@@ -1322,6 +1322,17 @@ static bool aa_added_only;
  * Update, Rebuild, a change of album art source, a first pass. */
 static bool aa_reread_tags;
 
+/* An album-local portrait supports flat libraries without moving tracks. */
+void art_cache_artist_dir(const char *album_dir, char *out, size_t size)
+{
+    char portrait[MAX_PATH];
+    snprintf(portrait, sizeof(portrait), "%s/.artist/folder.jpg", album_dir);
+    if (file_exists(portrait))
+        snprintf(out, size, "%s/.artist", album_dir);
+    else
+        aa_dirname(album_dir, out, size);
+}
+
 /* Find the image file standing for the folder of `probe_path`, into
  * aa_artpath. album/albumartist left NULL: only folder-based art is searched
  * (cover.bmp, folder.jpg, and for a disc folder ../cover.bmp). */
@@ -1694,7 +1705,7 @@ static enum bg_result aa_run_pass(void)
          * for <artist>/<album_type>/<album>/<track>. Deduped independently of
          * the album so an artist whose first album has no cover still gets
          * resolved. Skipped when there is no distinct parent (flat/rooted layouts). */
-        aa_dirname(aa_dir, aa_artist_dir, sizeof(aa_artist_dir));
+        art_cache_artist_dir(aa_dir, aa_artist_dir, sizeof(aa_artist_dir));
         if (aa_artist_dir[0] && strcmp(aa_artist_dir, aa_dir) != 0)
         {
             ah = aa_hash(aa_artist_dir);
