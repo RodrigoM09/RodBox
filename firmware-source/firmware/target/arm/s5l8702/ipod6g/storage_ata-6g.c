@@ -1000,7 +1000,7 @@ int ata_soft_reset(void)
     int rc;
     mutex_lock(&ata_mutex);
     if (!ata_powered)
-        PASS_RC(ata_power_up(), 1, 0);
+        PASS_RC_MTX(ata_power_up(), 1, 0, &ata_mutex);
     ata_set_active();
     if (ceata)
     {
@@ -1023,7 +1023,7 @@ int ata_hard_reset(void)
 {
     mutex_lock(&ata_mutex);
     ssd_deep_asleep = true; /* a reset is a full init, never the fast path */
-    PASS_RC(ata_power_up(), 0, 0);
+    PASS_RC_MTX(ata_power_up(), 0, 0, &ata_mutex);
     ata_set_active();
     mutex_unlock(&ata_mutex);
     return 0;
@@ -1034,7 +1034,7 @@ static int ata_reset(void)
     int rc;
     mutex_lock(&ata_mutex);
     if (!ata_powered)
-        PASS_RC(ata_power_up(), 2, 0);
+        PASS_RC_MTX(ata_power_up(), 2, 0, &ata_mutex);
     ata_set_active();
     rc = ata_soft_reset();
     if (IS_ERR(rc))

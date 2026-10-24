@@ -4,7 +4,7 @@ Run `python3 tests/storage/test_usb_idle.py` from the repository root. The runne
 copies the current production function bodies without rewriting their logic into
 a C harness and compiles them with Clang AddressSanitizer and UndefinedBehaviorSanitizer.
 
-The 33 scenarios cover:
+The 55 scenarios cover:
 
 - USB ownership before the timer decision, after the timer decision, and at the
   mutex boundary; no automatic controller clock gating or flash power removal.
@@ -25,7 +25,7 @@ defined independently and together. This is not a substitute for the full native
 firmware build: hardware headers, interrupts and the real scheduler are mocked.
 Lock hooks deterministically exercise selected interleavings; they do not prove
 every possible concurrency ordering, physical USB reliability or flash health.
-That gives 132 executed scenario/configuration combinations. Tick wrapping uses
+That gives 220 executed scenario/configuration combinations. Tick wrapping uses
 the same `-fno-strict-overflow` option as the firmware's build configuration;
 the host's `long` width need not equal the iPod's 32-bit `long` width.
 
@@ -38,5 +38,8 @@ Two inherited target conventions need explicit host-harness accommodations:
   width. Host pointer-cast warnings are suppressed; the write failure test must
   return before dereferencing, DMA setup or data transfer.
 
-The harness checks the public read/write wrappers' mutex release. It does not
-exercise existing soft/hard reset error paths or their separate lock semantics.
+The harness checks public read/write wrappers and soft, hard and internal reset
+mutex release. Reset cases inject failed power-up, readiness and CE-ATA reset,
+including hard-reset fallback and recovery, both standalone and beneath an
+already-held recursive caller lock. Packed error return values are checked.
+The original 33 USB/transfer scenarios remain included.

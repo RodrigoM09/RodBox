@@ -1,6 +1,6 @@
 # PB16: protect USB storage from automatic idle sleep
 
-Status: installed, verified after two remounts and backed up; physical restart and runtime acceptance pending.
+Status: installed/backed up and booted normally; small USB checks passed, sustained writes still failed.
 
 Review of a long-transfer failure found an idle-policy weakness. The power
 manager blocks ordinary automatic shutdown while USB is connected, but that is
@@ -71,3 +71,9 @@ two deliberately replaced core/information files. The preceding build was still
 running during installation. A host power-log check found no full system sleep
 during the later failing transfer; display sleep alone does not establish the
 cause. Bulk-transfer acceptance remains pending after restart.
+
+After restart, a normal-file USB probe passed, and all prior transfer checkpoints
+passed fresh full readbacks. The next write failed with an I/O error; the
+filesystem check then could not complete and the player was safely ejected.
+The sleep-policy correction is insufficient to resolve current storage failures.
+The separate [PB17 reset-lock correction](RESET-LOCKS.md) is prepared, not installed.

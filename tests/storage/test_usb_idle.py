@@ -37,7 +37,7 @@ def extract(source, name):
 def main():
     source = SOURCE.read_text()
     functions = '\n\n'.join(extract(source, name) for name in (
-        'ata_set_active', 'ata_transfer_sectors', 'ata_read_sectors', 'ata_write_sectors',
+        'ata_set_active', 'ata_soft_reset', 'ata_hard_reset', 'ata_reset', 'ata_transfer_sectors', 'ata_read_sectors', 'ata_write_sectors',
         'ata_sleepnow_locked', 'ata_sleepnow', 'ata_event'))
     template = Path(__file__).with_name('usb_idle_harness.c').read_text()
     # The actual target error macros intentionally use signed high-bit shifts.
