@@ -1,0 +1,9 @@
+{
+  "checkpoint": "legacy-daily",
+  "description": "Record pinned Rockbox daily lineage",
+  "source_status": "upstream-reference",
+  "note": "Rockbox revision bad21c5f52136ba9e8301e1c9e2aabb4f16656d4; this evidence-only stage does not substitute a fabricated pristine source tree.",
+  "publication": "New sanitized export; not an original development commit",
+  "private_backup_scope": "Raw device/media/config/progress backups remain private. This tag records a source/evidence checkpoint.",
+  "verification": "See stage notes; no new hardware acceptance inferred."
+}
