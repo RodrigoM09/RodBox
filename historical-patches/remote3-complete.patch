@@ -1,0 +1,175 @@
+--- a/firmware/drivers/button.c
++++ b/firmware/drivers/button.c
+@@ -299,6 +299,7 @@
+                            key */
+ 
+                         if (enable_sw_poweroff &&
++                            !(btn & BUTTON_MULTIMEDIA) &&
+                             (btn & POWEROFF_BUTTON
+ #ifdef RC_POWEROFF_BUTTON
+                                     || btn == RC_POWEROFF_BUTTON
+--- a/firmware/target/arm/s5l8702/ipod6g/mikey-6g.c
++++ b/firmware/target/arm/s5l8702/ipod6g/mikey-6g.c
+@@ -62,7 +62,7 @@
+ #define MIKEY_MODE_REMOTE   0x2f    /* mic bias + button detection */
+ 
+ #define MIKEY_ID_FLAG       0x40    /* identified-remote latch in reg4 */
+-#define MIKEY_BTN_CENTER    0x05
++#define MIKEY_BTN_CENTER    0x01
+ #define MIKEY_EVT_VOLUP_DN  0x04
+ #define MIKEY_EVT_VOLUP_UP  0x08
+ #define MIKEY_EVT_VOLDN_DN  0x01
+@@ -124,22 +124,23 @@
+         mikey_reset();
+ }
+ 
+-/* Decode one volume button's press/release edge events into a held state.
+- * A real hold only produces the two edges, so between them *held carries
+- * the state; *click stretches a same-poll press+release (see above). */
++/* Emit a bounded click for each volume press event. A headset that omits
++ * its release event must never leave volume adjustment running indefinitely.
++ * Ignore repeated observations of the same ~100ms hardware event. Inline
++ * volume holds intentionally require repeated taps in this local build. */
+ static void mikey_decode_vol(unsigned char evt, unsigned char dn,
+-                             unsigned char up, bool *held, int *click)
++                             bool *held, int *click, bool *press_seen)
+ {
+     if (*click > 0 && --*click == 0)
+         *held = false;
+-
+-    if (evt & dn)
+-    {
++    if (!(evt & dn))
++        *press_seen = false;
++    else if (!*press_seen)
++    {
++        *press_seen = true;
+         *held = true;
+-        *click = (evt & up) ? MIKEY_CLICK_POLLS : 0;
+-    }
+-    else if ((evt & up) && *click == 0)
+-        *held = false;
++        *click = MIKEY_CLICK_POLLS;
++    }
+ }
+ 
+ /* Phantom-load failsafe: some passive cables present a DC load on the
+@@ -162,9 +163,13 @@
+     int up_click, dn_click;
+     int arm_window;      /* polls left of phantom-press suppression window */
+     bool up_suppressed, dn_suppressed;
++    bool up_press_seen, dn_press_seen;
+     bool center_down;    /* debounced "press already reported" */
+     int center_off;      /* consecutive released polls */
+     int center_pulse;    /* click pulse countdown */
++    int center_pending;  /* wait briefly to classify shared mic-line signals */
++    int volume_quiet;    /* suppress center transients around volume events */
++    int center_volume_quiet; /* reject trailing phantom volume reports */
+ };
+ 
+ static void mikey_decode_reset(struct mikey_decode *d)
+@@ -174,9 +179,11 @@
+     d->up_click = d->dn_click = 0;
+     d->arm_window = MIKEY_ARM_WINDOW_POLLS;
+     d->up_suppressed = d->dn_suppressed = false;
++    d->up_press_seen = d->dn_press_seen = false;
+     d->center_down = false;
+     d->center_off = MIKEY_CENTER_OFF_POLLS;
+     d->center_pulse = 0;
++    d->center_pending = d->volume_quiet = d->center_volume_quiet = 0;
+ }
+ 
+ /* Apply the phantom-load failsafe to one volume button's edge bits:
+@@ -205,6 +212,22 @@
+ static int mikey_decode_poll(struct mikey_decode *d,
+                              unsigned char btn, unsigned char evt)
+ {
++    /* Local 1MORE profile, based on the captured hardware trace:
++     * reg4 bit 0 distinguishes center (0x05) from volume sense (0x04).
++     * A center release can also produce a spurious reg5 volume edge. */
++    bool raw_center = (btn & MIKEY_BTN_CENTER) != 0;
++    if (raw_center)
++        d->center_volume_quiet = 15;
++    else if (d->center_volume_quiet > 0)
++        d->center_volume_quiet--;
++    if (d->center_volume_quiet > 0)
++    {
++        evt &= ~0x0f;
++        d->vol_up = d->vol_dn = false;
++        d->up_click = d->dn_click = 0;
++        d->up_press_seen = d->dn_press_seen = false;
++    }
++
+     evt = mikey_vol_gate(d, evt, MIKEY_EVT_VOLUP_DN, MIKEY_EVT_VOLUP_UP,
+                          &d->up_suppressed);
+     evt = mikey_vol_gate(d, evt, MIKEY_EVT_VOLDN_DN, MIKEY_EVT_VOLDN_UP,
+@@ -212,31 +235,51 @@
+     if (d->arm_window > 0)
+         d->arm_window--;
+ 
+-    mikey_decode_vol(evt, MIKEY_EVT_VOLUP_DN, MIKEY_EVT_VOLUP_UP,
+-                     &d->vol_up, &d->up_click);
+-    mikey_decode_vol(evt, MIKEY_EVT_VOLDN_DN, MIKEY_EVT_VOLDN_UP,
+-                     &d->vol_dn, &d->dn_click);
++    mikey_decode_vol(evt, MIKEY_EVT_VOLUP_DN,
++                     &d->vol_up, &d->up_click, &d->up_press_seen);
++    mikey_decode_vol(evt, MIKEY_EVT_VOLDN_DN,
++                     &d->vol_dn, &d->dn_click, &d->dn_press_seen);
+ 
+     /* reg4 can read pressed while the mode settles; don't report the
+      * center button until it has been seen released once */
+-    bool raw = (btn & MIKEY_BTN_CENTER) != 0;
++    bool raw = raw_center;
+     if (!raw)
+         d->armed = true;
+ 
+-    /* click-only: emit a fixed pulse at each debounced rise */
+-    if (raw && d->armed)
+-    {
+-        if (!d->center_down && d->center_off >= MIKEY_CENTER_OFF_POLLS)
++    /* Some compatible remotes assert the center sense during a volume
++     * operation. Classify a center edge for 120ms before emitting it so a
++     * slightly later volume report can cancel it. Require a clean release
++     * after volume activity; a delayed/stuck center sense is not a click. */
++    if (evt & (MIKEY_EVT_VOLUP_DN | MIKEY_EVT_VOLUP_UP |
++               MIKEY_EVT_VOLDN_DN | MIKEY_EVT_VOLDN_UP))
++        d->volume_quiet = 15; /* 300ms after the last volume report */
++    else if (d->volume_quiet > 0)
++        d->volume_quiet--;
++
++    if (d->volume_quiet > 0 || d->vol_up || d->vol_dn)
++    {
++        d->center_pending = d->center_pulse = 0;
++        d->center_down = raw;
++        d->center_off = raw ? 0 : MIKEY_CENTER_OFF_POLLS;
++    }
++    else
++    {
++        if (raw && d->armed)
++        {
++            if (!d->center_down && d->center_off >= MIKEY_CENTER_OFF_POLLS)
++                d->center_pending = 6; /* 120ms classification window */
++            d->center_down = true;
++            d->center_off = 0;
++        }
++        else
++        {
++            if (d->center_off < MIKEY_CENTER_OFF_POLLS)
++                d->center_off++;
++            if (d->center_off >= MIKEY_CENTER_OFF_POLLS)
++                d->center_down = false;
++        }
++        if (d->center_pending > 0 && --d->center_pending == 0)
+             d->center_pulse = MIKEY_CENTER_PULSE_POLLS;
+-        d->center_down = true;
+-        d->center_off = 0;
+-    }
+-    else
+-    {
+-        if (d->center_off < MIKEY_CENTER_OFF_POLLS)
+-            d->center_off++;
+-        if (d->center_off >= MIKEY_CENTER_OFF_POLLS)
+-            d->center_down = false;
+     }
+ 
+     bool center = false;
