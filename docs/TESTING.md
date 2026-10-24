@@ -35,3 +35,9 @@ scan-control cases and the native build pass; both Scrim files pass the current
 skin parser. Installed firmware/theme hashes pass after remount and the
 filesystem is verified. Device analysis, visual and post-restart USB checks
 remain pending; see [POWER-AND-BATTERY.md](POWER-AND-BATTERY.md).
+
+PB13 adds three battery-display modes with the existing integer layout and
+preserved graphic/numeric config tokens. Its native build and both Scrim parser
+checks pass; font metrics fit the percentage and clock in separate viewports.
+Installed mode/layout, persistence and post-restart USB checks remain pending;
+see [BATTERY-DISPLAY.md](BATTERY-DISPLAY.md).

@@ -24,7 +24,10 @@ The PB12 theme follow-up gives Analyze Music Now its own waveform glyph (`P`,
 U+0050 in Scrim's bundled Material icon font), leaving Update Now unchanged.
 The glyph was checked visually in the actual bundled font. This is a one-token
 theme correction; it does not require a new firmware core or an analysis rescan.
-Deployment is deferred while the player's current analysis is running.
+It was prepared while the player's analysis was running; PB13 includes it with
+the [selectable battery presentation](BATTERY-DISPLAY.md), which replaces the
+theme's power text with the chosen icon/percentage layout. The detailed USB
+battery footer is retained.
 
 The computer connection screen shows battery percentage and Charging or USB
 connected. Its small status viewport uses the built-in font, cached battery

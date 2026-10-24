@@ -1,0 +1,21 @@
+{
+  "checkpoint": "pb13",
+  "version": "rodbox-pb13-battery-261024",
+  "target": "ipod6g",
+  "change": "Selectable icon/percentage/combined battery modes; preserve detailed USB battery footer and include analysis waveform icon",
+  "validation": {
+    "native_build": "passed",
+    "scrim_parser": "both files passed with updated settings table",
+    "font_geometry": "100% 27px in 34px area; widest 12-hour clock 48px in 58px area",
+    "installation": "firmware, themes and enabled combined preference verified after remount; filesystem verified",
+    "device_mode_switching_and_layout": "pending",
+    "post_restart_usb": "pending"
+  },
+  "compatibility": {
+    "graphic": 0,
+    "numeric": 1,
+    "both": 2,
+    "default": "graphic",
+    "legacy_fixed_statusbar_combined_fallback": "icon"
+  }
+}

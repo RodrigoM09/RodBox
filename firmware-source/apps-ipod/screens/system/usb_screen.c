@@ -209,6 +209,42 @@ static void usb_battery_draw(bool force)
         screen->putsxy(width < vp.width ? (vp.width-width)/2 : 0, 4, text);
         screen->update_viewport();
         screen->set_viewport(old);
+
+        /* Respect the top-indicator preference independently of the detailed
+         * footer. Same built-in font and cached values; no skin/file access. */
+        if (screen->lcdwidth >= 128)
+        {
+            viewport_set_defaults(&vp, screen->screen_type);
+            vp.font = FONT_SYSFIXED;
+            vp.x = screen->lcdwidth - 72;
+            vp.y = 0;
+            vp.width = 72;
+            vp.height = 20;
+            old = screen->set_viewport(&vp);
+            screen->clear_viewport();
+            int mode = global_settings.battery_display;
+            if (mode != BATTERY_DISPLAY_ICON)
+            {
+                char percentage[6];
+                if (level >= 0)
+                    snprintf(percentage, sizeof(percentage), "%d%%", level);
+                else
+                    snprintf(percentage, sizeof(percentage), "?%%");
+                font_getstringsize(percentage, &width, NULL, FONT_SYSFIXED);
+                screen->putsxy(mode == BATTERY_DISPLAY_PERCENT
+                               ? vp.width - width - 7 : 4, 6, percentage);
+            }
+            if (mode != BATTERY_DISPLAY_PERCENT)
+            {
+                int fill = level < 0 ? 0 : MIN(level, 100) * 18 / 100;
+                screen->drawrect(43, 5, 21, 11);
+                screen->fillrect(64, 8, 2, 5);
+                if (fill > 0)
+                    screen->fillrect(45, 7, fill, 7);
+            }
+            screen->update_viewport();
+            screen->set_viewport(old);
+        }
     }
 }
 

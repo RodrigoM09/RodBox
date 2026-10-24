@@ -902,9 +902,10 @@ const struct settings_list settings[] = {
                    "volume display", graphic_numeric, NULL, 2,
                    ID2P(LANG_DISPLAY_GRAPHIC),
                    ID2P(LANG_DISPLAY_NUMERIC)),
-    CHOICE_SETTING(F_THEMESETTING, battery_display, LANG_BATTERY_DISPLAY, 0,
-                   "battery display", graphic_numeric, NULL, 2,
-                   ID2P(LANG_DISPLAY_GRAPHIC), ID2P(LANG_DISPLAY_NUMERIC)),
+    CHOICE_SETTING(F_THEMESETTING, battery_display, LANG_BATTERY_DISPLAY,
+                   BATTERY_DISPLAY_ICON, "battery display", "graphic,numeric,both", NULL, 3,
+                   ID2P(LANG_BATTERY_ICON_ONLY), ID2P(LANG_BATTERY_PERCENT_ONLY),
+                   ID2P(LANG_BATTERY_ICON_PERCENT)),
     /* Disk activity is off by default: while music plays the disk is read
      * often enough to keep it lit, and every frame it animates is a status
      * bar repaint. */

@@ -40,6 +40,9 @@
 # icons, which auto-hide with the panel
 %?mv(3)<%Vd(Volume)|%?and(%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,5),%Tl(5)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,10),%Tl(10)),%or(%if(%ft(themes/scrim.preferences,auto-hide:),!=,30),%Tl(30)))<%Vd(Chrome)|>>
 #
+# Battery mode does not depend on charger/USB state.
+%?St(battery display)<%Vd(BatteryIcon)|%Vd(BatteryPercent)|%Vd(BatteryIcon)%Vd(BatteryPercent)>
+#
 # Album panel contents
 #
 # - Track title
@@ -83,7 +86,8 @@
 %Vl(Volume,4,7,72,22,3)%Vf(!ffffff)%Vb(000000)
 %pv dB
 
-# RodBox: battery and external-power state stay in the artwork-free margin.
-%V(2,38,76,28,3)%Vf(!ffffff)
-%bl%%
-%?bc<Charging|%?bu<USB power|%?bp<Power|>>>
+# RodBox: battery modes stay in the artwork-free margin.
+%Vl(BatteryPercent,2,44,42,16,3)%Vf(!ffffff)
+%ar%bl%%
+%Vl(BatteryIcon,48,38,24,24,4)%Vf(!ffffff)
+%?bc<%?bl<·|·|¸|¸|¸|¸|¹|º>|%?bl<1|1|2|3|4|5|6|7>>

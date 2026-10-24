@@ -34,8 +34,8 @@
 # its line's rect first -- text or not. 
 %V(0,0,-,-,-)
 #
-# Top bar
-%?mv(3)<%Vd(Volume)|%Vd(Chrome)%?St(battery display)<%Vd(ChromeG)|%Vd(ChromeN)>>
+# Top bar: battery presentation is independent of charging/USB state.
+%?mv(3)<%Vd(Volume)|%Vd(Chrome)>%?St(battery display)<%Vd(BatteryIcon)|%Vd(BatteryOnlyPercent)|%Vd(BatteryIcon)%Vd(BatteryPercent)>
 #
 # Quick settings. Cover Flow's %VI rides this line because a conditional
 # that flips clears its line's rect.
@@ -44,29 +44,20 @@
 # Setup rows
 %Lb(Rows,300,30,-,46)
 #
-# A numeric battery display adds the percentage after the time, so the title
-# and the time have a ChromeG (graphic) and a ChromeN (numeric) copy: the
-# time clears its whole viewport, so each starts where its title ends.
-#
 # - Title
 %Vl(Chrome,0,0,320,35,3)
-%Vl(ChromeG,10,8,200,20,3)%Vf(000000)
+%Vl(Chrome,10,8,170,20,3)%Vf(000000)
 %?if(%cs,=,10)<%Sx(Quick Settings)|%?if(%Lt,=,Rockbox)<RodBox|%s%Lt>>
-%Vl(ChromeN,10,8,152,20,3)%Vf(000000)
-%?if(%cs,=,10)<%Sx(Quick Settings)|%?if(%Lt,=,Rockbox)<RodBox|%s%Lt>>
-#
-# - Status icons. The charging glyphs mirror the level glyphs band for
-#   band; one covers levels 2 to 5, so it stands in four places.
-%Vl(Chrome,289,5,24,24,2)%Vf(000000)
+# - Time
+%Vl(Chrome,185,11,58,16,4)%Vf(000000)
+%ar%?cf<%cH:%cM|%cl:%cM %cP>
+# - Battery icon and small percentage occupy separate viewports.
+%Vl(BatteryIcon,289,5,24,24,2)%Vf(000000)
 %ar%?or(%lh,%lb,%lw)<%?la<á|â|ã|ä|å|æ|ç|è>|%?bc<%?bl<·|·|¸|¸|¸|¸|¹|º>|%?bl<1|1|2|3|4|5|6|7>>>
-#
-# - Time, and the battery percentage when the display is numeric
-%Vl(ChromeG,210,3,70,30,4)%Vf(000000)
-%ar%?cf<%cH:%cM|%cl:%cM %cP>
-%ar%?bc<Charging|%?bu<USB power|%?bp<Power|>>>
-%Vl(ChromeN,162,3,118,30,4)%Vf(000000)
-%ar%?cf<%cH:%cM|%cl:%cM %cP>
-%ar%bl%% %?bc<CHG|%?bu<USB|%?bp<PWR|>>>
+%Vl(BatteryPercent,249,11,34,16,4)%Vf(000000)
+%ar%bl%%
+%Vl(BatteryOnlyPercent,279,11,34,16,4)%Vf(000000)
+%ar%bl%%
 #
 # List viewport
 %Vi(-,10,46,300,184,-)
