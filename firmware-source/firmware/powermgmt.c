@@ -794,6 +794,23 @@ static inline void power_thread_step(void)
     }
 } /* power_thread_step */
 
+#if CONFIG_CHARGING
+/* Wake once when external power appears, even if the battery is full or the
+ * source has not qualified as a charger. Update the cache before posting the
+ * wake so consumers see the new input. No repeated wake while plugged in. */
+static void power_thread_update_inputs(unsigned int pwr)
+{
+#ifdef HAVE_BACKLIGHT
+    unsigned int previous = power_thread_inputs;
+#endif
+    power_thread_inputs = pwr;
+#ifdef HAVE_BACKLIGHT
+    if (!(previous & POWER_INPUT) && (pwr & POWER_INPUT))
+        backlight_on();
+#endif
+}
+#endif
+
 static void power_thread(void)
 {
     long next_power_hist;
@@ -843,7 +860,7 @@ static void power_thread(void)
             reset_battery_filter(_battery_voltage());
         }
 #endif
-        power_thread_inputs = pwr;
+        power_thread_update_inputs(pwr);
 
         if (!detect_charger(pwr))
 #endif /* CONFIG_CHARGING */

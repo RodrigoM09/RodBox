@@ -1,0 +1,19 @@
+{
+  "checkpoint": "pb14",
+  "version": "rodbox-pb14-plugwake-261024",
+  "target": "ipod6g",
+  "change": "Request one normal backlight wake when external power changes from absent to present",
+  "status": "prepared; not installed while device analysis is running",
+  "validation": {
+    "native_build": "passed",
+    "power_input_state_cases": 15,
+    "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer",
+    "device_wake_timeout_reconnect": "pending",
+    "post_restart_usb": "pending"
+  },
+  "limits": [
+    "Normal backlight hold/ignore and timeout policies still apply",
+    "Does not change bootloader or powered-off boot behaviour",
+    "Fresh device backups and installation remain deferred until analysis finishes"
+  ]
+}

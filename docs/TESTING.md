@@ -13,6 +13,7 @@ python3 tests/playlist/test_compare_benchmark.py firmware-source/apps-ipod/playl
 python3 tests/analysis/test_probe.py
 python3 tests/analysis/test_index.py
 python3 tests/analysis/test_power.py
+python3 tests/analysis/test_plug_wake.py
 ```
 
 Host C harnesses require clang and use AddressSanitizer/UndefinedBehaviorSanitizer. External hardware services are mocked. They exercise the extracted active function bodies; they are not a USB bus, decoder or storage-device emulator. Never send deliberately malformed write traffic to a filesystem containing your music.
@@ -41,3 +42,8 @@ preserved graphic/numeric config tokens. Its native build and both Scrim parser
 checks pass; font metrics fit the percentage and clock in separate viewports.
 Installed mode/layout, persistence and post-restart USB checks remain pending;
 see [BATTERY-DISPLAY.md](BATTERY-DISPLAY.md).
+
+PB14 is prepared but not installed while analysis runs. Fifteen actual-helper
+input-transition cases pass ASan/UBSan and the native build passes. Physical
+charger/computer wake, normal timeout, reconnection and USB checks are pending;
+see [PLUG-IN-WAKE.md](PLUG-IN-WAKE.md).
