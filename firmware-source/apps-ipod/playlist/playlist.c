@@ -1321,7 +1321,6 @@ static int add_track_to_playlist_unlocked(struct playlist_info* playlist,
 {
     int insert_position, orig_position;
     unsigned long flags = PLAYLIST_INSERT_TYPE_INSERT;
-    int i;
 
     insert_position = orig_position = position;
 
@@ -1436,12 +1435,17 @@ static int add_track_to_playlist_unlocked(struct playlist_info* playlist,
     if (playlist->dcfrefs_handle)
         dcfrefs = core_get_data(playlist->dcfrefs_handle);
 
-    /* shift indices so that track can be added */
-    for (i=playlist->amount; i>insert_position; i--)
+    /* Move the overlapping tail as a block, keeping the cached file
+     * references paired with their indices. No allocation or gap state. */
+    int tail_count = playlist->amount - insert_position;
+    if (tail_count > 0)
     {
-        playlist->indices[i] = playlist->indices[i-1];
+        memmove(&playlist->indices[insert_position + 1],
+                &playlist->indices[insert_position],
+                tail_count * sizeof(*playlist->indices));
         if (dcfrefs)
-            dcfrefs[i] = dcfrefs[i-1];
+            memmove(&dcfrefs[insert_position + 1], &dcfrefs[insert_position],
+                    tail_count * sizeof(*dcfrefs));
     }
 
     /* update stored indices if needed */
