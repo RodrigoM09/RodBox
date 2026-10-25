@@ -237,6 +237,10 @@ int ata_write_sectors(IF_MD(int drive,)
 
     if (count) /* all complete physical sectors */
     {
+        /* This path bypasses the partial-sector cache. A later small read
+         * or read-modify-write must not reuse bytes from before this write.
+         * Invalidate before I/O: failure may still have changed the disk. */
+        sector_cache.inuse = false;
         rc = ata_transfer_sectors(start, count, (void*)buf, true);
         if (rc)
         {
@@ -265,6 +269,10 @@ int ata_write_sectors(IF_MD(int drive,)
     }
 
   error:
+    /* A failed partial write leaves modified cache bytes whose persistence
+     * is unknown. Reload the block rather than treating them as disk data. */
+    if (rc)
+        sector_cache.inuse = false;
     mutex_unlock(&ata_mutex);
 
     return rc;

@@ -16,9 +16,18 @@ python3 tests/analysis/test_power.py
 python3 tests/analysis/test_plug_wake.py
 python3 tests/analysis/test_usb_battery.py
 python3 tests/storage/test_usb_idle.py
+python3 tests/storage/test_sector_cache.py
 ```
 
 Host C harnesses require clang and use AddressSanitizer/UndefinedBehaviorSanitizer. External hardware services are mocked. They exercise the extracted active function bodies; they are not a USB bus, decoder or storage-device emulator. Never send deliberately malformed write traffic to a filesystem containing your music.
+
+PB19's [sector-cache regression](SECTOR-CACHE.md) uses a byte-exact mock disk
+with the real shared ATA cache/read/write region. It covers stale reads,
+neighboring-sector rollback, ambiguous failed writes, 40,000 mixed operations
+across single/multidrive configurations and native 4K access. It passes with
+ASan/UBSan; the original code and each missing-invalidation mutation fail.
+The native ipod6g build and preceding 220 ATA policy/reset executions pass.
+PB19 remains uninstalled; these are host checks, not hardware acceptance.
 
 Recorded checks: 17 USB write-length/state/residue cases; 11 endpoint/IRQ/blocking-return cases; 21 playlist guard/queue/replay/capacity cases; 50,000 old/new insertion comparisons. Companion fixtures cover interrupted/failed copies, containment, source changes, existing-file preservation and rejection of incomplete scans.
 

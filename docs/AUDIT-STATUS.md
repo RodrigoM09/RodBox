@@ -7,6 +7,7 @@ of prepared follow-ups. Native builds and mocks do not establish hardware health
 
 | Finding | Evidence and state |
 | --- | --- |
+| Partial-sector cache can return stale bytes and overwrite updated neighbors | PB19 invalidates on full writes and failed writes; actual-code mock-disk regressions, 40,000 mixed operations, missing-fix mutations and native build checked; [not installed or proven causal](SECTOR-CACHE.md) |
 | Reset error paths can leave the recursive ATA mutex held | PB17: three unlock-and-return corrections; 220 actual-function executions and native build pass; not installed |
 | Copy writes were inside a Python assertion | Corrected separately; short writes preserve originals; ten copy tests pass in ordinary and optimized Python, sixteen companion tests overall |
 | Library/index finalizers could publish after late write errors | PB18: successful flush and close required; actual-function error injection and native build pass; not installed |

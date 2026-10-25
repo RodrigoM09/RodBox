@@ -1,5 +1,13 @@
 # Classic ATA USB idle regression checks
 
+For the separate shared ATA partial-sector coherence checks, run
+`python3 tests/storage/test_sector_cache.py`. This compiles the real production
+cache/read/write region against a byte-exact mock disk in single/multidrive
+configurations, with ASan/UBSan. `--scenario read`, `rollback`, `failure` or
+`mixed` selects an independent group; `--source /path/to/ata-common.c` permits
+comparison with an older source without editing the production tree. See
+[PB19 and its limits](../../docs/SECTOR-CACHE.md).
+
 Run `python3 tests/storage/test_usb_idle.py` from the repository root. The runner
 copies the current production function bodies without rewriting their logic into
 a C harness and compiles them with Clang AddressSanitizer and UndefinedBehaviorSanitizer.

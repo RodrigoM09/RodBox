@@ -1,0 +1,24 @@
+{
+  "checkpoint": "pb19",
+  "version": "rodbox-pb19-sectorcache-261024",
+  "target": "ipod6g",
+  "change": "Invalidate partial-sector cache before full writes and after failed writes",
+  "status": "prepared; not installed",
+  "core_sha256": "0ad191fe5dbc28f2ce0c680d1bdfbafae54ed5ba0087e769e5896a71b58c866f",
+  "validation": {
+    "native_build": "passed; target header and payload checksum checked",
+    "actual_cache_single_and_multidrive": "passed with ASan/UBSan",
+    "mixed_operations": 40000,
+    "original_code_independent_groups": "read, rollback, failure and mixed all fail as expected",
+    "missing_invalidation_mutations": "each fails its regression",
+    "prior_ata_policy_reset_executions": 220,
+    "device_acceptance": "pending"
+  },
+  "limits": [
+    "Partial-sector emulation and mixed access are required for the stale-neighbor path",
+    "Host 4K block size alone cannot establish active ATA emulation",
+    "No captured device trace proves this caused observed corruption",
+    "Shared ATA code; only ipod6g native build checked",
+    "Cumulative source includes prepared PB17/PB18; no device writes performed"
+  ]
+}
