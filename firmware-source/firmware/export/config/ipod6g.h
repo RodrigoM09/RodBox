@@ -15,6 +15,9 @@
 /* Propagate ATA flush failures on USB synchronization and safe eject. */
 #define HAVE_STORAGE_FLUSH
 
+/* Serialize mass-storage writes and verify each payload before USB success. */
+#define USBSTOR_VERIFY_WRITES
+
 #define STORAGE_NEEDS_BOUNCE_BUFFER
 
 #define HAVE_ATA_DMA

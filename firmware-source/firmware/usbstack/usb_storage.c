@@ -721,14 +721,16 @@ static void usb_storage_transfer_complete(int ep,int dir,int status,int length)
                              MIN(cur_cmd.count,WRITE_BUFFER_SIZE/cur_cmd.block_size);
                 int next_select = !cur_cmd.data_select;
 
+#ifndef USBSTOR_VERIFY_WRITES
                 if(next_count!=0) {
                     /* Ask the host to send more, to the other buffer */
                     receive_block_data(cur_cmd.data[next_select],
                                        MIN(WRITE_BUFFER_SIZE / cur_cmd.block_size, next_count) * cur_cmd.block_size);
                 }
 
-                /* Now write the data that just came in, while the host is
-                   sending the next bit */
+#endif
+                /* Verified writes retain both buffers until storage readback
+                 * completes; other targets may overlap USB and storage DMA. */
 #ifdef USB_USE_RAMDISK
                 memcpy(ramdisk_buffer + cur_cmd.sector*cur_cmd.block_size,
                         cur_cmd.data[cur_cmd.data_select],
@@ -745,6 +747,26 @@ static void usb_storage_transfer_complete(int ep,int dir,int status,int length)
                         cur_cmd.data[cur_cmd.data_select]);
                 }
 
+#ifdef USBSTOR_VERIFY_WRITES
+                if (result == 0) {
+                    unsigned int blocks = MIN(WRITE_BUFFER_SIZE / cur_cmd.block_size,
+                                              cur_cmd.count);
+                    /* The other buffer is not owned by USB yet. A successful
+                     * storage command alone does not prove its payload matches
+                     * the host's bytes. Never acknowledge a mismatched write. */
+                    result = storage_read_sectors(IF_MD(cur_cmd.lun,)
+                        cur_cmd.sector, blocks, cur_cmd.data[next_select]);
+                    if (result == 0 && memcmp(cur_cmd.data[cur_cmd.data_select],
+                            cur_cmd.data[next_select], blocks * cur_cmd.block_size))
+                        result = -1;
+                }
+                /* Arm only after both storage DMA operations have finished.
+                 * Failed commands still drain all remaining host data. */
+                if (next_count != 0)
+                    receive_block_data(cur_cmd.data[next_select],
+                        MIN(WRITE_BUFFER_SIZE / cur_cmd.block_size, next_count) *
+                        cur_cmd.block_size);
+#endif
                 if(result != 0) {
                     /* The next OUT buffer may already belong to the USB
                      * controller. Do not replace that receive with a CBW.
