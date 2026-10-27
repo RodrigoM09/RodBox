@@ -196,8 +196,9 @@ void sound_index_seen(uint64_t key);
  * folders rather than the database, never prunes. */
 int sound_index_finish(bool prune);
 
-/* Stop, keeping the working file so the next run resumes from it. */
-void sound_index_close(void);
+/* Stop and flush the working file so the next run resumes from it. False
+ * on a write/flush/close error; that damaged working file is discarded. */
+bool sound_index_close(void);
 
 /* Whether a scan is part-finished, how many tracks this run has measured,
  * and whether it is an update -- one seeded from a finished index -- rather

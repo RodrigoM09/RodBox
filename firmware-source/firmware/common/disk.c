@@ -172,6 +172,18 @@ bool disk_init(IF_MD_NONVOID(int drive))
     unsigned int sector_size = info->sector_size;
 #endif
 
+    /* An absent/invalid geometry must not reach GPT probe arithmetic. */
+    if (num_sectors == 0 || info->sector_size < SECTOR_SIZE ||
+        (info->sector_size & (info->sector_size - 1)) != 0
+#ifdef DEFAULT_VIRT_SECTOR_SIZE
+        || info->sector_size > DEFAULT_VIRT_SECTOR_SIZE
+#endif
+        )
+    {
+        dc_release_buffer(sector);
+        return false;
+    }
+
 #if (CONFIG_STORAGE & STORAGE_ATA)
     disk_writer_lock();
 #ifdef MAX_VARIABLE_LOG_SECTOR
@@ -193,7 +205,11 @@ bool disk_init(IF_MD_NONVOID(int drive))
 #endif  /* STORAGE_ATA */
 
     memset(sector, 0, DC_CACHE_BUFSIZE);
-    storage_read_sectors(IF_MD(drive,) 0, 1, sector);
+    if (storage_read_sectors(IF_MD(drive,) 0, 1, sector) != 0)
+    {
+        dc_release_buffer(sector);
+        return false;
+    }
 
     bool init = false;
 
@@ -256,7 +272,9 @@ bool disk_init(IF_MD_NONVOID(int drive))
 #endif
 
             for (unsigned int i = 0 ; i < (sizeof(try_gpt) / sizeof(try_gpt[0])) ; i++) {
-                storage_read_sectors(IF_MD(drive,) try_gpt[i], 1, sector);
+                if (try_gpt[i] >= num_sectors ||
+                    storage_read_sectors(IF_MD(drive,) try_gpt[i], 1, sector) != 0)
+                    continue;
                 part_lba = BYTES2INT64(ptr, 0);
                 if (part_lba == 0x5452415020494645ULL) {
                     part_entries = 1;
@@ -293,9 +311,18 @@ bool disk_init(IF_MD_NONVOID(int drive))
 	    part_entries = BYTES2INT32(ptr, 80);
 	    part_entry_size = BYTES2INT32(ptr, 84);
 
-	    int part = 0;
+            /* Entries must fit wholly in a logical sector. Reject malformed
+               sizes before inspecting fields or advancing the buffer pointer. */
+            if (part_entry_size < 128 ||
+                part_entry_size > (unsigned int)LOG_SECTOR_SIZE(drive) ||
+                LOG_SECTOR_SIZE(drive) % part_entry_size != 0)
+                break;
+
+            int part = 0;
 reload:
-	    storage_read_sectors(IF_MD(drive,) part_lba, 1, sector);
+            if (part_lba >= num_sectors ||
+                storage_read_sectors(IF_MD(drive,) part_lba, 1, sector) != 0)
+                break;
             uint8_t *pptr = ptr;
             while (part < MAX_PARTITIONS_PER_DRIVE && part_entries) {
                 if (pptr - ptr >= LOG_SECTOR_SIZE(drive)) {

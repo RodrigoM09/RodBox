@@ -83,6 +83,8 @@ void audio_buffer_damaged(void);
 void audio_release_buffer(void);
 /* audio_peek_track() that reads only the buffer: safe on a small stack. */
 bool audio_peek_buffered_track(struct mp3entry *id3, int offset);
+/* Deep-copy the live current metadata/progress while its mutex is held. */
+bool audio_current_track_copy(struct mp3entry *id3);
 
 unsigned int playback_status(void);
 

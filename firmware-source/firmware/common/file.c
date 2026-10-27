@@ -24,6 +24,7 @@
 #include <string.h>
 #include <errno.h>
 #include "debug.h"
+#include "panic.h"
 #include "file.h"
 #include "fileobj_mgr.h"
 #include "disk_cache.h"
@@ -810,7 +811,14 @@ int open_noiso_internal(const char *path, int oflag)
 void force_close_writer_internal(struct filestr_base *stream)
 {
     /* only we do writers so we know this is our guy */
-    close_internal((struct filestr_desc *)stream);
+    int rc = close_internal((struct filestr_desc *)stream);
+    if (rc < 0)
+    {
+        /* Unmount will discard the filesystem caches and hand storage to
+         * another owner. A failed final write cannot be made safe by that
+         * handover; use the same fail-stop policy as FAT metadata writeback. */
+        panicf("File write failed at unmount (%d). Restart required", rc);
+    }
 }
 
 

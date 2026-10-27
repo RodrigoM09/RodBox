@@ -23,11 +23,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include "config.h"
 #include "system/library_files.h"
 #include "file.h"
+#include "errno.h"
 #include "core_alloc.h"
 #include "audio/track_decode.h"
 #include "database/path_key.h"
@@ -50,6 +52,11 @@
  * finished index; 0 in a finished index. */
 #define SOUND_MAGIC    0x534E4431  /* "SND1" */
 #define SOUND_VERSION  3
+#ifdef FILE_SIZE_MAX
+#define SOUND_SIZE_MAX ((uint64_t)FILE_SIZE_MAX)
+#else
+#define SOUND_SIZE_MAX ((UINT64_C(1) << (sizeof(off_t) * CHAR_BIT - 1)) - 1)
+#endif
 
 /* The record goes to disk verbatim, so its size is part of the format rather
  * than a detail of this build. A field added without the version moving would
@@ -80,6 +87,8 @@ struct key_entry
 };
 
 static int          part_fd = -1;
+static bool         part_failed; /* Working-file I/O failed; never publish it. */
+static unsigned int part_updates; /* In-place writes since their last flush. */
 static int          table_handle;
 static int          table_used;
 static int          table_max;
@@ -254,11 +263,13 @@ static int file_count(const char *path)
     if (room < 0)
         room = 0;
     room /= (off_t)sizeof (struct sound_record);
+    if (room > INT_MAX)
+        room = INT_MAX;
 
     if (lseek(fd, 0, SEEK_SET) == 0 &&
         read(fd, &h, sizeof (h)) == (ssize_t)sizeof (h) && header_ok(&h))
     {
-        n = (off_t)h.count < room ? (int)h.count : (int)room;
+        n = (uint64_t)h.count < (uint64_t)room ? (int)h.count : (int)room;
     }
 
     close(fd);
@@ -340,24 +351,42 @@ static bool seed_from_finished(void)
     struct key_entry *t = table();
     int fd = open(SOUND_FILE, O_RDONLY);
     uint64_t last_key = 0;
+    bool have_last_key = false;
     char genre[48];     /* As the scan reads it */
     unsigned int i;
 
     if (fd < 0)
-        return true;    /* Nothing finished yet is not a failure */
+        return errno == ENOENT; /* An unreadable index must not be forgotten. */
 
-    if (read(fd, &h, sizeof (h)) != (ssize_t)sizeof (h) || !header_ok(&h))
+    ssize_t n = read(fd, &h, sizeof (h));
+    if (n != (ssize_t)sizeof (h))
+    {
+        close(fd);
+        return false;
+    }
+    if (!header_ok(&h))
     {
         close(fd);
         return true;
     }
+    if (h.count > (uint32_t)table_max)
+    {
+        close(fd);
+        return false;
+    }
 
-    lseek(part_fd, 0, SEEK_END);
+    if (lseek(part_fd, 0, SEEK_END) < 0) {
+        close(fd);
+        return false;
+    }
 
     for (i = 0; i < h.count && table_used < table_max; i++)
     {
         if (read(fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
-            break;
+        {
+            close(fd);
+            return false;
+        }
 
         /* A failure is retried rather than inherited. What could not be read
          * last time is a property of the reader as much as the file -- a
@@ -375,9 +404,10 @@ static bool seed_from_finished(void)
          * comparison repairs it as the index is carried forward. Which of the
          * two survives does not matter: if it is the stale one, its mtime and
          * size say so and the track is measured again. */
-        if (r.key == last_key)
+        if (have_last_key && r.key == last_key)
             continue;
         last_key = r.key;
+        have_last_key = true;
 
         /* The same fold the scan applies, so a record keyed by an older
          * fold groups with ones measured since. */
@@ -387,8 +417,10 @@ static bool seed_from_finished(void)
             r.genre_key = sound_index_genre_key(genre);
         }
 
-        if (write(part_fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
-            break;
+        if (write(part_fd, &r, sizeof (r)) != (ssize_t)sizeof (r)) {
+            close(fd);
+            return false;
+        }
 
         table_append(t, &r, 0);
     }
@@ -397,8 +429,9 @@ static bool seed_from_finished(void)
 
     part_seeded = (uint32_t)table_used;
     part_header_init(&h, (uint32_t)table_used);
-    lseek(part_fd, 0, SEEK_SET);
-    write(part_fd, &h, sizeof (h));
+    if (lseek(part_fd, 0, SEEK_SET) != 0 ||
+        write(part_fd, &h, sizeof (h)) != (ssize_t)sizeof (h))
+        return false;
 
     table_sorted = false;
     table_measure_sorted();
@@ -425,29 +458,59 @@ static bool load_part(bool seed)
     struct sound_record r;
     struct key_entry *t = table();
     unsigned int i;
+    ssize_t n = read(part_fd, &h, sizeof (h));
 
-    if (read(part_fd, &h, sizeof (h)) != (ssize_t)sizeof (h) ||
-        !header_ok(&h) || h.count == 0)
+    /* A read error says nothing about the saved work. Do not turn it into
+     * an empty file, or let begin() delete it as a failed write. */
+    if (n < 0)
+        return false;
+    if (n != (ssize_t)sizeof (h))
     {
-        lseek(part_fd, 0, SEEK_SET);
+        off_t end = lseek(part_fd, 0, SEEK_END);
+        if (end < 0 || end >= (off_t)sizeof (h))
+            return false;
+    }
+    if (n != (ssize_t)sizeof (h) || !header_ok(&h) || h.count == 0)
+    {
+        if (lseek(part_fd, 0, SEEK_SET) != 0)
+            return false;
+        /* From this point a failure can leave a partly rewritten file. */
+        part_failed = true;
         part_seeded = 0;
         part_header_init(&h, 0);
 
         if (write(part_fd, &h, sizeof (h)) != (ssize_t)sizeof (h))
             return false;
 
-        ftruncate(part_fd, sizeof (h));
+        if (ftruncate(part_fd, sizeof (h)) < 0)
+            return false;
         table_used = 0;
         table_sorted = true;
         table_sorted_upto = 0;
 
-        return seed ? seed_from_finished() : true;
+        if (seed && !seed_from_finished())
+            return false;
+        part_failed = false;
+        return true;
     }
+
+    /* Recover only records that are actually cut off at EOF. A short read
+     * of bytes the file still claims to hold is an I/O error, not permission
+     * to truncate all the records after it. */
+    off_t end = lseek(part_fd, 0, SEEK_END);
+    if (end < (off_t)sizeof (h) ||
+        lseek(part_fd, sizeof (h), SEEK_SET) != (off_t)sizeof (h))
+        return false;
+    off_t room = (end - (off_t)sizeof (h)) / (off_t)sizeof (r);
+    if ((uint64_t)h.count > (uint64_t)room)
+        h.count = (uint32_t)room;
+    if (h.count > (uint32_t)table_max)
+        return false;
 
     for (i = 0; i < h.count && table_used < table_max; i++)
     {
         if (read(part_fd, &r, sizeof (r)) != (ssize_t)sizeof (r))
-            break;
+            return false;
 
         table_append(t, &r, 0);
     }
@@ -459,8 +522,12 @@ static bool load_part(bool seed)
      * ordinal, so the file is cut back to what the table describes. */
     part_seeded = h.reserved < (uint32_t)table_used ? h.reserved
                                                     : (uint32_t)table_used;
-    ftruncate(part_fd, (off_t)sizeof (h)
-                       + (off_t)table_used * (off_t)sizeof (r));
+    off_t kept = (off_t)sizeof (h) + (off_t)table_used * (off_t)sizeof (r);
+    if (end != kept && ftruncate(part_fd, kept) < 0)
+    {
+        part_failed = true;
+        return false;
+    }
     table_sorted = false;
     table_measure_sorted();
 
@@ -469,11 +536,18 @@ static bool load_part(bool seed)
 
 int sound_index_begin(int capacity, bool fresh)
 {
+    if (part_fd >= 0 || table_handle > 0)
+        return SOUND_ERR_IO; /* An active scan still owns its pinned table. */
     if (capacity < 1)
         capacity = 1;
 
-    if (fresh)
+    if (fresh || part_failed) {
         remove(SOUND_PART);
+        if (file_exists(SOUND_PART))
+            return SOUND_ERR_IO;
+    }
+    part_failed = false;
+    part_updates = 0;
 
     /* Room for what is carried in as well as for what will be measured.
      *
@@ -488,9 +562,16 @@ int sound_index_begin(int capacity, bool fresh)
     {
         int carried = file_count(SOUND_PART);
 
-        capacity += carried > 0 ? carried : file_count(SOUND_FILE);
+        carried = carried > 0 ? carried : file_count(SOUND_FILE);
+        if (carried > INT_MAX - capacity)
+            return SOUND_ERR_MEM;
+        capacity += carried;
     }
 
+    if ((size_t)capacity > SIZE_MAX / sizeof (struct key_entry) ||
+        (uint64_t)capacity > (SOUND_SIZE_MAX - sizeof (struct sound_header)) /
+                             sizeof (struct sound_record))
+        return SOUND_ERR_MEM;
     table_handle = core_alloc((size_t)capacity * sizeof (struct key_entry));
     if (table_handle <= 0)
         return SOUND_ERR_MEM;
@@ -608,7 +689,7 @@ bool sound_index_add(const struct sound_record *r)
     off_t before;
     int at;
 
-    if (part_fd < 0 || t == NULL)
+    if (part_fd < 0 || t == NULL || part_failed)
         return false;
 
     /* A key already in the table is overwritten where it lies rather than
@@ -626,6 +707,7 @@ bool sound_index_add(const struct sound_record *r)
         if (lseek(part_fd, where, SEEK_SET) != where ||
             write(part_fd, r, sizeof (*r)) != (ssize_t)sizeof (*r))
         {
+            part_failed = true;
             return false;
         }
 
@@ -633,6 +715,16 @@ bool sound_index_add(const struct sound_record *r)
         t[at].size = r->size;
         t[at].analysis_revision = r->analysis_revision;
         t[at].seen = 1;
+
+        if (++part_updates >= 16)
+        {
+            if (fsync(part_fd) < 0)
+            {
+                part_failed = true;
+                return false;
+            }
+            part_updates = 0;
+        }
 
         /* The key set is unchanged, so a sorted table stays sorted and the
          * count in the header still describes the file. */
@@ -644,12 +736,15 @@ bool sound_index_add(const struct sound_record *r)
 
     /* At the offset the ordinal names rather than the end of the file. */
     before = (off_t)sizeof (h) + (off_t)table_used * (off_t)sizeof (*r);
-    if (lseek(part_fd, before, SEEK_SET) != before)
+    if (lseek(part_fd, before, SEEK_SET) != before) {
+        part_failed = true;
         return false;
+    }
 
     if (write(part_fd, r, sizeof (*r)) != (ssize_t)sizeof (*r))
     {
         ftruncate(part_fd, before);
+        part_failed = true;
         return false;
     }
 
@@ -664,11 +759,12 @@ bool sound_index_add(const struct sound_record *r)
      * most sixteen tracks, which are simply measured again. Flushing per
      * track would wake the disk twenty thousand times for that. */
     part_header_init(&h, (uint32_t)table_used);
-    lseek(part_fd, 0, SEEK_SET);
-    write(part_fd, &h, sizeof (h));
-
-    if ((table_used & 15) == 0)
-        fsync(part_fd);
+    if (lseek(part_fd, 0, SEEK_SET) != 0 ||
+        write(part_fd, &h, sizeof (h)) != (ssize_t)sizeof (h) ||
+        ((table_used & 15) == 0 && fsync(part_fd) < 0)) {
+        part_failed = true;
+        return false;
+    }
 
     return true;
 }
@@ -687,7 +783,7 @@ int sound_index_finish(bool prune)
     int kept = 0;
     int i;
 
-    if (part_fd < 0 || t == NULL)
+    if (part_fd < 0 || t == NULL || part_failed)
         return SOUND_ERR_IO;
 
     if (!table_sorted)
@@ -768,13 +864,20 @@ int sound_index_finish(bool prune)
     return SOUND_OK;
 }
 
-void sound_index_close(void)
+bool sound_index_close(void)
 {
     if (part_fd >= 0)
     {
-        close(part_fd);
+        if (!part_failed && fsync(part_fd) < 0)
+            part_failed = true;
+        if (close(part_fd) < 0)
+            part_failed = true;
         part_fd = -1;
     }
+    /* A detected working-file write failure can leave a torn record/header.
+     * Keep the last completed index, and re-seed instead of resuming this file. */
+    if (part_failed)
+        remove(SOUND_PART);
 
     if (table_handle > 0)
     {
@@ -786,6 +889,7 @@ void sound_index_close(void)
     table_used = 0;
     table_max = 0;
     table_sorted_upto = 0;
+    return !part_failed;
 }
 
 bool sound_index_partial(int *done, bool *update)
@@ -800,13 +904,23 @@ bool sound_index_partial(int *done, bool *update)
     if (read(fd, &h, sizeof (h)) == (ssize_t)sizeof (h) && header_ok(&h) &&
         h.count > 0)
     {
-        uint32_t seeded = h.reserved < h.count ? h.reserved : h.count;
+        off_t end = lseek(fd, 0, SEEK_END);
+        if (end >= (off_t)sizeof (h))
+        {
+            uint64_t room = (uint64_t)(end - (off_t)sizeof (h)) /
+                            sizeof (struct sound_record);
+            if (room > INT_MAX)
+                room = INT_MAX;
+            if (h.count > room)
+                h.count = (uint32_t)room;
+            uint32_t seeded = h.reserved < h.count ? h.reserved : h.count;
 
-        if (done != NULL)
-            *done = (int)(h.count - seeded);
-        if (update != NULL)
-            *update = seeded > 0;
-        ok = true;
+            if (done != NULL)
+                *done = (int)(h.count - seeded);
+            if (update != NULL)
+                *update = seeded > 0;
+            ok = h.count > 0;
+        }
     }
 
     close(fd);
@@ -832,17 +946,29 @@ int sound_index_reader_open(struct sound_index_reader *r)
     struct sound_header h;
 
     r->next = -1;
+    r->count = 0;
 
     r->fd = open(SOUND_FILE, O_RDONLY);
     if (r->fd < 0)
         return SOUND_ERR_NONE;
 
     if (read(r->fd, &h, sizeof (h)) != (ssize_t)sizeof (h) ||
-        !header_ok(&h))
+        !header_ok(&h) || h.count > INT_MAX)
     {
         close(r->fd);
         r->fd = -1;
         return SOUND_ERR_NONE;
+    }
+
+    off_t end = lseek(r->fd, 0, SEEK_END);
+    if (end < (off_t)sizeof (h) ||
+        (uint64_t)h.count > (uint64_t)(end - (off_t)sizeof (h)) /
+                           sizeof (struct sound_record) ||
+        lseek(r->fd, sizeof (h), SEEK_SET) != (off_t)sizeof (h))
+    {
+        close(r->fd);
+        r->fd = -1;
+        return SOUND_ERR_IO;
     }
 
     r->count = (int)h.count;

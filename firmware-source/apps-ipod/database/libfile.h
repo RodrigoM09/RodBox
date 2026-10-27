@@ -60,6 +60,8 @@ bool libfile_peek(const char *path, uint32_t magic, uint16_t version,
 
 struct libfile_writer {
     int fd;
+    bool failed;
+    uint64_t bytes;
     struct libfile_header hdr;
     char path[MAX_PATH];
 };

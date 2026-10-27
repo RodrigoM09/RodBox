@@ -20,6 +20,8 @@
 
 /* This is intended to be #included into the ATA driver */
 
+#include <limits.h>
+
 static sector_t total_sectors;
 static uint32_t log_sector_size;
 static uint16_t identify_info[ATA_IDENTIFY_WORDS] STORAGE_ALIGN_ATTR;
@@ -102,6 +104,17 @@ static int ata_transfer_sectors(uint64_t start,
                                 void* inbuf,
                                 int write);
 
+/* Some drivers pack error information into the sign bit. Multiplying such
+ * a code by ten can overflow into a positive value, which filesystem callers
+ * interpret as success. Preserve ordinary diagnostic codes when they fit;
+ * otherwise keep the failing stage as a bounded negative error. */
+static int ata_error_context(int rc, int stage)
+{
+    if (rc >= 0 || rc < (INT_MIN + stage) / 10)
+        return -stage;
+    return rc * 10 - stage;
+}
+
 static int cache_sector(sector_t sector)
 {
     int rc;
@@ -141,6 +154,12 @@ int ata_read_sectors(IF_MD(int drive,)
 #ifdef HAVE_MULTIDRIVE
     (void)drive; /* unused for now */
 #endif
+    if (incount < 0 || start > total_sectors ||
+        (sector_t)incount > total_sectors - start)
+        return -1;
+    if (incount == 0)
+        return 0;
+
     mutex_lock(&ata_mutex);
 
     offset = start & (phys_sector_mult - 1);
@@ -152,7 +171,7 @@ int ata_read_sectors(IF_MD(int drive,)
         rc = cache_sector(start);
         if (rc)
         {
-            rc = rc * 10 - 1;
+            rc = ata_error_context(rc, 1);
             goto error;
         }
         memcpy(inbuf, sector_cache.data + offset * log_sector_size,
@@ -170,7 +189,7 @@ int ata_read_sectors(IF_MD(int drive,)
         rc = ata_transfer_sectors(start, incount, inbuf, false);
         if (rc)
         {
-            rc = rc * 10 - 2;
+            rc = ata_error_context(rc, 2);
             goto error;
         }
         start += incount;
@@ -182,7 +201,7 @@ int ata_read_sectors(IF_MD(int drive,)
         rc = cache_sector(start);
         if (rc)
         {
-            rc = rc * 10 - 3;
+            rc = ata_error_context(rc, 3);
             goto error;
         }
         memcpy(inbuf, sector_cache.data, offset * log_sector_size);
@@ -205,6 +224,12 @@ int ata_write_sectors(IF_MD(int drive,)
 #ifdef HAVE_MULTIDRIVE
     (void)drive; /* unused for now */
 #endif
+    if (count < 0 || start > total_sectors ||
+        (sector_t)count > total_sectors - start)
+        return -1;
+    if (count == 0)
+        return 0;
+
     mutex_lock(&ata_mutex);
 
     offset = start & (phys_sector_mult - 1);
@@ -216,7 +241,7 @@ int ata_write_sectors(IF_MD(int drive,)
         rc = cache_sector(start);
         if (rc)
         {
-            rc = rc * 10 - 1;
+            rc = ata_error_context(rc, 1);
             goto error;
         }
         memcpy(sector_cache.data + offset * log_sector_size, buf,
@@ -224,7 +249,7 @@ int ata_write_sectors(IF_MD(int drive,)
         rc = flush_current_sector();
         if (rc)
         {
-            rc = rc * 10 - 2;
+            rc = ata_error_context(rc, 2);
             goto error;
         }
         start += partcount;
@@ -244,7 +269,7 @@ int ata_write_sectors(IF_MD(int drive,)
         rc = ata_transfer_sectors(start, count, (void*)buf, true);
         if (rc)
         {
-            rc = rc * 10 - 3;
+            rc = ata_error_context(rc, 3);
             goto error;
         }
         start += count;
@@ -256,14 +281,14 @@ int ata_write_sectors(IF_MD(int drive,)
         rc = cache_sector(start);
         if (rc)
         {
-            rc = rc * 10 - 4;
+            rc = ata_error_context(rc, 4);
             goto error;
         }
         memcpy(sector_cache.data, buf, offset * log_sector_size);
         rc = flush_current_sector();
         if (rc)
         {
-            rc = rc * 10 - 5;
+            rc = ata_error_context(rc, 5);
             goto error;
         }
     }
@@ -326,13 +351,20 @@ static int ata_get_phys_sector_mult(void)
 
 void ata_set_phys_sector_mult(unsigned int mult)
 {
+    mutex_lock(&ata_mutex);
     unsigned int max = MAX_PHYS_SECTOR_SIZE/log_sector_size;
     /* virtual sector could be larger than pyhsical sector */
     if (!mult || mult > max)
         mult = max;
     /* It needs to be at _least_ the size of the real multiplier */
-    if (mult > phys_sector_mult)
+    /* The alignment masks in the cache require a power of two. */
+    if ((mult & (mult - 1)) == 0 && mult > phys_sector_mult) {
+        /* A cache entry loaded with the old size does not contain the newly
+         * included neighboring sectors. Reload before any read/modify/write. */
+        sector_cache.inuse = false;
         phys_sector_mult = mult;
+    }
+    mutex_unlock(&ata_mutex);
 }
 
 #endif  /* MAX_PHYS_SECTOR_SIZE */

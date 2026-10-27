@@ -626,6 +626,39 @@ bool queue_peek_ex(struct event_queue *q, struct queue_event *ev,
     return have_msg;
 }
 
+/* Remove one exact posted event without disturbing unrelated messages.
+ * Like queue_peek_ex(..., NULL, QPEEK_REMOVE_EVENTS, ...), this releases
+ * a synchronous sender rather than transferring its reply obligation. */
+bool queue_remove_event(struct event_queue *q, long id, intptr_t data)
+{
+    int oldlevel = disable_irq_save();
+    corelock_lock(&q->cl);
+    bool removed = false;
+
+    for (unsigned int rd = q->read; rd != q->write; rd++) {
+        struct queue_event *ev = &q->events[rd & QUEUE_LENGTH_MASK];
+        if (ev->id != id || ev->data != data)
+            continue;
+
+        unsigned int head = q->read;
+        q->read = head + 1;
+        queue_do_unblock_sender(q->send, rd & QUEUE_LENGTH_MASK);
+        while (rd != head) {
+            unsigned int dst = rd & QUEUE_LENGTH_MASK;
+            unsigned int src = --rd & QUEUE_LENGTH_MASK;
+            q->events[dst] = q->events[src];
+            if (q->send)
+                q->send->senders[dst] = q->send->senders[src];
+        }
+        removed = true;
+        break;
+    }
+
+    corelock_unlock(&q->cl);
+    restore_irq(oldlevel);
+    return removed;
+}
+
 bool queue_peek(struct event_queue *q, struct queue_event *ev)
 {
     return queue_peek_ex(q, ev, 0, NULL);

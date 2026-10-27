@@ -52,10 +52,12 @@ struct command_status_wrapper {uint32_t signature,tag,data_residue;uint8_t statu
 static struct command_status_wrapper csw;
 static struct {struct command_status_wrapper *csw;} tb={&csw};
 static char cbw_buffer[31], data0[4096],data1[4096];
-static struct {unsigned block_size,count,data_residue;sector_t sector;int data_select,lun;void *data[2];uint32_t tag;}cur_cmd;
+static struct {unsigned block_size,count,data_residue,last_result,failed_write_residue;sector_t sector;int data_select,lun;void *data[2];uint32_t tag;}cur_cmd;
 static struct {int sense_key,asc,ascq,information;}cur_sense_data;
+static void __attribute__((unused)) usb_drv_stall(int ep,bool stall,bool in){assert(ep==EP_OUT && stall && !in);}
 static int commands;
 static void handle_scsi(struct command_block_wrapper *cbw){assert((void*)cbw==cbw_buffer);commands++;}
+static bool __attribute__((unused)) receive_cbw(int status,int length){return !status && length==31;}
 static int writes,sends,recvs; static unsigned written_count;static sector_t written_sector;static void *written_data;
 static void *last_recv;static int last_recv_size;
 static int usb_drv_send_nonblocking(int ep,void *p,int n){assert(ep==EP_IN && p==tb.csw && n==sizeof(csw)); sends++;return 0;}
@@ -65,6 +67,7 @@ static int storage_write_sectors(sector_t sector,unsigned count,void *data){writ
 runner=r'''
 static void transfer(int dir,int status,int length) {
  struct command_block_wrapper *cbw=(void*)cbw_buffer;
+ unsigned int residue_before __attribute__((unused))=cur_cmd.data_residue;
  account_data_transfer(dir,status,length);
  switch(state) {
 ''' + arm + recovery + r'''

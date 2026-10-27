@@ -12,6 +12,9 @@
 /* define this if you use an ATA controller */
 #define CONFIG_STORAGE STORAGE_ATA
 
+/* Propagate ATA flush failures on USB synchronization and safe eject. */
+#define HAVE_STORAGE_FLUSH
+
 #define STORAGE_NEEDS_BOUNCE_BUFFER
 
 #define HAVE_ATA_DMA

@@ -41,6 +41,9 @@ bool iap_library_queue_lent(void);
 enum { IAP_LIBRARY_SERIAL = 1, IAP_LIBRARY_USB = 2 };
 void iap_library_claim(int transport);
 void iap_library_close(int transport);
+/* Storage-only handoff: cancel artwork, finish active work, and discard queued
+ * jobs without releasing either transport's claim or its shared buffers. */
+void iap_library_usb_handoff(void);
 
 /* The library as iAP2 sends it: every track, while the database is in RAM.
  * A track's key is path_key() of its file, so it survives a rebuild and

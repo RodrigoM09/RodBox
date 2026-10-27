@@ -50,6 +50,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "kernel.h"
+#include "system.h"
+#include "usb.h"
 #include "thread.h"
 #include "core_alloc.h"
 #include "dir.h"
@@ -212,6 +214,36 @@ static int32_t lists_commit = -1;
 enum { EV_PLAY = 1, EV_MIX, EV_ARTWORK, EV_PREFETCH, EV_LIST, EV_EXIT };
 static struct event_queue worker_q;
 static unsigned int worker_id;
+/* Keep dequeue and dispatch together: a storage handoff may discard queued
+ * jobs only after the current job has released this lock. */
+static struct mutex worker_mutex, library_mutex;
+static bool worker_mutex_ready;
+
+static void library_mutex_init(void)
+{
+    /* Both accessory callers and the worker run on CPU. Initialize once,
+     * including a handoff before the first lazy allocation. */
+    int level = disable_irq_save();
+    if (!worker_mutex_ready)
+    {
+        mutex_init(&worker_mutex);
+        mutex_init(&library_mutex);
+        worker_mutex_ready = true;
+    }
+    restore_irq(level);
+}
+
+static void worker_lock(void)
+{
+    library_mutex_init();
+    mutex_lock(&worker_mutex);
+}
+
+static void library_lock(void)
+{
+    library_mutex_init();
+    mutex_lock(&library_mutex);
+}
 /* Set by the caller before it posts work and cleared by the worker; while it
  * is set the worker owns the block. */
 static volatile bool building;
@@ -229,35 +261,45 @@ static void read_artwork(intptr_t request);
 static void prefetch_artwork(void);
 static void read_lists(intptr_t what);
 
+static void discard_work_state(void);
+
 static void worker(void)
 {
     struct queue_event ev;
 
     while (1)
     {
-        queue_wait(&worker_q, &ev);
+        /* Wait without removing the event. The handoff may purge work before
+         * we acquire the mutex, so recheck without blocking under the lock. */
+        queue_wait(&worker_q, NULL);
+        worker_lock();
+        if (!queue_peek_ex(&worker_q, &ev, QPEEK_REMOVE_EVENTS, NULL))
+        {
+            mutex_unlock(&worker_mutex);
+            continue;
+        }
         if (ev.id == EV_EXIT)
+        {
+            mutex_unlock(&worker_mutex);
             return;
-        if (ev.id == EV_ARTWORK)
-        {
-            read_artwork(ev.data);  /* the lists are not its to finish */
-            continue;
         }
-        if (ev.id == EV_PREFETCH)
-        {
+        if (leaving || usb_host_wants_storage())
+            discard_work_state();
+        else if (ev.id == EV_ARTWORK)
+            read_artwork(ev.data);
+        else if (ev.id == EV_PREFETCH)
             prefetch_artwork();
-            continue;
-        }
-        if (ev.id == EV_LIST)
+        else if (ev.id == EV_LIST)
+            read_lists(ev.data);
+        else
         {
-            read_lists(ev.data);    /* nor are iAP2's */
-            continue;
+            if (ev.id == EV_PLAY)
+                play_tracks(ev.data);
+            else if (ev.id == EV_MIX)
+                play_mix(ev.data);
+            building = false;
         }
-        if (ev.id == EV_PLAY)
-            play_tracks(ev.data);
-        else if (ev.id == EV_MIX)
-            play_mix(ev.data);
-        building = false;
+        mutex_unlock(&worker_mutex);
     }
 }
 
@@ -266,11 +308,18 @@ static void worker(void)
 static bool open_block(bool lists)
 {
     uint32_t n = size_entries[global_settings.iap_browse_size];
+    bool opened = false;
 
+    library_lock();
+    if (leaving || usb_host_wants_storage())
+        goto out;
     if (block)
-        return !lists || capacity > 0;
+    {
+        opened = !lists || capacity > 0;
+        goto out;
+    }
     if (lists && n == 0)
-        return false;
+        goto out;
 
     /* Immovable: the thread's stack is in it */
     handle = core_alloc_ex(sizeof(struct block) + n * sizeof(struct entry),
@@ -278,14 +327,15 @@ static bool open_block(bool lists)
     if (handle <= 0)
     {
         handle = 0;
-        return false;
+        goto out;
     }
     block = core_get_data(handle);
     block->art_jpeg_of[0] = '\0';
     block->art_next.path[0] = '\0';
     capacity = n;
 
-    /* Not on the broadcast list, so it has no USB connection to answer */
+    /* The serial core joins this worker's handoff before acknowledging USB;
+     * a lazy worker must not add another broadcast acknowledgement. */
     queue_init(&worker_q, false);
     worker_id = create_thread(worker, block->stack, sizeof(block->stack), 0,
                               "iap library" IF_PRIO(, PRIORITY_BACKGROUND)
@@ -296,9 +346,12 @@ static bool open_block(bool lists)
         core_free(handle);
         handle = 0;
         block = NULL;
-        return false;
+        goto out;
     }
-    return true;
+    opened = true;
+out:
+    mutex_unlock(&library_mutex);
+    return opened;
 }
 
 static void prefetch_give_way(void);
@@ -1169,24 +1222,37 @@ static int claims;
 
 void iap_library_claim(int transport)
 {
+    library_lock();
     claims |= transport;
+    mutex_unlock(&library_mutex);
 }
 
 void iap_library_close(int transport)
 {
+    library_lock();
     claims &= ~transport;
-    if (claims)
-        return;
-    if (worker_id)
+    if (claims || leaving)
     {
-        leaving = true;
-        queue_post(&worker_q, EV_EXIT, 0);
-        thread_wait(worker_id);
-        queue_delete(&worker_q);
-        worker_id = 0;
-        building = false;
-        leaving = false;
+        mutex_unlock(&library_mutex);
+        return;
     }
+    leaving = true;
+    unsigned int closing_worker = worker_id;
+    if (closing_worker)
+        queue_post(&worker_q, EV_EXIT, 0);
+    mutex_unlock(&library_mutex);
+
+    /* The worker needs the mutex to consume EV_EXIT. A new claim during the
+     * join is retained, but open_block refuses the block until it is freed. */
+    if (closing_worker)
+        thread_wait(closing_worker);
+
+    worker_lock();
+    library_lock();
+    if (closing_worker)
+        queue_delete(&worker_q);
+    worker_id = 0;
+    building = false;
     if (handle > 0)
         core_free(handle);
     handle = 0;
@@ -1197,6 +1263,9 @@ void iap_library_close(int transport)
     lists_state = queue_state = IAP_LIST_IDLE;
     iap_library_reset();
     all_songs = false;
+    leaving = false;
+    mutex_unlock(&library_mutex);
+    mutex_unlock(&worker_mutex);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1673,6 +1742,41 @@ static void prefetch_give_way(void)
         art.prefetch_stop = true;
 }
 
+/* Caller holds worker_mutex; no worker still owns these result flags. */
+static void discard_work_state(void)
+{
+    building = false;
+    lists_state = queue_state = IAP_LIST_IDLE;
+    art.prefetching = false;
+    art.reading = false;
+    art.state = IAP_ART_NONE;
+    art.size = 0;
+    art.off = art.rd = art.wr = 0;
+    memset((void *)art.len, 0, sizeof(art.len));
+}
+
+void iap_library_usb_handoff(void)
+{
+    /* Release a cover producer waiting for USB to drain its full ring before
+     * waiting on the worker. Keep the shared block and transport claims. */
+    art.cancel = true;
+    art.prefetch_stop = true;
+    worker_lock();
+    if (worker_id)
+    {
+        static const long work_events[][2] = { { EV_PLAY, EV_LIST } };
+        while (queue_peek_ex(&worker_q, NULL, QPEEK_REMOVE_EVENTS,
+                             work_events));
+    }
+    discard_work_state();
+    list_count = 0;
+    lists_commit = -1;
+    folder_count_seen = -1;
+    catalog_cached = false;
+    iap_library_reset();
+    mutex_unlock(&worker_mutex);
+}
+
 struct aat_read
 {
     int fd;
@@ -1876,7 +1980,8 @@ void iap_library_artwork_prefetch(void)
     static long next_look;
     const struct mp3entry *id3;
 
-    if (!block || building || art.reading || art.prefetching ||
+    if (leaving || usb_host_wants_storage() ||
+        !block || building || art.reading || art.prefetching ||
         car_preference() == AA_OFF || TIME_BEFORE(current_tick, next_look))
         return;
     next_look = current_tick + HZ;

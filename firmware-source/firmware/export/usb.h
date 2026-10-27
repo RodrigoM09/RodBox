@@ -356,6 +356,9 @@ void usb_signal_transfer_completion(
 
 /* Clear all signaled transfer completion events from event queue */
 void usb_clear_pending_transfer_completion_events(void);
+/* Clear one endpoint's already-posted events after its hardware is stopped. */
+void usb_clear_pending_transfer_completion_event(
+    struct usb_transfer_completion_event_data *event_data);
 
 /* notify the USB code that some important event has occurred which influences the
  * USB state (like USB_NOTIFY_SET_ADDR). USB drivers should call usb_core_notify_*

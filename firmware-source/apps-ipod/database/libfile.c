@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 #include "config.h"
 #include "file.h"
 #include "errno.h"
@@ -22,6 +23,12 @@
 _Static_assert(sizeof(struct libfile_header) == 28, "libfile header layout");
 
 #define CRC_START 0xffffffffu
+#ifdef FILE_SIZE_MAX
+#define LIBFILE_SIZE_MAX ((uint64_t)FILE_SIZE_MAX)
+#else
+#define LIBFILE_SIZE_MAX ((UINT64_C(1) << (sizeof(off_t) * CHAR_BIT - 1)) - 1)
+#endif
+#define LIBFILE_WRITE_MAX ((UINT64_C(1) << (sizeof(ssize_t) * CHAR_BIT - 1)) - 1)
 
 void libfile_no_marks(struct libfile_marks *m)
 {
@@ -56,20 +63,21 @@ static bool crc_rest(int fd, uint32_t *crc)
 /* Whether the header's records, and nothing past them, match its checksum.
  * Only an append cut off before its header write leaves bytes past the
  * records that the checksum does not cover; a tail is always covered. */
-static bool records_alone_match(int fd, const struct libfile_header *hdr)
+/* 1 for a match, 0 for a mismatch, -1 for a read/seek failure. */
+static int records_alone_match(int fd, const struct libfile_header *hdr)
 {
     unsigned char buf[256];
-    off_t left = (off_t)hdr->count * hdr->record_size;
+    uint64_t left = (uint64_t)hdr->count * hdr->record_size;
     uint32_t crc = CRC_START;
 
     if (lseek(fd, sizeof(*hdr), SEEK_SET) != (off_t)sizeof(*hdr))
-        return false;
+        return -1;
     while (left > 0)
     {
-        ssize_t n = read(fd, buf, left < (off_t)sizeof(buf) ? (size_t)left
+        ssize_t n = read(fd, buf, left < sizeof(buf) ? (size_t)left
                                                             : sizeof(buf));
         if (n <= 0)
-            return false;
+            return -1;
         crc = crc_32(buf, n, crc);
         left -= n;
     }
@@ -82,15 +90,24 @@ int libfile_open(const char *path, uint32_t magic, uint16_t version,
 {
     uint32_t crc;
     off_t body;
+    uint64_t records;
     ssize_t n;
     int rc = LIBFILE_BAD;
     int fd = open(path, O_RDONLY);
 
     if (fd < 0)
         return LIBFILE_UNREAD;
-    body = ffilesize(fd) - (off_t)sizeof(*hdr);
+    body = ffilesize(fd);
+    if (body < 0)
+    {
+        close(fd);
+        return LIBFILE_UNREAD;
+    }
+    body -= (off_t)sizeof(*hdr);
     n = read(fd, hdr, sizeof(*hdr));
-    if (n < 0)
+    records = n == (ssize_t)sizeof(*hdr)
+              ? (uint64_t)hdr->count * record_size : 0;
+    if (n < 0 || (n < (ssize_t)sizeof(*hdr) && body >= 0))
         rc = LIBFILE_UNREAD;
     else if (n == (ssize_t)sizeof(*hdr) && hdr->magic == magic
              && hdr->version > version)
@@ -98,20 +115,25 @@ int libfile_open(const char *path, uint32_t magic, uint16_t version,
     else if (n == (ssize_t)sizeof(*hdr) && hdr->magic == magic
              && hdr->version == version
              && hdr->record_size == record_size
-             && body >= (off_t)hdr->count * record_size)
+             && body >= 0 && (uint64_t)body >= records)
     {
         if (!crc_rest(fd, &crc))
             rc = LIBFILE_UNREAD;
         else if (crc == hdr->checksum)
             rc = lseek(fd, sizeof(*hdr), SEEK_SET) == (off_t)sizeof(*hdr)
                  ? fd : LIBFILE_UNREAD;
-        else if (body > (off_t)hdr->count * record_size
-                 && records_alone_match(fd, hdr))
+        else if ((uint64_t)body > records)
         {
-            /* A torn append: the records stand and the rest is not there */
-            body = (off_t)hdr->count * record_size;
-            rc = lseek(fd, sizeof(*hdr), SEEK_SET) == (off_t)sizeof(*hdr)
-                 ? fd : LIBFILE_UNREAD;
+            int match = records_alone_match(fd, hdr);
+            if (match < 0)
+                rc = LIBFILE_UNREAD;
+            else if (match > 0)
+            {
+                /* A torn append: the records stand and the rest is not there */
+                body = (off_t)records; /* Bounded by the file's length. */
+                rc = lseek(fd, sizeof(*hdr), SEEK_SET) == (off_t)sizeof(*hdr)
+                     ? fd : LIBFILE_UNREAD;
+            }
         }
     }
     if (rc != fd)
@@ -120,7 +142,7 @@ int libfile_open(const char *path, uint32_t magic, uint16_t version,
         return rc;
     }
     if (tail)
-        *tail = body - (off_t)hdr->count * record_size;
+        *tail = (uint64_t)body - records;
     return fd;
 }
 
@@ -145,6 +167,9 @@ bool libfile_begin(struct libfile_writer *w, const char *path,
                    uint32_t magic, uint16_t version, uint16_t record_size,
                    const struct libfile_marks *marks)
 {
+    w->fd = -1;
+    w->failed = false;
+    w->bytes = sizeof(w->hdr);
     memset(&w->hdr, 0, sizeof(w->hdr));
     w->hdr.magic = magic;
     w->hdr.version = version;
@@ -155,7 +180,11 @@ bool libfile_begin(struct libfile_writer *w, const char *path,
     else
         libfile_no_marks(&w->hdr.marks);
 
-    snprintf(w->path, sizeof(w->path), "%s.new", path);
+    int len = snprintf(w->path, sizeof(w->path), "%s.new", path);
+    if (len < 0 || (size_t)len >= sizeof(w->path)) {
+        w->failed = true;
+        return false;
+    }
     w->fd = open(w->path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (w->fd < 0)
         return false;
@@ -171,10 +200,19 @@ bool libfile_begin(struct libfile_writer *w, const char *path,
 bool libfile_write(struct libfile_writer *w, const void *data, size_t size,
                    uint32_t records)
 {
-    if (w->fd < 0 || write(w->fd, data, size) != (ssize_t)size)
+    if (w->fd < 0 || w->failed)
         return false;
+    if (records > UINT32_MAX - w->hdr.count ||
+        (uint64_t)records * w->hdr.record_size > size ||
+        size > LIBFILE_WRITE_MAX || w->bytes > LIBFILE_SIZE_MAX ||
+        size > LIBFILE_SIZE_MAX - w->bytes ||
+        write(w->fd, data, size) != (ssize_t)size) {
+        w->failed = true;
+        return false;
+    }
     w->hdr.checksum = crc_32(data, size, w->hdr.checksum);
     w->hdr.count += records;
+    w->bytes += size;
     return true;
 }
 
@@ -182,6 +220,7 @@ bool libfile_finish(struct libfile_writer *w, bool ok)
 {
     if (w->fd < 0)
         return false;
+    ok = ok && !w->failed;
     if (ok)
         ok = lseek(w->fd, 0, SEEK_SET) == 0
              && write(w->fd, &w->hdr, sizeof(w->hdr))
@@ -214,9 +253,14 @@ bool libfile_finish(struct libfile_writer *w, bool ok)
 bool libfile_append(const char *path, uint32_t magic, uint16_t version,
                     uint16_t record_size, const void *records, uint32_t n)
 {
-    struct libfile_header hdr;
+    struct libfile_header hdr = {0}, previous;
+    if (record_size == 0 || n > SIZE_MAX / record_size)
+        return false;
     size_t size = (size_t)n * record_size;
+    if (size > LIBFILE_WRITE_MAX)
+        return false;
     off_t end;
+    uint64_t records_end;
     bool ok;
     int fd = open(path, O_RDWR);
 
@@ -234,15 +278,20 @@ bool libfile_append(const char *path, uint32_t magic, uint16_t version,
 
     end = ffilesize(fd);
     ok = read_header(fd, magic, version, &hdr)
-         && hdr.record_size == record_size;
-    if (ok && end > (off_t)(sizeof(hdr) + hdr.count * record_size)
-        && records_alone_match(fd, &hdr))
+         && hdr.record_size == record_size
+         && n <= UINT32_MAX - hdr.count;
+    previous = hdr;
+    records_end = sizeof(hdr) + (uint64_t)hdr.count * record_size;
+    if (ok && end >= 0 && (uint64_t)end > records_end
+        && records_alone_match(fd, &hdr) == 1)
     {
         /* What a torn append left past the records goes first */
-        end = sizeof(hdr) + hdr.count * record_size;
+        end = (off_t)records_end; /* Bounded by the file's length above. */
         ok = ftruncate(fd, end) == 0;
     }
-    ok = ok && end == (off_t)(sizeof(hdr) + hdr.count * record_size)
+    ok = ok && end >= 0 && (uint64_t)end == records_end
+         && records_end <= LIBFILE_SIZE_MAX
+         && size <= LIBFILE_SIZE_MAX - records_end
          && lseek(fd, 0, SEEK_END) == end;
     if (ok && write(fd, records, size) != (ssize_t)size)
     {
@@ -256,17 +305,26 @@ bool libfile_append(const char *path, uint32_t magic, uint16_t version,
         ok = lseek(fd, 0, SEEK_SET) == 0
              && write(fd, &hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr);
         /* The old header's count and checksum describe the old end. */
-        if (!ok)
+        if (!ok) {
+            /* A short header write may already have replaced count/CRC.
+             * Truncating alone cannot restore the last readable header. */
+            if (lseek(fd, 0, SEEK_SET) == 0)
+                write(fd, &previous, sizeof(previous));
             ftruncate(fd, end);
+            fsync(fd);
+        }
     }
-    close(fd);
+    if (ok && fsync(fd) < 0)
+        ok = false;
+    if (close(fd) < 0)
+        ok = false;
     return ok;
 }
 
 bool libfile_set_marks(const char *path, uint32_t magic, uint16_t version,
                        const struct libfile_marks *marks)
 {
-    struct libfile_header hdr;
+    struct libfile_header hdr, previous;
     bool ok;
     int fd = open(path, O_RDWR);
 
@@ -275,10 +333,19 @@ bool libfile_set_marks(const char *path, uint32_t magic, uint16_t version,
     ok = read_header(fd, magic, version, &hdr);
     if (ok)
     {
+        previous = hdr;
         hdr.marks = *marks;
         ok = lseek(fd, 0, SEEK_SET) == 0
              && write(fd, &hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr);
+        if (!ok) {
+            if (lseek(fd, 0, SEEK_SET) == 0)
+                write(fd, &previous, sizeof(previous));
+            fsync(fd);
+        }
     }
-    close(fd);
+    if (ok && fsync(fd) < 0)
+        ok = false;
+    if (close(fd) < 0)
+        ok = false;
     return ok;
 }

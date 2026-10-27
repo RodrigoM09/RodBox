@@ -573,6 +573,14 @@ void usb_core_handle_transfer_completion(
         driver->transfer_complete(num, dir == DIR_IN ? USB_DIR_IN : USB_DIR_OUT, event->status, event->length);
 }
 
+void usb_core_clear_endpoint_completion(int ep)
+{
+    unsigned int num = EP_NUM(ep);
+    if (num < USB_NUM_ENDPOINTS)
+        usb_clear_pending_transfer_completion_event(
+            &ep_data[num][EP_DIR(ep)].completion_event);
+}
+
 void usb_core_enable_driver(int driver, bool enabled)
 {
     drivers[driver]->enabled = enabled;

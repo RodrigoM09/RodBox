@@ -942,10 +942,13 @@ static int ata_rw_chunk(uint64_t sector, uint32_t cnt, void* buffer, bool write)
 
 static int ata_transfer_sectors(uint64_t sector, int count, void* buffer, int write)
 {
+    if (count < 0 || sector > total_sectors ||
+        (uint64_t)count > total_sectors - sector)
+        RET_ERR(0);
+    if (count == 0)
+        return 0;
     if (!ata_powered)
         PASS_RC(ata_power_up(), 1, 0);
-    if (sector + count > total_sectors)
-        RET_ERR(0);
     ata_set_active();
     if (ata_dma) {
         int xfer_size = count * log_sector_size;
@@ -1042,12 +1045,12 @@ static int ata_reset(void)
         rc = ata_hard_reset();
         if (IS_ERR(rc))
         {
-            rc = ERR_RC((rc << 2) | 1);
+            rc = ERR_RC(((uint32_t)rc << 2) | 1);
             ata_power_down();
             sleep(HZ * 3);
             int rc2 = ata_power_up();
             if (IS_ERR(rc2))
-                rc = ERR_RC((rc << 2) | 2);
+                rc = ERR_RC(((uint32_t)rc << 2) | 2);
         }
         else rc = 1;
     }
@@ -1089,55 +1092,75 @@ void ata_spindown(int seconds)
     ata_sleep_timeout = seconds * HZ;
 }
 
-static void ata_flush_cache(void)
+/* Caller owns ata_mutex. Never report a failed flush as durable storage. */
+static int ata_flush_cache(void)
 {
     uint8_t cmd;
+    int rc;
 
     logf("ata FLUSH CACHE %ld", current_tick);
 
     if (ceata) {
         memset(ceata_taskfile, 0, 16);
-        ceata_taskfile[0xf] = CMD_FLUSH_CACHE_EXT;  /* CE-ATA only supports EXT */
-        ceata_wait_idle();
-        ceata_write_multiple_register(0, ceata_taskfile, 16);
-        ceata_wait_idle();
-    } else {
-        if (!canflush) {
-            return;
-        } else if (ata_lba48 && identify_info[83] & BIT(13)) {
-            cmd = CMD_FLUSH_CACHE_EXT; /* Flag, optional, ATA-6 and up, for use with LBA48 devices. Mandatory for CE-ATA */
-        } else if (identify_info[83] & BIT(12)) {
-            cmd = CMD_FLUSH_CACHE; /* Flag, mandatory, ATA-6 and up */
-        } else if (identify_info[80] >= BIT(5)) {  /* Use >= instead of '&' because bits lower than the latest standard we support don't have to be set */
-            cmd = CMD_FLUSH_CACHE; /* No flag, mandatory, ATA-5  (Optional for ATA-4) */
-        } else {
-            /* If neither command is supported then don't issue it. */
-            canflush = 0;
-            return;
-        }
-
-        ata_wait_for_rdy(1000000);
-        ata_write_cbr(&ATA_PIO_DVR, 0);
-        ata_write_cbr(&ATA_PIO_CSD, cmd);
-        ata_wait_for_rdy(1000000);
+        ceata_taskfile[0xf] = CMD_FLUSH_CACHE_EXT;
+        rc = ceata_wait_idle();
+        if (IS_ERR(rc))
+            return rc;
+        rc = ceata_write_multiple_register(0, ceata_taskfile, 16);
+        if (IS_ERR(rc))
+            return rc;
+        rc = ceata_wait_idle();
+        if (IS_ERR(rc))
+            return rc;
+        return ceata_check_error();
     }
+
+    if (!canflush)
+        return 0;
+    if (ata_lba48 && (identify_info[83] & BIT(13)))
+        cmd = CMD_FLUSH_CACHE_EXT;
+    else if (identify_info[83] & BIT(12))
+        cmd = CMD_FLUSH_CACHE;
+    else if (identify_info[80] >= BIT(5))
+        cmd = CMD_FLUSH_CACHE;
+    else {
+        canflush = false;
+        return 0;
+    }
+
+    rc = ata_wait_for_rdy(1000000);
+    if (IS_ERR(rc))
+        return rc;
+    ata_write_cbr(&ATA_PIO_DVR, 0);
+    ata_write_cbr(&ATA_PIO_CSD, cmd);
+    rc = ata_wait_for_not_bsy(30000000);
+    if (IS_ERR(rc))
+        return rc;
+    if (ata_read_cbr(&ATA_PIO_CSD) & (BIT(0) | BIT(5)))
+        return -1; /* ATA ERR or device fault */
+    return 0;
 }
 
 int ata_flush(void)
 {
-    if (ata_powered) {
-        mutex_lock(&ata_mutex);
-        ata_flush_cache();
-        mutex_unlock(&ata_mutex);
-    }
-    return 0;
+    int rc = 0;
+    mutex_lock(&ata_mutex);
+    /* Check under the lock: idle sleep can change this while we wait. */
+    if (ata_powered)
+        rc = ata_flush_cache();
+    mutex_unlock(&ata_mutex);
+    return rc;
 }
 
 /* Caller owns ata_mutex. Keep explicit shutdown sleeps separate from the
  * idle policy: only the latter must recheck activity and USB ownership. */
 static void ata_sleepnow_locked(void)
 {
-    ata_flush_cache();
+    if (IS_ERR(ata_flush_cache())) {
+        /* Retain power and let the caller retry; do not discard dirty data. */
+        ata_set_active();
+        return;
+    }
 
     if (ceata) {
         logf("ata SLEEP %ld", current_tick);
@@ -1220,6 +1243,32 @@ long ata_last_disk_activity(void)
     return ata_last_activity_value;
 }
 
+static bool ata_get_log_sector_size(uint32_t *size)
+{
+    uint64_t bytes;
+    if (ceata) {
+        unsigned int exponent = identify_info[106];
+        /* CE-ATA transfers below use exponent - 9 to address 512-byte blocks. */
+        if (exponent < 9 || exponent >= 32)
+            return false;
+        bytes = UINT32_C(1) << exponent;
+    } else if ((identify_info[106] & 0xd000) == 0x5000) {
+        uint32_t words = identify_info[117] |
+                         ((uint32_t)identify_info[118] << 16);
+        bytes = (uint64_t)words * 2;
+    } else {
+        bytes = 512;
+    }
+#ifdef MAX_VARIABLE_LOG_SECTOR
+    if (bytes < SECTOR_SIZE || bytes > MAX_VARIABLE_LOG_SECTOR)
+#else
+    if (bytes != SECTOR_SIZE)
+#endif
+        return false;
+    *size = bytes;
+    return true;
+}
+
 int ata_init(void)
 {
     mutex_init(&ata_mutex);
@@ -1243,21 +1292,11 @@ int ata_init(void)
     /* Auto-detect SSD before settings are loaded */
     ata_ssd_mode = ata_disk_isssd();
 
-    /* Logical sector size */
-    if (ceata)
-        log_sector_size = 1 << identify_info[106];
-    else if ((identify_info[106] & 0xd000) == 0x5000) /* B14, B12 */
-        log_sector_size = (identify_info[117] | (identify_info[118] << 16)) * 2;
-    else
-        log_sector_size = 512;
-
-#ifndef MAX_VARIABLE_LOG_SECTOR
-    if (log_sector_size != SECTOR_SIZE)
-        panicf("Bad logical sector size (%ld)", log_sector_size);
-#else
-    if (log_sector_size > MAX_VARIABLE_LOG_SECTOR)
-        panicf("Logical sector size too large (%ld)", log_sector_size);
-#endif
+    /* Validate before shifting/multiplying firmware-supplied IDENTIFY words. */
+    if (!ata_get_log_sector_size(&log_sector_size))
+        panicf("Bad logical sector size (%u:%u:%u)",
+               (unsigned)identify_info[106], (unsigned)identify_info[118],
+               (unsigned)identify_info[117]);
 
 #ifdef MAX_PHYS_SECTOR_SIZE
     rc = ata_get_phys_sector_mult();

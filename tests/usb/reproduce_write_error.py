@@ -1,7 +1,8 @@
-"""Host-only reproducer of pending-OUT overlap after a failed disk write.
+"""Historical host-only diagnostic for pending-OUT overlap after a disk error.
 
-Exits 1 on the current known bug. This is not an acceptance test and never
-accesses a USB device. Correct BOT error recovery is still unimplemented."""
+Exits 1 when the selected source overlaps two OUT receives; fixed code exits 0.
+This never accesses a device. The maintained acceptance test for complete
+failure draining, residue and recovery is test_write_failure_drain.py."""
 from pathlib import Path
 import tempfile,subprocess
 root=Path(__file__).resolve().parents[2]

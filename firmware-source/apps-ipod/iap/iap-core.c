@@ -605,6 +605,17 @@ void iap_set_mute(bool mute)
         setvol();
 }
 
+/* Discard commands received while local storage is unavailable. Keep the
+ * accessory session, but never replay its old play/browse requests on remount. */
+static void iap_discard_packets(void)
+{
+    int level = disable_irq_save();
+    frame_state.state = ST_SYNC;
+    if (iap_running)
+        iap_reset_buffers();
+    restore_irq(level);
+}
+
 /* This thread is waiting for events posted to iap_queue and calls
  * the appropriate subroutines in response
  */
@@ -613,6 +624,15 @@ static void iap_thread(void)
     struct queue_event ev;
     while(1) {
         queue_wait(&iap_queue, &ev);
+        /* A serial thread can start after the storage broadcast. It must
+         * stand down too, without sending an acknowledgement not requested. */
+        if (usb_host_wants_storage() &&
+            (ev.id == IAP_EV_TICK || ev.id == IAP_EV_MSG_RCVD ||
+             ev.id == IAP_EV_ARTWORK))
+        {
+            iap_discard_packets();
+            continue;
+        }
         switch (ev.id)
         {
             /* Handle the regular 100ms tick used for driving the
@@ -682,10 +702,17 @@ static void iap_thread(void)
                 break;
             }
 
-            /* Ack USB thread */
+            /* Only a storage configuration broadcasts this event. USB iAP
+             * accessories keep their shared library and continue normally. */
             case SYS_USB_CONNECTED:
             {
+                iap_artwork_stop();
+                ++art_seq;
+                iap_library_usb_handoff();
+                iap_discard_packets();
                 usb_acknowledge(SYS_USB_CONNECTED_ACK, ev.data);
+                usb_wait_for_disconnect(&iap_queue);
+                iap_discard_packets();
                 break;
             }
         }
@@ -1034,6 +1061,14 @@ bool iap_getc(IF_IAP_MP(int port,) const unsigned char x)
      */
     if (!iap_setupflag || !iap_enabled)
         return true;
+
+    /* Do not create a late serial worker or retain packets while a host is
+     * taking the disk. A configured USB accessory does not satisfy this. */
+    if (usb_host_wants_storage())
+    {
+        s->state = ST_SYNC;
+        return true;
+    }
 
     if (iap_started)
         iap_tick_start();
@@ -1884,6 +1919,9 @@ void iap_handlepkt(void)
      */
     while (iap_rxpayload != iap_rxstart)
     {
+        /* Claim before the first command, not just the next periodic tick:
+         * a concurrent USB accessory close must not free its shared lists. */
+        iap_library_claim(IAP_LIBRARY_SERIAL);
         if (reset_pending)
         {
             iap_do_reset();

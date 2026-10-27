@@ -439,6 +439,20 @@ void usb_clear_pending_transfer_completion_events(void)
 #endif
 }
 
+/* Called by the USB thread only, after this endpoint's hardware transfer
+ * has been cancelled and before it is rearmed. Keep other classes' and
+ * control endpoint completions in their original order. */
+void usb_clear_pending_transfer_completion_event(
+    struct usb_transfer_completion_event_data *event_data)
+{
+#ifdef HAVE_EXTENDED_MESSAGING_AND_NAME
+    while (queue_remove_event(&usb_queue, USB_TRANSFER_COMPLETION,
+                              (intptr_t)event_data));
+#else
+    (void)event_data;
+#endif
+}
+
 void usb_signal_notify(long id, intptr_t data)
 {
     queue_post(&usb_queue, id, data);

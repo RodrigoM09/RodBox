@@ -24,6 +24,7 @@ static bool ceata, ata_dma, ata_lba48, ata_error_srst, lit, disk_can_sleep;
 static unsigned ata_retries;
 static int canflush, wake_result, chunk_result, depth, locks, unlocks;
 static int ready_result, ceata_reset_result, wake_sequence[4], wake_count, wake_next;
+static int flush_result;
 static unsigned ready_calls, reset_calls, delays, max_depth;
 static unsigned flushes, powers_down, powerups, cache_ops, chunks, active_asserts;
 static unsigned default_calls, ide_off, commands, ceata_commands;
@@ -50,7 +51,7 @@ static int ata_power_up(void) {
     if(!result) { ata_powered=true; ssd_deep_asleep=false; ata_set_active(); }
     return result;
 }
-static void ata_flush_cache(void) { assert(depth>0); flushes++; }
+static int ata_flush_cache(void) { assert(depth>0); flushes++; return flush_result; }
 static void ata_power_down(void) { assert(depth>0); powers_down++; ata_powered=false; ssd_deep_asleep=true; }
 static bool ata_disk_can_sleep(void) { return disk_can_sleep; }
 static bool is_backlight_on(bool ignore) { (void)ignore; return lit; }
@@ -87,7 +88,7 @@ static void setup(void) {
     ssd_sleep_tick=0; ata_powered=true; ata_ssd_mode=true; ssd_deep_asleep=false;
     ata_usb_storage_active=ceata=ata_dma=ata_lba48=ata_error_srst=lit=false;
     disk_can_sleep=true; ata_retries=0; canflush=1; wake_result=chunk_result=0;
-    ready_result=ceata_reset_result=wake_count=wake_next=0;
+    ready_result=ceata_reset_result=wake_count=wake_next=flush_result=0;
     ready_calls=reset_calls=delays=max_depth=0;
     depth=locks=unlocks=0; flushes=powers_down=powerups=cache_ops=chunks=0;
     active_asserts=default_calls=ide_off=commands=ceata_commands=0;
@@ -140,12 +141,32 @@ int main(void) {
     setup(); ceata=true; event(Q_STORAGE_SLEEPNOW); assert(powers_down==1 && ceata_commands==1);
     setup(); ata_ssd_mode=false; disk_can_sleep=false; event(Q_STORAGE_SLEEPNOW); assert(powers_down==1);
     setup(); ata_sleepnow(); assert(depth==0 && locks==unlocks && flushes==1 && !ata_powered);
+    setup(); flush_result=ERR_RC(7); ata_sleepnow();
+    assert(ata_powered && !powers_down && !ide_off && flushes==1 && !power_regs[0]);
+    assert(ata_last_activity_value==current_tick && depth==0 && locks==unlocks);
+    current_tick+=31*HZ; event(Q_STORAGE_TICK);
+    assert(ata_powered && !ide_off && !ssd_deep_asleep);
+    event(Q_STORAGE_SLEEPNOW);
+    assert(ata_powered && flushes==2 && !powers_down && !ide_off);
     setup(); event(SYS_USB_CONNECTED); ata_sleepnow();
     assert(depth==0 && locks==unlocks && flushes==1); /* explicit shutdown API stays explicit */
     setup(); ata_powered=false; event(Q_STORAGE_PRE_WAKE); assert(ata_powered && powerups==1);
     setup(); ata_powered=false; wake_result=ERR_RC(7); event(Q_STORAGE_PRE_WAKE);
     assert(!ata_powered && powerups==1 && depth==0);
     unsigned char buffer[513*512];
+    setup(); ata_powered=false; ata_dma=true;
+    assert(IS_ERR(ata_read_sectors(1,-1,buffer)));
+    assert(IS_ERR(ata_write_sectors(1,-1,buffer)));
+    assert(IS_ERR(ata_read_sectors(UINT64_MAX,1,buffer)));
+    assert(IS_ERR(ata_write_sectors(UINT64_MAX,1,buffer)));
+    assert(IS_ERR(ata_read_sectors(4095,2,buffer)));
+    assert(IS_ERR(ata_write_sectors(4095,2,buffer)));
+    assert(ata_read_sectors(4096,0,buffer)==0);
+    assert(ata_write_sectors(4096,0,buffer)==0);
+    assert(ata_read_sectors(1,0,buffer)==0);
+    assert(ata_write_sectors(1,0,buffer)==0);
+    assert(!powerups && !cache_ops && !chunks && !ATA_COMMAND && depth==0);
+    assert(locks==unlocks);
     setup(); ata_powered=false; ata_dma=true; wake_result=ERR_RC(7);
     assert(IS_ERR(ata_read_sectors(0,1,buffer))); assert(powerups==1 && !cache_ops && !chunks && !ATA_COMMAND);
     assert(depth==0 && locks==unlocks);
@@ -177,7 +198,7 @@ int main(void) {
     for(int outer=0;outer<=1;outer++) {
         setup(); if(outer) mutex_lock(&ata_mutex);
         ata_powered=false; wake_result=ERR_RC(7);
-        assert(ata_soft_reset()==ERR_RC((wake_result<<1)|0));
+        assert(ata_soft_reset()==ERR_RC(((uint32_t)wake_result<<1)|0));
         assert(depth==outer && powerups==1 && !ready_calls && !delays);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
 
@@ -189,19 +210,19 @@ int main(void) {
 
         setup(); if(outer) mutex_lock(&ata_mutex);
         ata_powered=false; wake_result=ERR_RC(7);
-        assert(ata_reset()==ERR_RC((wake_result<<2)|0));
+        assert(ata_reset()==ERR_RC(((uint32_t)wake_result<<2)|0));
         assert(depth==outer && powerups==1 && !ready_calls);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
 
         setup(); if(outer) mutex_lock(&ata_mutex);
         ready_result=ERR_RC(9);
-        assert(ata_soft_reset()==ERR_RC((ready_result<<1)|1));
+        assert(ata_soft_reset()==ERR_RC(((uint32_t)ready_result<<1)|1));
         assert(depth==outer && ready_calls==1 && delays==1);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
 
         setup(); if(outer) mutex_lock(&ata_mutex);
         ceata=true; ceata_reset_result=ERR_RC(11);
-        assert(ata_soft_reset()==ERR_RC((ceata_reset_result<<1)|1));
+        assert(ata_soft_reset()==ERR_RC(((uint32_t)ceata_reset_result<<1)|1));
         assert(depth==outer && reset_calls==1 && !ready_calls);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
 
@@ -214,15 +235,15 @@ int main(void) {
         setup(); if(outer) mutex_lock(&ata_mutex);
         ready_result=ERR_RC(9); wake_count=2;
         wake_sequence[0]=ERR_RC(13); wake_sequence[1]=0;
-        assert(ata_reset()==ERR_RC((ERR_RC(13)<<2)|1));
+        assert(ata_reset()==ERR_RC(((uint32_t)ERR_RC(13)<<2)|1));
         assert(depth==outer && powerups==2 && powers_down==1 && ata_powered);
         assert(max_depth==(unsigned)outer+2);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
 
         setup(); if(outer) mutex_lock(&ata_mutex);
         ready_result=ERR_RC(9); wake_result=ERR_RC(13);
-        int expected=ERR_RC((wake_result<<2)|1);
-        assert(ata_reset()==ERR_RC((expected<<2)|2));
+        int expected=ERR_RC(((uint32_t)wake_result<<2)|1);
+        assert(ata_reset()==ERR_RC(((uint32_t)expected<<2)|2));
         assert(depth==outer && powerups==2 && powers_down==1 && !ata_powered);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
 
@@ -243,6 +264,6 @@ int main(void) {
         assert(depth==outer && max_depth==(unsigned)outer+2);
         if(outer) mutex_unlock(&ata_mutex); assert(locks==unlocks);
     }
-    printf("PASS: %u actual ATA policy/transfer/reset cases; ASan/UBSan (legacy error-macro shift-base excluded)\n",cases);
+    printf("PASS: %u actual ATA policy/transfer/reset cases; ASan/UBSan\n",cases);
     return 0;
 }

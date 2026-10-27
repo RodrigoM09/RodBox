@@ -143,6 +143,11 @@ void bg_task_init(struct bg_task *task);
 /* Start the thread every task shares. Once, after every bg_task_init(). */
 void bg_task_start(void);
 
+/* Permanently stop starting background work after shutdown is accepted.
+ * With safe battery power, wait for the running pass's I/O/cleanup to finish.
+ * A critical battery can request the stop without delaying power-off. */
+void bg_task_shutdown(bool wait_for_io);
+
 /* Queue an event for the task's handle_event(), to run on the thread. */
 void bg_task_post(struct bg_task *task, long id);
 

@@ -2,7 +2,6 @@
 
 This checks event ordering, mutex-boundary races and error control flow, not USB
 electrical behavior or flash reliability. The native target build remains needed.
-The inherited error macros require excluding signed shift-base sanitization.
 Tick arithmetic uses the firmware's configured signed-wrap compiler semantics.
 """
 from pathlib import Path
@@ -40,8 +39,7 @@ def main():
         'ata_set_active', 'ata_soft_reset', 'ata_hard_reset', 'ata_reset', 'ata_transfer_sectors', 'ata_read_sectors', 'ata_write_sectors',
         'ata_sleepnow_locked', 'ata_sleepnow', 'ata_event'))
     template = Path(__file__).with_name('usb_idle_harness.c').read_text()
-    # The actual target error macros intentionally use signed high-bit shifts.
-    # Keep them verbatim; suppress only that existing, unrelated shift-base UB.
+    # Exercise the actual packed error representation with full UBSan.
     header = SOURCE.with_name('mmcdefs-target.h').read_text()
     macros = header[header.index('#define ERR_RC('):header.index('#define TIMEOUT_EXPIRED')]
     system = (ROOT / 'firmware-source/firmware/export/system.h').read_text()
@@ -64,7 +62,7 @@ def main():
                             # The real write wrapper casts through the target's
                             # 32-bit pointer width. No host dereference uses it.
                             '-Wno-pointer-to-int-cast', '-Wno-int-to-pointer-cast',
-                            '-fno-sanitize=shift-base', *defines,
+                            *defines,
                             str(path / 'idle.c'), '-o', str(path / 'idle')], check=True)
             subprocess.run([str(path / 'idle')], check=True)
 

@@ -174,26 +174,29 @@ static void cal_ladder(int ax)
         cal_val[ax][p] = -1;
 }
 
-/* Read the index and fill cal_val[]. The number of records counted, or 0
- * where there were too few to say anything. */
-static uint32_t cal_pass(void)
+/* Read the whole index and fill cal_val[]. A failed read must not save a
+ * calibration of just the prefix under the complete index's fingerprint. */
+static bool cal_pass(uint32_t *total)
 {
     struct sound_index_reader rd;
     struct sound_record r;
     struct sound_axes a;
-    uint32_t total = 0;
     int i, ax;
 
+    *total = 0;
     memset(cal_hist, 0, sizeof (cal_hist));
     memset(cal_n, 0, sizeof (cal_n));
 
     if (sound_index_reader_open(&rd) != SOUND_OK)
-        return 0;
+        return false;
 
     for (i = 0; i < rd.count; i++)
     {
         if (!sound_index_read(&rd, i, &r))
-            break;
+        {
+            sound_index_reader_close(&rd);
+            return false;
+        }
 
         /* A failed decode is written zeroed and zero is not neutral here --
          * a loudness of zero is full scale -- so such a record would drag
@@ -227,7 +230,7 @@ static uint32_t cal_pass(void)
             cal_n[ax]++;
         }
 
-        total++;
+        (*total)++;
     }
 
     sound_index_reader_close(&rd);
@@ -237,7 +240,7 @@ static uint32_t cal_pass(void)
     for (ax = 0; ax < CAL_AXES; ax++)
         cal_ladder(ax);
 
-    return total;
+    return true;
 }
 
 
@@ -357,21 +360,23 @@ static bool cal_save(uint32_t count, uint64_t first, uint64_t last)
     h.first_key = first;
     h.last_key  = last;
 
-    fd = open(CAL_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    fd = open(CAL_FILE ".new", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0)
         return false;
 
-    /* Torn by a power cut it fails its own length check on the way back in,
-     * which costs the shipped numbers and one pass to rebuild. That is what
-     * the index's write-then-rename dance buys, for a file of a few hundred
-     * bytes that can always be made again. */
+    /* Keep the last calibration until all bytes have reached the disk. */
     ok = write(fd, &h, sizeof (h)) == (ssize_t)sizeof (h) &&
          write(fd, cal_val, sizeof (cal_val)) == (ssize_t)sizeof (cal_val);
 
-    close(fd);
+    if (ok && fsync(fd) < 0)
+        ok = false;
+    if (close(fd) < 0)
+        ok = false;
+    if (ok)
+        ok = rename(CAL_FILE ".new", CAL_FILE) == 0;
 
     if (!ok)
-        remove(CAL_FILE);
+        remove(CAL_FILE ".new");
 
     return ok;
 }
@@ -387,7 +392,8 @@ bool sound_cal_update(void)
     if (!cal_fingerprint(&count, &first, &last))
         return false;
 
-    total = cal_pass();
+    if (!cal_pass(&total))
+        return false;
     if (total == 0)
     {
         /* Nothing to say about this library. The file goes, so that a stale

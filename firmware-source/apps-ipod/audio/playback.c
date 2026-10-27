@@ -4303,6 +4303,28 @@ struct mp3entry * audio_current_track(void)
     return id3;
 }
 
+/* Unlike a borrowed audio_current_track() pointer, this copy stays valid
+ * across a caller's file I/O and subsequent track changes. The ID3 mutex is
+ * recursive, so it remains held through the lookup and the deep copy. */
+bool audio_current_track_copy(struct mp3entry *id3)
+{
+    bool valid = false;
+
+    id3_mutex_lock();
+    if (play_status != PLAY_STOPPED)
+    {
+        struct mp3entry *current = audio_current_track();
+        if (current->path[0] != '\0')
+        {
+            copy_mp3entry(id3, current);
+            id3->cuesheet = NULL;
+            valid = true;
+        }
+    }
+    id3_mutex_unlock();
+    return valid;
+}
+
 /* Obtains the mp3entry for the next track from the current */
 struct mp3entry * audio_next_track(void)
 {

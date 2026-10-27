@@ -48,6 +48,7 @@
 #include "rbpaths.h"
 #include "string-extra.h"
 #include "audio.h"
+#include "audio/playback.h"
 #include "events.h"
 #include "system/appevents.h"
 #include "database/db_spoken.h"
@@ -294,6 +295,7 @@ static bool scan(bool (*fn)(const struct entry *e, void *data), void *data)
     struct book_rec r;
     int fd;
     bool old = false;
+    bool ok = true;
 
     fd = libfile_open(BOOK_RESUME_FILE, LIB_BOOKS_MAGIC, LIB_BOOKS_VERSION, 1,
                       &h, NULL);
@@ -318,13 +320,30 @@ static bool scan(bool (*fn)(const struct entry *e, void *data), void *data)
         return !file_exists(BOOK_RESUME_FILE);
     }
 
-    while (read(fd, &r, sizeof(r)) == (ssize_t)sizeof(r))
+    /* This variable-length format counts payload bytes, not books. A late
+     * read error after libfile_open() checked the CRC must not turn a prefix
+     * into a successful scan: rewrite() would then discard the other books.
+     * The count also excludes any uncommitted tail accepted by libfile_open. */
+    uint32_t left = h.count;
+    while (left > 0)
     {
         struct entry e;
 
-        if (r.path_len >= sizeof(path) || r.left >= ARRAYLEN(left_words)
-            || read(fd, path, r.path_len) != r.path_len)
+        if (left < sizeof(r)
+            || read(fd, &r, sizeof(r)) != (ssize_t)sizeof(r))
+        {
+            ok = false;
             break;
+        }
+        left -= sizeof(r);
+        if (r.path_len >= sizeof(path) || r.path_len > left
+            || r.left >= ARRAYLEN(left_words)
+            || read(fd, path, r.path_len) != r.path_len)
+        {
+            ok = false;
+            break;
+        }
+        left -= r.path_len;
         path[r.path_len] = '\0';
         e.book = r.book;
         e.path = r.path_len ? path : NULL;
@@ -338,8 +357,9 @@ static bool scan(bool (*fn)(const struct entry *e, void *data), void *data)
             break;
     }
 
-    close(fd);
-    return true;
+    if (close(fd) < 0)
+        ok = false;
+    return ok;
 }
 
 /* ------------------------------------------------------------------ *
@@ -567,16 +587,20 @@ static const char *book_name(const struct mp3entry *id3, char *buf,
 }
 
 /* The last book track to play to its end, waiting for a save to write it
- * down. Written on the audio thread and read on the UI thread; the flag is set
- * last and cleared first, and neither thread yields in between. */
-static struct
+ * down. The short mutex protects the audio/UI handoff only, never file I/O.
+ * A generation lets a successful save acknowledge its snapshot without
+ * dropping a newer completion posted while that save yielded. */
+static struct mutex ended_mutex;
+struct book_ended_track
 {
     uint64_t book;
     bool by_path;               /* the book is keyed by 'track' */
     char track[MAX_PATH];
     unsigned long length;
-} ended_track;
-static volatile bool ended_pending;
+};
+static struct book_ended_track ended_track;
+static bool ended_pending;
+static unsigned ended_generation;
 
 /* PLAYBACK_EVENT_TRACK_FINISH, on the audio thread: no file I/O here. */
 static void track_finish_event(unsigned short id, void *ev_data)
@@ -598,18 +622,21 @@ static void track_finish_event(unsigned short id, void *ev_data)
     if (!db_spoken_is_spoken_genre(id3->genre_string))
         return;
 
-    ended_pending = false;
+    mutex_lock(&ended_mutex);
     name = book_name(id3, id_buf, sizeof(id_buf));
     ended_track.book = book_resume_key(name);
     ended_track.by_path = name == id3->path;
     strmemccpy(ended_track.track, id3->path, sizeof (ended_track.track));
     ended_track.length = id3->length;
+    ended_generation++;
     ended_pending = true;
+    mutex_unlock(&ended_mutex);
 }
 
 void book_resume_init(void)
 {
     mutex_init(&book_mutex);
+    mutex_init(&ended_mutex);
     add_event(PLAYBACK_EVENT_TRACK_FINISH, track_finish_event);
 }
 
@@ -698,9 +725,13 @@ bool book_resume_convert(const char *text_file)
 static struct mp3entry *loaded_book(const char **name, uint64_t *book)
 {
     static char id_buf[BOOK_ID_MAX];
-    struct mp3entry *id3 = audio_status() ? audio_current_track() : NULL;
+    /* Both callers hold book_mutex. Own the strings and live progress so
+     * subsequent storage operations cannot change the book under this save. */
+    static struct mp3entry snapshot;
+    struct mp3entry *id3 = &snapshot;
 
-    if (id3 == NULL || !db_spoken_is_spoken_genre(id3->genre_string))
+    if (!audio_current_track_copy(id3)
+        || !db_spoken_is_spoken_genre(id3->genre_string))
         return NULL;
 
     *name = book_name(id3, id_buf, sizeof(id_buf));
@@ -740,43 +771,58 @@ bool book_resume_mark(const char *book, enum book_left left)
     return ok;
 }
 
+static void acknowledge_ended(unsigned generation)
+{
+    mutex_lock(&ended_mutex);
+    if (ended_pending && ended_generation == generation)
+        ended_pending = false;
+    mutex_unlock(&ended_mutex);
+}
+
 void book_resume_save(void)
 {
     struct mp3entry *id3;
     const char *name = NULL;
     uint64_t book = 0;
+    static struct book_ended_track ended;
+    unsigned generation;
+    bool pending;
 
     if (!global_settings.segregate_audiobooks)
         return;
 
     mutex_lock(&book_mutex);
-    rekey();
+    /* Snapshot the completion before the metadata lookup, which can yield.
+     * Any completion arriving after this point remains pending for next time. */
+    mutex_lock(&ended_mutex);
+    pending = ended_pending;
+    generation = ended_generation;
+    ended = ended_track;
+    mutex_unlock(&ended_mutex);
     id3 = loaded_book(&name, &book);
+    rekey();
 
-    if (ended_pending)
+    if (pending)
     {
-        /* Copied out before anything yields: rewrite() opens files, and the
-         * audio thread may note the next ended track meanwhile. That one
-         * sets the flag again for the next save. */
-        static char ended_path[MAX_PATH];
         struct entry e = {
-            .book = ended_track.book,
-            .path = ended_track.by_path ? ended_path : NULL,
+            .book = ended.book,
+            .path = ended.by_path ? ended.track : NULL,
             .pos = {
                 .index   = -1,
-                .elapsed = ended_track.length,
+                .elapsed = ended.length,
                 .left    = BOOK_LEFT_ENDED,
             },
         };
 
-        strmemccpy(ended_path, ended_track.track, sizeof (ended_path));
-        ended_pending = false;
-        e.pos.track = path_key(ended_path);
+        e.pos.track = path_key(ended.track);
 
         /* A chapter that ended into the next one of the same book is not the
          * book ending: the save below puts the book where it is now. */
         if (id3 == NULL || book != e.book)
-            rewrite(&e);
+        {
+            if (rewrite(&e))
+                acknowledge_ended(generation);
+        }
     }
 
     if (id3 != NULL)
@@ -793,7 +839,8 @@ void book_resume_save(void)
             },
         };
 
-        rewrite(&e);
+        if (rewrite(&e) && pending && book == ended.book)
+            acknowledge_ended(generation);
     }
     mutex_unlock(&book_mutex);
 }

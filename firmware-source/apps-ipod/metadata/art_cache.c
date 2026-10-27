@@ -120,6 +120,8 @@ static struct aa_stamp *aa_stamps;
 static unsigned char *aa_visited;
 
 static volatile bool cache_busy;
+/* A cache write failure must not be recorded as a completed generation pass. */
+static bool aa_write_failed;
 
 /* Counts every change to a thumbnail: see art_cache_generation(). */
 static volatile unsigned int aa_generation;
@@ -291,10 +293,10 @@ int art_cache_load_aat(int fd, struct bitmap *bm, int max_size,
     struct art_cache_header hdr;
     int dw = bm->width, dh = bm->height;
     int sw, sh, dy, dx;
-    int rc = dw * dh * FB_DATA_SZ;
+    int rc;
 
-    lseek(fd, 0, SEEK_SET);
-    if (read(fd, &hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr) ||
+    if (lseek(fd, 0, SEEK_SET) != 0 ||
+        read(fd, &hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr) ||
         hdr.magic != ART_CACHE_MAGIC || hdr.version != ART_CACHE_FORMAT_VERSION)
         return -1;
 
@@ -318,8 +320,9 @@ int art_cache_load_aat(int fd, struct bitmap *bm, int max_size,
         sh > ART_CACHE_MAX_DIM || sw != sh ||
         dw <= 0 || dh <= 0 || dw > sw || dh > sh)   /* downscale only */
         return -1;
-    if ((size_t)dw * dh * FB_DATA_SZ > (size_t)max_size)
+    if (max_size < 0 || (size_t)dw * dh * FB_DATA_SZ > (size_t)max_size)
         return -1;
+    rc = dw * dh * FB_DATA_SZ; /* Dimensions are bounded by the cache above. */
 
     mutex_lock(&aat_mutex);
     for (dy = 0; dy < dh; dy++)
@@ -338,8 +341,12 @@ int art_cache_load_aat(int fd, struct bitmap *bm, int max_size,
             break;
         }
         /* skip the remainder of a clamped band so the file stays aligned */
-        if (sy1 - sy0 > rows)
-            lseek(fd, (off_t)(sy1 - sy0 - rows) * sw * FB_DATA_SZ, SEEK_CUR);
+        if (sy1 - sy0 > rows &&
+            lseek(fd, (off_t)(sy1 - sy0 - rows) * sw * FB_DATA_SZ, SEEK_CUR) < 0)
+        {
+            rc = -1;
+            break;
+        }
 
         for (dx = 0; dx < dw; dx++)
         {
@@ -791,7 +798,7 @@ static void aa_stamps_load(void)
  * The header keeps the last completed pass's marks, which are what the file
  * still covers: an interrupted pass that cleared them would have the next one
  * visit every folder. */
-static void aa_stamps_save(bool completed)
+static bool aa_stamps_save(bool completed)
 {
     const struct bg_marks *done = &art_cache_task.done_marks;
     struct libfile_marks lm;
@@ -805,7 +812,7 @@ static void aa_stamps_save(bool completed)
     if (!libfile_begin(&w, AA_STAMP_FILE, AA_STAMP_MAGIC,
                        ART_CACHE_FORMAT_VERSION, sizeof(struct aa_stamp),
                        &lm))
-        return;
+        return false;
     ok = true;
     if (aa_marks_key)
     {
@@ -830,7 +837,7 @@ static void aa_stamps_save(bool completed)
     }
     if (ok && n)
         ok = libfile_write(&w, aa_stamp_io, n * sizeof(aa_stamp_io[0]), n);
-    libfile_finish(&w, ok);
+    return libfile_finish(&w, ok);
 }
 
 /* Record one folder's stamp outside a pass, by appending to the file. */
@@ -962,29 +969,32 @@ static int aa_read_source(const struct aa_src *src, struct bitmap *bm, int fmt,
  * its dimensions are nonsense. */
 static bool aa_cover_dim(int sw, int sh, int dim, int *tw, int *th)
 {
-    if (sw <= 0 || sh <= 0)
+    uint64_t w, h;
+    if (sw <= 0 || sh <= 0 || dim <= 0 || dim > ART_CACHE_MAX_DIM)
         return false;
 
     if (sw <= sh)
     {
-        *tw = dim;
-        *th = (sh * dim + sw / 2) / sw;     /* rounded; >= dim */
+        w = dim;
+        h = ((uint64_t)sh * dim + sw / 2) / sw; /* rounded; >= dim */
     }
     else
     {
-        *th = dim;
-        *tw = (sw * dim + sh / 2) / sh;
+        h = dim;
+        w = ((uint64_t)sw * dim + sh / 2) / sh;
     }
 
     /* rounding must never leave the short side under dim -- the crop below
      * assumes both sides are at least dim */
-    if (*tw < dim)
-        *tw = dim;
-    if (*th < dim)
-        *th = dim;
-
-    return (long)*tw * *th <= ART_CACHE_COVER_MAX_PX &&
-           *tw <= ART_CACHE_COVER_MAX_W;
+    if (w < (unsigned int)dim)
+        w = dim;
+    if (h < (unsigned int)dim)
+        h = dim;
+    if (w > ART_CACHE_COVER_MAX_W || w * h > ART_CACHE_COVER_MAX_PX)
+        return false;
+    *tw = (int)w;
+    *th = (int)h;
+    return true;
 }
 
 /* Centre-crop a tw x th image down to dim x dim, in place. Each output row sits
@@ -1003,7 +1013,7 @@ static void aa_crop_center(void *buf, int tw, int th, int dim)
 }
 
 /* Write a native (row-major fb_data) bitmap to a .aat file: the shared header
- * followed by the pixels. Removes the file on a short write. */
+ * followed by the pixels. Publishes only after a checked flush and close. */
 static bool aa_write_aat(const char *out_path, struct bitmap *bm, int size_index)
 {
     struct art_cache_header hdr;
@@ -1011,6 +1021,14 @@ static bool aa_write_aat(const char *out_path, struct bitmap *bm, int size_index
     bool ok;
     enum art_layout layout = AA_ROWS;
     int fd;
+
+    if (size_index < 0 || size_index >= ART_CACHE_NUM_SIZES ||
+        bm->data == NULL || bm->width <= 0 || bm->height <= 0 ||
+        bm->width > ART_CACHE_MAX_DIM || bm->height > ART_CACHE_MAX_DIM)
+    {
+        aa_write_failed = true;
+        return false;
+    }
 
     /* Transposed here, once, for a size that wants columns -- and only when the
      * thumbnail is square, because that is an in-place swap where a rectangle
@@ -1037,13 +1055,19 @@ static bool aa_write_aat(const char *out_path, struct bitmap *bm, int size_index
     /* Written whole under another name and renamed over the thumbnail, so a
      * reader never sees one part-written. ".new" is not ".aat", so the orphan
      * sweep passes it by. */
-    if (strlcpy(aa_tmp_path, out_path, sizeof(aa_tmp_path))
-            >= sizeof(aa_tmp_path))
+    size_t len = strlcpy(aa_tmp_path, out_path, sizeof(aa_tmp_path));
+    if (len >= sizeof(aa_tmp_path) || len < 4)
+    {
+        aa_write_failed = true;
         return false;
-    strcpy(aa_tmp_path + strlen(aa_tmp_path) - 4, ".new");
+    }
+    strcpy(aa_tmp_path + len - 4, ".new");
     fd = open(aa_tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0)
+    {
+        aa_write_failed = true;
         return false;
+    }
 
     hdr.magic = ART_CACHE_MAGIC;
     hdr.version = ART_CACHE_FORMAT_VERSION;
@@ -1055,12 +1079,18 @@ static bool aa_write_aat(const char *out_path, struct bitmap *bm, int size_index
 
     ok = (write(fd, &hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr)) &&
          (write(fd, bm->data, bytes) == (ssize_t)bytes);
-    close(fd);
+    if (ok && fsync(fd) < 0)
+        ok = false;
+    if (close(fd) < 0)
+        ok = false;
 
     if (ok)
         ok = rename(aa_tmp_path, out_path) == 0;
     if (!ok)
+    {
+        aa_write_failed = true;
         remove(aa_tmp_path);
+    }
     return ok;
 }
 
@@ -1222,6 +1252,8 @@ static void aa_generate_size(const struct aa_src *src, int size_index,
     if (global_settings.art_cache_fast_build &&
         aa_generate_chained(size_index, dh, out_path, workbuf, workbuf_sz))
         return;
+    if (aa_write_failed)
+        return;
 
     aa_generate_one(src, size_index, out_path, workbuf, workbuf_sz);
 }
@@ -1282,6 +1314,8 @@ static void aa_render_placeholder(const fb_data *src, int sw, int sh,
         bm.height = dim;
         bm.format = FORMAT_NATIVE;
         aa_write_aat(path, &bm, s);
+        if (aa_write_failed)
+            break;
         yield();
     }
 }
@@ -1413,6 +1447,8 @@ static bool aa_fill(const struct aa_src *src, unsigned int stamp,
         }
         aa_cache_path(aa_out_path, sizeof(aa_out_path), s, dh);
         aa_generate_size(src, s, dh, aa_out_path, workbuf, worksz);
+        if (aa_write_failed)
+            return false;
         yield();
     }
     /* An image that would not decode leaves the folder bare, and is counted
@@ -1587,6 +1623,7 @@ static enum bg_result aa_run_pass(void)
     bool completed;
     int since_yield = 0;
 
+    aa_write_failed = false;
     worksz = aa_work_bytes();
     /* No marks to have covered: a trigger, a first pass or a format bump */
     aa_check_all = dircache_is_ready()
@@ -1622,6 +1659,11 @@ static enum bg_result aa_run_pass(void)
     }
     aa_table_full = false;
     aa_ensure_fallback(workbuf, worksz);
+    if (aa_write_failed)
+    {
+        failed = true;
+        goto out;
+    }
     aa_stamps_load();
     /* A Rebuild renumbers the entries, which the file at the old last entry
      * shows */
@@ -1694,13 +1736,13 @@ static enum bg_result aa_run_pass(void)
             if (aa_cache_dir(tcs.result, dh, slot, false, workbuf, worksz,
                              &aborted))
                 aa_counts.album_art++;
-            else if (!aborted)
+            else if (!aborted && !aa_write_failed)
             {
                 path_list_write_record(&noart_albums, aa_dir);
                 aa_log_miss("album", aa_dir);
             }
         }
-        if (aborted)
+        if (aborted || aa_write_failed)
             break;
 
         /* The parent folder (the artist), cached from <artist>/folder.jpg etc.
@@ -1719,14 +1761,14 @@ static enum bg_result aa_run_pass(void)
                 if (aa_cache_dir(aa_probe, ah, slot, true, workbuf, worksz,
                                  &aborted))
                     aa_counts.artist_art++;
-                else if (!aborted)
+                else if (!aborted && !aa_write_failed)
                 {
                     path_list_write_record(&noart_artists, aa_artist_dir);
                     aa_log_miss("artist", aa_artist_dir);
                 }
             }
         }
-        if (aborted)
+        if (aborted || aa_write_failed)
             break;
 
         if (++since_yield >= 16)
@@ -1740,7 +1782,7 @@ static enum bg_result aa_run_pass(void)
      * mid-walk is an interruption: the rebuilt one can carry the same marks. */
     if (tcs.failed && (!tagcache_is_usable() || tagcache_is_busy()))
         aborted = true;
-    failed = !aborted && tcs.failed;
+    failed = !aborted && (tcs.failed || aa_write_failed);
     tagcache_search_finish(&tcs);
     cpu_boost(false); /* balances the boost above (skipped on the goto-out path) */
 
@@ -1751,7 +1793,9 @@ out:
     noart_close(completed && !aa_added_only);
     if (completed && !aa_added_only && !aa_table_full)
         aa_remove_orphans();
-    aa_stamps_save(completed && !aa_added_only);
+    if (!aa_write_failed && !aa_stamps_save(completed && !aa_added_only)
+        && !aborted)
+        failed = true;
     aa_stamps = NULL;
     aa_visited = NULL;
     core_unpin(wh);
@@ -1810,7 +1854,9 @@ static void aa_handle_offer(void)
     struct aa_src src;
 
     aa_offer_posted = false;
-    if (aa_offer.path[0] == '\0' || !tagcache_is_usable())
+    aa_write_failed = false;
+    if (aa_check_abort() || aa_offer.path[0] == '\0'
+        || !tagcache_is_usable())
         return;
     if (aa_disk_asleep())
     {
@@ -1869,11 +1915,14 @@ static void aa_handle_offer(void)
             continue;
         aa_cache_path(aa_out_path, sizeof(aa_out_path), s, dh);
         aa_generate_size(&src, s, dh, aa_out_path, workbuf, worksz);
+        if (aa_write_failed)
+            break;
         yield();
     }
 
     /* So the next pass replaces these if the folder gains an image. */
-    aa_stamp_append(dh, AA_STAMP_EMBEDDED);
+    if (!aa_write_failed)
+        aa_stamp_append(dh, AA_STAMP_EMBEDDED);
 
     core_unpin(wh);
     core_free(wh);
@@ -1932,7 +1981,7 @@ static enum bg_result aa_task_run(void)
     result = aa_run_pass();
     debug_log(DEBUG_LOG_ARTCACHE,
               result == BG_DONE   ? "pass complete, idle" :
-              result == BG_FAILED ? "pass failed: database unreadable" :
+              result == BG_FAILED ? "pass failed: database or cache write" :
                                     "pass interrupted");
     return result;
 }
