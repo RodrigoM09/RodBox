@@ -32,3 +32,6 @@ identify_info.bin
 # Generated host fixture binaries/source are not publication artifacts.
 /tests/**/guard_harness*
 /tests/**/compare_benchmark*
+
+# Host regression output
+/verification/

@@ -20,3 +20,5 @@ Check out `checkpoint/pbN` to inspect a historical version. PB1–PB3 are recons
 Original firmware binaries are intentionally absent because they can embed absolute host paths and are not complete clean redistributable packages. Build the source in your own environment and perform the checks in TESTING.md.
 
 Portable test scripts and companion tools were added in the final publication commits. Historical source tags may predate those files; use the latest test scripts against a separate checkout of the chosen source tag.
+
+For the PB23 core and matching codecs, use the configuration above and run `make -j4 VERSION=rodbox-pb23-writethrough-261027 bin codecs`. Keep the matching existing target assets. This builds an experimental candidate, not a recovery image or proof of storage reliability.

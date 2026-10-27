@@ -90,6 +90,10 @@
 
 #define ALLOCATE_BUFFER_SIZE (2*MAX(READ_BUFFER_SIZE,WRITE_BUFFER_SIZE))
 
+#if defined(USBSTOR_VERIFY_WRITES) && !defined(HAVE_STORAGE_FLUSH)
+#error Verified USB writes require storage flush support
+#endif
+
 /* bulk-only class specific requests */
 #define USB_BULK_RESET_REQUEST   0xff
 #define USB_BULK_GET_MAX_LUN     0xfe
@@ -748,6 +752,12 @@ static void usb_storage_transfer_complete(int ep,int dir,int status,int length)
                 }
 
 #ifdef USBSTOR_VERIFY_WRITES
+                /* A read served from volatile device cache can match even if
+                 * the medium has not received the write. Make the verified
+                 * iPod path write-through, including host FUA requests, before
+                 * readback or successful acknowledgement. */
+                if (result == 0)
+                    result = storage_flush();
                 if (result == 0) {
                     unsigned int blocks = MIN(WRITE_BUFFER_SIZE / cur_cmd.block_size,
                                               cur_cmd.count);

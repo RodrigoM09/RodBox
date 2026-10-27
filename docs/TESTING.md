@@ -72,3 +72,7 @@ the existing error macros' signed-shift convention from UBSan. Runtime USB
 storage, playback and resume acceptance remain pending. The identified sleep
 weakness is not a proven explanation of the original corruption; see
 [USB-STORAGE-AWAKE.md](USB-STORAGE-AWAKE.md).
+
+## Cumulative durability tests
+
+From the repository root run `python3 run_audit_tests.py`. Clang/cc and Python 3 are required. The playlist guard is generated before its comparison benchmark; generated files and verification logs are ignored. Tests use synthetic inputs and mocked hardware, never an attached player. See [PB20–PB23 notes](PB20-PB23-DURABILITY.md) for physical acceptance limits.
