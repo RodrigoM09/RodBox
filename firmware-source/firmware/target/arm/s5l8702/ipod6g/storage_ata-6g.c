@@ -112,6 +112,16 @@ static void ata_write_cbr(uint32_t volatile* reg, uint16_t data)
 {
     while (!(ATA_PIO_READY & 2));
     *reg = data;
+    if (reg == &ATA_PIO_CSD || reg == &ATA_PIO_DVR)
+    {
+        /* Drain the controller's posted PIO write before starting the ATA
+         * status-settling interval. A device may take 400 ns to update status
+         * after command issue or selection; the old ready value is not a
+         * command completion. Two microsecond ticks guarantee at least one
+         * full microsecond even at the USEC_TIMER quantization boundary. */
+        while (!(ATA_PIO_READY & 2));
+        udelay(2);
+    }
 }
 
 static int ata_wait_for_not_bsy(long timeout)
