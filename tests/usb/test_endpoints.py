@@ -67,6 +67,13 @@ int main(void) {
         rc = d == USB_DW_EPDIR_IN ? usb_drv_send_nonblocking(0x81,data,512) : usb_drv_recv_nonblocking(1,data,512);
         assert(rc == -1 && starts == 0 && irq_depth == 0);
         puts(d ? "PASS active OUT with zero packet size: reject" : "PASS active IN with zero packet size: reject");
+        reset(); endpoints[1][d].active = true; endpoints[1][d].busy = true; mps[1][d] = 512;
+        endpoints[1][d].req_addr = data + 1; endpoints[1][d].req_size = 7;
+        endpoints[1][d].status = -42;
+        rc = d == USB_DW_EPDIR_IN ? usb_drv_send_nonblocking(0x81,data,512) : usb_drv_recv_nonblocking(1,data,512);
+        assert(rc == -1 && starts == 0 && irq_depth == 0);
+        assert(endpoints[1][d].busy && endpoints[1][d].req_addr == data + 1 && endpoints[1][d].req_size == 7 && endpoints[1][d].status == -42);
+        puts(d ? "PASS busy OUT: preserve active DMA request" : "PASS busy IN: preserve active DMA request");
         reset(); endpoints[1][d].active = true; mps[1][d] = 512;
         rc = d == USB_DW_EPDIR_IN ? usb_drv_send_nonblocking(0x81,data,512) : usb_drv_recv_nonblocking(1,data,512);
         assert(rc == 0 && starts == 1 && irq_depth == 0);
@@ -76,6 +83,9 @@ int main(void) {
     reset(); endpoints[0][USB_DW_EPDIR_IN].active = true;
     assert(usb_drv_send_nonblocking(0x80,NULL,0) == 0 && starts == 1 && irq_depth == 0);
     puts("PASS EP0 zero-length status transfer remains allowed");
+    endpoints[0][USB_DW_EPDIR_IN].busy = true;
+    assert(usb_drv_send_nonblocking(0x80,NULL,0) == 0 && starts == 2 && irq_depth == 0);
+    puts("PASS EP0 control replacement behavior retained");
     reset(); mps[1][USB_DW_EPDIR_IN] = 512;
     assert(usb_drv_send(0x81,data,512) == -1 && waits == 0 && starts == 0 && irq_depth == 0);
     puts("PASS blocking inactive IN: returns without waiting for impossible completion");

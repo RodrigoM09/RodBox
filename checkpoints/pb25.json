@@ -1,0 +1,20 @@
+{
+  "checkpoint": "pb25",
+  "version": "rodbox-pb25-usbguard-261027",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Reject overlapping requests on busy non-control DesignWare endpoints without changing EP0 replacement",
+  "status": "installed; superseded by PB26",
+  "core_sha256": "0890f3fdf594b45f42eba1bd7c9845147883eb947df21c37d146534a57d01f44",
+  "core_bytes": 1995316,
+  "validation": {
+    "native_build": "passed; core and 40 matching codecs prepared",
+    "host_suites_at_build": 44,
+    "hardware": "Installed on a separately capacity-tested replacement card; startup, test-song and two-album playback plus subsequent hashes/filesystem checks passed."
+  },
+  "bootloader_changed": false,
+  "limits": [
+    "Host tests mock hardware and do not prove electrical, DMA, flash or power-loss reliability.",
+    "No single corruption root cause or permanent fix has been established.",
+    "Media, private settings, device identifiers, local inventories, raw logs and firmware binaries are excluded."
+  ]
+}

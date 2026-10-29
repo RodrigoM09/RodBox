@@ -811,7 +811,14 @@ static int usb_dw_transfer(int epnum, enum usb_dw_epdir epdir,
         return -1;
     }
     if (dw_ep->busy)
+    {
         logf("%s: %s%d busy", __func__, dw_dir_str[epdir], epnum);
+        /* A non-control endpoint owns its request until completion or reset.
+         * Replacing it here can retarget DMA and lose the original length.
+         * EP0 retains its existing control-transfer replacement semantics. */
+        if (epnum != 0)
+            return -1;
+    }
 
     dw_ep->req_addr = buf;
     dw_ep->req_size = size;
