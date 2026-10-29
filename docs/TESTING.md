@@ -1,6 +1,6 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current cumulative acceptance, see [PB24–PB26 status](PB24-PB26-STATUS.md).
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current cumulative acceptance, see [PB27 database uniqueness](PB27-DATABASE-UNIQUENESS.md).
 
 ## Focused tests
 
@@ -77,4 +77,4 @@ weakness is not a proven explanation of the original corruption; see
 
 ## Cumulative durability tests
 
-From the repository root run `python3 run_audit_tests.py`. Clang/cc and Python 3 are required. The playlist guard is generated before its comparison benchmark; generated files and verification logs are ignored. Tests use synthetic inputs and mocked hardware, never an attached player. PB26’s publication run passed all 45 suites on 2026-10-29, including new iFlash mode/power, busy endpoint and database bootstrap regressions. See [PB20–PB23 notes](PB20-PB23-DURABILITY.md) and [PB24–PB26 status](PB24-PB26-STATUS.md) for physical acceptance limits. The small-library database fix is confirmed on device; the complete bulk transfer and subsequent full-library playback/reconnection sequence remain incomplete.
+From the repository root run `python3 run_audit_tests.py`. Clang/cc and Python 3 are required. The playlist guard is generated before its comparison benchmark; generated files and verification logs are ignored. Tests use synthetic inputs and mocked hardware, never an attached player. PB27’s cumulative run passed all 46 suites on 2026-10-29, including iFlash mode/power, busy endpoint, database bootstrap and merge-buffer uniqueness regressions. Its focused production allocator/insertion test was rerun successfully for publication. See [PB27 evidence](PB27-DATABASE-UNIQUENESS.md), [PB20–PB23 notes](PB20-PB23-DURABILITY.md) and [PB24–PB26 history](PB24-PB26-STATUS.md) for physical acceptance limits. Normal PB27 startup, unique artist display and post-startup firmware/database/filesystem checks passed; the complete bulk transfer and subsequent full-library playback/reconnection sequence remain incomplete.

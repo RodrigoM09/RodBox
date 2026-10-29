@@ -1,6 +1,6 @@
-# PB24–PB26: current experimental status
+# PB24–PB26: historical experimental status
 
-Updated 2026-10-29. PB26 (`rodbox-pb26-dbbootstrap-261028`) is the latest experimental source checkpoint for ipod6g / S5L8702 / 64 MB. It preserves the earlier PodBox/Scrim, Music/Audiobooks, native progress, artwork, analysis and input adaptations plus the [PB20–PB23 durability changes](PB20-PB23-DURABILITY.md). The unfinished station engine remains excluded. The bootloader was not changed.
+Historical scope: this page records evidence through PB26. [PB27 is the current experimental checkpoint](PB27-DATABASE-UNIQUENESS.md). At PB26 publication on 2026-10-29, PB26 (`rodbox-pb26-dbbootstrap-261028`) was the latest experimental source checkpoint for ipod6g / S5L8702 / 64 MB. It preserves the earlier PodBox/Scrim, Music/Audiobooks, native progress, artwork, analysis and input adaptations plus the [PB20–PB23 durability changes](PB20-PB23-DURABILITY.md). The unfinished station engine remains excluded. The bootloader was not changed.
 
 ## Focused changes
 
@@ -32,6 +32,6 @@ PB25 booted on that card. A test song and two albums played normally; subsequent
 
 PB26 installation verified all 42 core/info/codec files after remount while preserving settings. The Music database then built and persisted, and the two test albums appeared and played through Music. All 38 album files remained unchanged on reconnection; the filesystem check passed. This confirms the small-library bootstrap fix on the tested player, not full-library scaling or permanent storage reliability.
 
-The larger restore remains **incomplete**. Completed batches passed remount hashes/filesystem checks; macOS login-window and indexing processes occasionally refused unmount before a scan could start. Normal retries allowed checks to proceed. Private transfer tooling retries only the specific pre-scan unmount refusal, never a real filesystem/checksum failure, and does not force unmount. At the user’s pause request, completed files in the partial batch also passed hashes, the unfinished temporary copy was removed, the filesystem check passed and the player was safely ejected.
+At PB26 publication, the larger restore remained **incomplete**. Completed batches passed remount hashes/filesystem checks; macOS login-window and indexing processes occasionally refused unmount before a scan could start. Normal retries allowed checks to proceed. Private transfer tooling retries only the specific pre-scan unmount refusal, never a real filesystem/checksum failure, and does not force unmount. At the user’s pause request, completed files in the partial batch also passed hashes, the unfinished temporary copy was removed, the filesystem check passed and the player was safely ejected.
 
-Next acceptance is to resume with existing-file verification, finish all batches, perform full planned-library and firmware checks, then test database refresh, playback, idle/restart and reconnection. Headset controls, long-term battery behavior, comprehensive accessory support and corruption root cause remain unresolved. Do not infer sustained reliability from successful playback alone.
+At that checkpoint, the next acceptance was to resume with existing-file verification, finish all batches, perform full planned-library and firmware checks, then test database refresh, playback, idle/restart and reconnection. Headset controls, long-term battery behavior, comprehensive accessory support and corruption root cause remain unresolved. Do not infer sustained reliability from successful playback alone.

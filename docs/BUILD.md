@@ -21,4 +21,4 @@ Original firmware binaries are intentionally absent because they can embed absol
 
 Portable test scripts and companion tools were added in the final publication commits. Historical source tags may predate those files; use the latest test scripts against a separate checkout of the chosen source tag.
 
-For the PB26 core and 40 matching codecs, use the configuration above and run `make -j4 VERSION=rodbox-pb26-dbbootstrap-261028 bin codecs`. Keep the matching existing target assets. This builds an experimental candidate, not a recovery image or proof of storage reliability.
+For the PB27 core and 40 matching codecs, use the configuration above and run `make -j4 VERSION=rodbox-pb27-dbunique-261029 bin codecs`. Keep the matching existing target assets. This builds an experimental candidate, not a recovery image or proof of storage reliability.

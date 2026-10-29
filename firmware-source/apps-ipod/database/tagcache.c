@@ -828,12 +828,17 @@ static bool do_timed_yield(void)
 
 static void allocate_tempbuf(size_t minimum)
 {
+    const size_t align_mask = sizeof(uint32_t) - 1;
+    tempbuf_size = 0;
+    /* The deduplication CRC table grows down from the buffer's end.
+     * Both ends must stay word-aligned, including reclaimed allocations. */
+    if (minimum > SIZE_MAX - align_mask)
+        return;
+    minimum = (minimum + align_mask) & ~align_mask;
     size_t available = core_allocatable();
     size_t size = available > TAGCACHE_MIN_AUDIO_RESERVE
-                ? available - TAGCACHE_MIN_AUDIO_RESERVE : 0;
+                ? (available - TAGCACHE_MIN_AUDIO_RESERVE) & ~align_mask : 0;
     bool reclaim = size < minimum;
-
-    tempbuf_size = 0;
     /* Audio may own the free pool already. A bounded allocation invokes its
      * shrink callback; checking core_allocatable() alone cannot reclaim it.
      * Reserve playback headroom in that request, then return the headroom

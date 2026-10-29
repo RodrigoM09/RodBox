@@ -1,6 +1,6 @@
 # PB20–PB23 durability work
 
-Historical scope: this page records PB20–PB23. [PB26 is the current experimental checkpoint](PB24-PB26-STATUS.md). At PB23 publication, PB23 was the current experimental source checkpoint for ipod6g / S5L8702 / 64 MB. PB20–PB22 were installed and played music, but sustained verification still found changed song data. PB23 is installed with 42 core/info/codec files verified after remount and a clean filesystem check; its device acceptance is pending. No permanent corruption fix is claimed. Main remains the locked stable reference.
+Historical scope: this page records PB20–PB23. [PB27 is the current experimental checkpoint](PB27-DATABASE-UNIQUENESS.md). At PB23 publication, PB23 was the current experimental source checkpoint for ipod6g / S5L8702 / 64 MB. PB20–PB22 were installed and played music, but sustained verification still found changed song data. PB23 is installed with 42 core/info/codec files verified after remount and a clean filesystem check; its device acceptance is pending. No permanent corruption fix is claimed. Main remains the locked stable reference.
 
 The following work preserves the PB1–PB19 PodBox/Scrim integration, Music/Audiobooks flow, native audiobook progress, analysis, settings and headset changes. Actual headset-control behavior remains unresolved despite host input tests. The unfinished station work is excluded.
 
