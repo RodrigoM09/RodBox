@@ -19,3 +19,9 @@ On this build, `config.cfg.new` can be promoted at startup. Back up both it and 
 Build a chosen source checkpoint deliberately. Do not assume an old package, core-only backup or legacy bookmark format matches the current app layer. PodBox uses native per-book progress; old bookmark state is not an automatic interchange format. Preserve newer progress before reverting firmware.
 
 Normal firmware recovery did not require formatting, Finder/iTunes restore, partition changes, SysCFG flashing or bootloader replacement. Those are separate operations. Stop on unexpected filesystem errors and diagnose rather than repeatedly copying into a damaged filesystem.
+
+## Replacement storage and sector views
+
+Separate, explicitly approved replacement-card formatting and layout correction occurred during PB25 testing. A reader and the iPod can expose different logical sector sizes; a layout verified through the reader alone need not boot through the player. Do not copy an old partition map or guess a disk number. Establish device identity, capacity and sector geometry first; formatting, partition repair and bootloader flashing require their own authorization. See [current recovery evidence](PB24-PB26-STATUS.md). No automatic format/repair procedure or private install script is shipped here.
+
+The current PB26 music restore is paused and the iPod safely ejected. Resume by checking the correct device and existing-file hashes before new writes. Preserve the approved selection and existing settings/progress; do not silently overwrite a mismatching file or resume into an unknown device.

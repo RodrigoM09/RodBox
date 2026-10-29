@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB23**, with the cumulative [PB20–PB23 durability changes and evidence limits](docs/PB20-PB23-DURABILITY.md). Native builds and focused host tests pass. PB20–PB22 still showed hardware data mismatches; PB23 is installed and remount verified, but sustained USB/playback acceptance remains pending. Do not treat this as a proven corruption fix.
+Latest experimental source checkpoint: **PB26** (`rodbox-pb26-dbbootstrap-261028`). It preserves the [PB20–PB23 durability work](docs/PB20-PB23-DURABILITY.md), adds PB24 iFlash power handling and PB25 USB endpoint protection, and fixes initial Music database commits on memory-constrained players. All 45 host suites passed again on 2026-10-29. On-device startup, database creation, Music-menu playback and subsequent album hashes/filesystem checks passed. The larger music restore is **incomplete and paused at the user’s request** after completed batches passed verification and the player was safely ejected. [PB24–PB26 notes](docs/PB24-PB26-STATUS.md) separate confirmed results from remaining uncertainty; no permanent corruption fix is claimed.
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -54,6 +54,6 @@ No raw device backups, music, audiobooks, downloaded covers/portraits, personal 
 
 ## Build and verification
 
-Read [BUILD.md](docs/BUILD.md), [TESTING.md](docs/TESTING.md) and [RECOVERY.md](docs/RECOVERY.md) before using a build. Back up your own settings and progress; do not mix a new core with incompatible old codecs/themes. This project did not change the bootloader, format storage, flash SysCFG or replace the partition layout.
+Read [BUILD.md](docs/BUILD.md), [TESTING.md](docs/TESTING.md) and [RECOVERY.md](docs/RECOVERY.md) before using a build. Back up your own settings and progress; do not mix a new core with incompatible old codecs/themes. The firmware updates do not replace the bootloader or flash SysCFG. Separate, explicitly approved storage recovery and replacement-card formatting/layout work occurred during private testing; those procedures and personal installation scripts are not shipped as part of a firmware update.
 
 The firmware is predominantly GPL-licensed with separately licensed components. Scrim and bundled fonts have their own terms. See [LICENSE](LICENSE), [CREDITS.md](CREDITS.md), `firmware-source/docs/COPYING`, `firmware-source/docs/LICENSES` and the notices in individual files. AI assistance does not replace upstream ownership or licensing obligations.

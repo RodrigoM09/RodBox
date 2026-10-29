@@ -42,7 +42,7 @@ If other upstream themes remain in the distributed source, preserve their own RE
 
 The headphone preset is a conservative listening adjustment, not a calibrated correction of every headphone or ear. The preserved local implementation does not identify an exact downloadable measurement dataset sufficiently to claim one was imported; do not invent such provenance.
 
-## Staged or researched, not installed
+## Focused adaptations and remaining research
 
 PB11's focused acoustic-analysis corrections and revision-aware refresh were
 implemented for RodBox with AI assistance. The underlying PCM analysis,
@@ -51,8 +51,10 @@ from Anthony Fletcher's PodBox; the decoders and fixed-point library are
 Rockbox work. The new synthetic tests exercise those actual sources. No neural
 model or third-party model code is included in PB11.
 
-- [Schattenruf/rockpod `abbdc20`](https://github.com/Schattenruf/rockpod/commit/abbdc2052804d1a5c5789f7ce04c4b2f2df9e6aa): explicit iFlash model-detection idea was staged and host-tested; hardware ATA identification gate remains unmet and this patch is not installed.
+- [Schattenruf/rockpod `abbdc20`](https://github.com/Schattenruf/rockpod/commit/abbdc2052804d1a5c5789f7ce04c4b2f2df9e6aa): explicit iFlash ATA-model detection informed the local PB24 adaptation, now retained in installed PB26. Standard SSD hints and explicit mode overrides remain supported. PB24 power handling also references the iFlash report in nuxcodes/rockpod#37; neither attribution establishes a physical corruption root cause.
 - Broader playlist batching/resume/unshuffle patches were reviewed, not included wholesale.
 - UglyEgg/rockbox-music, bahusoid/rockbox, Nokikuji/NokiPod, tsirysndr/equalizer, stevenla/rockbox-ipod, Wuverul/SongDock, Pates2004/rockbox-accessible, dest92/Better-Rockpod, morgenman/RockBoxPersonalMods, deandromi/Rockbox-Rockpod-HFSPlus and brnomt/rockbox were research leads. They must not be described as installed firmware contributions without a specific later imported patch.
 
 PodBox's inherited accessory and speech credits include Paul Sauro's Rockbox changes, mojyack/libiap, oandrew/ipod-gadget and ipod, iAP2 protocol research, NV Access's NVSpeechPlayer, Carnegie Mellon's CMU Pronouncing Dictionary and the credited NRL letter-to-sound rules. The full upstream README and `firmware-source/docs/podbox/iap-sources.md`, `firmware-source/docs/podbox/iap2-sources.md` and `firmware-source/docs/LICENSES` remain authoritative for that inherited material. Presence of source does not establish that every optional feature was enabled or tested on the target player.
+
+PB24–PB26 follow-up work used Codex assistance for focused source review, regression harnesses, native builds and documentation. PB26’s Music database fix has an on-device check; host mocks and partial transfer success do not certify long-term storage reliability, battery behavior or headset controls. Upstream ownership and licenses remain unchanged.

@@ -1,6 +1,6 @@
 # PB20–PB23 durability work
 
-PB23 is the current experimental source checkpoint for ipod6g / S5L8702 / 64 MB. PB20–PB22 were installed and played music, but sustained verification still found changed song data. PB23 is installed with 42 core/info/codec files verified after remount and a clean filesystem check; its device acceptance is pending. No permanent corruption fix is claimed. Main remains the locked stable reference.
+Historical scope: this page records PB20–PB23. [PB26 is the current experimental checkpoint](PB24-PB26-STATUS.md). At PB23 publication, PB23 was the current experimental source checkpoint for ipod6g / S5L8702 / 64 MB. PB20–PB22 were installed and played music, but sustained verification still found changed song data. PB23 is installed with 42 core/info/codec files verified after remount and a clean filesystem check; its device acceptance is pending. No permanent corruption fix is claimed. Main remains the locked stable reference.
 
 The following work preserves the PB1–PB19 PodBox/Scrim integration, Music/Audiobooks flow, native audiobook progress, analysis, settings and headset changes. Actual headset-control behavior remains unresolved despite host input tests. The unfinished station work is excluded.
 
@@ -70,4 +70,4 @@ PB20's 41-suite host run passed. PB21 passed 11 focused USB suites; PB22/PB23 pa
 
 Observed changed regions included exact block-sized spans even when the FAT check passed. The most recent changed payload matched none of the 111 recently transferred source files. No captured trace proves a single root cause; ATA/iFlash/card/cable/USB behavior remains unexcluded. A device that falsely reports flush completion can defeat the new check. FAT is not journaled; power interruption, failed in-place rollback and emergency shutdown remain risks. Generic accessory poweroff quiescence remains unchanged.
 
-The full music restore is stopped. Next acceptance is the same failed approximately 2 GiB transfer, followed by remount hashes and playback/idle/reconnection checks. If it fails again, use the same batch through bootloader USB as a control rather than stacking speculative changes. Personal restoration scripts, media and device evidence remain local.
+At PB23 publication, the full music restore was stopped. The next acceptance was the same failed approximately 2 GiB transfer, followed by remount hashes and playback/idle/reconnection checks. If it fails again, use the same batch through bootloader USB as a control rather than stacking speculative changes. Personal restoration scripts, media and device evidence remain local.

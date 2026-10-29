@@ -88,8 +88,6 @@ static bool usb_host_wants_storage(void) { return host; }
 static void cpu_boost(bool enable) { (void)enable; }
 static void finish_interrupted_swap(void) { ops++; }
 static bool db_file_exists(const char *p) { (void)p;ops++;return false; }
-static void allocate_tempbuf(void) { ops++; }
-static void free_tempbuf(void) { ops++; }
 static bool commit(void) { ops++;return true; }
 static void allocate_tagcache(void) { ops++; }
 static void tagcache_commit_finalize(void) { ops++; }

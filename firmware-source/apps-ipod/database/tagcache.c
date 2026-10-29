@@ -826,31 +826,38 @@ static bool do_timed_yield(void)
     return false;
 }
 
-static void allocate_tempbuf(void)
+static void allocate_tempbuf(size_t minimum)
 {
-    /* Yeah, malloc would be really nice now :) */
-    size_t size;
+    size_t available = core_allocatable();
+    size_t size = available > TAGCACHE_MIN_AUDIO_RESERVE
+                ? available - TAGCACHE_MIN_AUDIO_RESERVE : 0;
+    bool reclaim = size < minimum;
+
     tempbuf_size = 0;
-
-    /* Need to pass dummy ops to prevent the buffer being moved
-     * out from under us, since we yield during the tagcache commit.
-     *
-     * Don't grab ALL memory -- leave a reserve so audio_reset_buffer()
-     * can still allocate if playback starts during a commit. Without
-     * this, core_alloc_maximum() + buflib_ops_locked starves the audio
-     * buffer and causes an OOM panic. */
-    size = core_allocatable();
-    if (size > TAGCACHE_MIN_AUDIO_RESERVE)
+    /* Audio may own the free pool already. A bounded allocation invokes its
+     * shrink callback; checking core_allocatable() alone cannot reclaim it.
+     * Reserve playback headroom in that request, then return the headroom
+     * before keeping the immovable merge buffer. */
+    if (reclaim)
     {
-        size -= TAGCACHE_MIN_AUDIO_RESERVE;
-        tempbuf_handle = core_alloc_ex(size, &buflib_ops_locked);
-        if (tempbuf_handle > 0)
-        {
-            tempbuf = core_get_data(tempbuf_handle);
-            tempbuf_size = size;
-        }
+        if (minimum > SIZE_MAX - TAGCACHE_MIN_AUDIO_RESERVE)
+            return;
+        size = minimum + TAGCACHE_MIN_AUDIO_RESERVE;
     }
-
+    if (!size)
+        return;
+    int handle = core_alloc_ex(size, &buflib_ops_locked);
+    if (handle <= 0)
+        return;
+    void *buffer = core_get_data(handle);
+    if (reclaim && !core_shrink(handle, buffer, minimum))
+    {
+        core_free(handle);
+        return;
+    }
+    tempbuf_handle = handle;
+    tempbuf = buffer;
+    tempbuf_size = reclaim ? minimum : size;
 }
 
 static void free_tempbuf(void)
@@ -4562,7 +4569,7 @@ static bool merge_temp(void)
         /* Free memory first. Freeing the dircache means rebuilding it after
          * the merge -- seconds on a disk, which the reload then waits out --
          * so it is taken only for a merge free memory will not hold. */
-        allocate_tempbuf();
+        allocate_tempbuf(commit_need(&tch));
         tempbuf_ours = true;
         if ((size_t)tempbuf_size < commit_need(&tch))
         {
@@ -4570,7 +4577,7 @@ static bool merge_temp(void)
             dircache_free_buffer();
             dircache_buffer_stolen = true;
 
-            allocate_tempbuf();
+            allocate_tempbuf(commit_need(&tch));
         }
     }
 
@@ -6926,10 +6933,10 @@ static void tagcache_thread(void)
          * the changes first in foreground. */
         if (db_file_exists(TAGCACHE_FILE_TEMP))
         {
-            allocate_tempbuf();
+            /* merge_temp() knows the required size and owns its allocation.
+             * Preallocating from only the free pool can starve bootstrap. */
             if (commit() && current_tcmh.serial == 0)
                 queue_post(&tagcache_queue, Q_IMPORT_CHANGELOG, 0);
-            free_tempbuf();
         }
 
         /* Allocate space for the tagcache if found on disk. */

@@ -41,6 +41,9 @@ All publication commits are new sanitized exports, not fabricated original commi
 | pb20 | Harden USB/FAT/ATA failures, checked library/artwork publication and worker handoff | native build and 41 host suites passed; hardware corruption remained |
 | pb21 | Serialize iPod USB receive/storage DMA and verify write payloads | native build and 11 USB suites passed; hardware corruption remained |
 | pb22 | Wait for ATA command/device-select status to settle | native build and 21 focused suites passed; second large transfer batch failed |
-| pb23 | Make verified USB writes write-through before readback/success | native build and 21 focused suites passed; installed and remount verified; device acceptance pending |
+| pb23 | Make verified USB writes write-through before readback/success | native build and host suites passed; later bulk tests still found changed data, including a bootloader USB control |
+| pb24 | Recognize iFlash ATA models and retain adapter power in non-PM idle sleep | native build and 44 host suites passed; installed and booted, later data reads remained inconsistent |
+| pb25 | Preserve an active non-control DesignWare request when a second submission arrives | native build and 44 host suites passed; installed on a replacement card; song/two-album playback and later hashes passed |
+| pb26 | Reclaim playback-owned memory for initial Music database commits, preserving playback headroom | native build and 45 host suites passed; on-device Music database and two-album playback confirmed; verified bulk restore paused by user, full acceptance incomplete |
 
 Each checkpoint has a matching `checkpoints/<name>.json`. PB1–PB3 are validated artifact reconstructions; PB5 is explicitly rolled back. PB10 passed the user's restart/playback checks; PB11 analysis and hardware acceptance remain pending. See BUGS-AND-LESSONS.md for failure/rollback context and CREDITS.md for the imported/inherited code chain.
