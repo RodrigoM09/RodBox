@@ -1,0 +1,20 @@
+{
+  "checkpoint": "pb24",
+  "version": "rodbox-pb24-iflashpower-261027",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Detect iFlash ATA models in automatic storage mode and retain adapter power during non-PM idle sleep",
+  "status": "installed; superseded by PB26",
+  "core_sha256": "42e3028da6055ed2e582fe80354b4325d0cbb3ca34d14e6919bfc1b5a424cb42",
+  "core_bytes": 1995312,
+  "validation": {
+    "native_build": "passed; core and 40 matching codecs prepared",
+    "host_suites_at_build": 44,
+    "hardware": "Installed and booted; large-transfer verification still found inconsistent data, including repeated direct-reader reads."
+  },
+  "bootloader_changed": false,
+  "limits": [
+    "Host tests mock hardware and do not prove electrical, DMA, flash or power-loss reliability.",
+    "No single corruption root cause or permanent fix has been established.",
+    "Media, private settings, device identifiers, local inventories, raw logs and firmware binaries are excluded."
+  ]
+}

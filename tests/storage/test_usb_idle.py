@@ -8,9 +8,11 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / 'firmware-source/firmware/target/arm/s5l8702/ipod6g/storage_ata-6g.c'
+DEFAULT_SOURCE = ROOT / 'firmware-source/firmware/target/arm/s5l8702/ipod6g/storage_ata-6g.c'
+SOURCE = Path(sys.argv[1]) if len(sys.argv)>1 else DEFAULT_SOURCE
 
 
 def extract(source, name):
@@ -40,7 +42,7 @@ def main():
         'ata_sleepnow_locked', 'ata_sleepnow', 'ata_event'))
     template = Path(__file__).with_name('usb_idle_harness.c').read_text()
     # Exercise the actual packed error representation with full UBSan.
-    header = SOURCE.with_name('mmcdefs-target.h').read_text()
+    header = DEFAULT_SOURCE.with_name('mmcdefs-target.h').read_text()
     macros = header[header.index('#define ERR_RC('):header.index('#define TIMEOUT_EXPIRED')]
     system = (ROOT / 'firmware-source/firmware/export/system.h').read_text()
     timing = '\n'.join(re.findall(r'^#define TIME_(?:AFTER|BEFORE)\([^\n]*', system, re.M))

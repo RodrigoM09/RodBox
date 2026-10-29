@@ -1172,6 +1172,12 @@ static void ata_sleepnow_locked(void)
         return;
     }
 
+    /* SD bridges may acknowledge FLUSH before the card finishes programming.
+     * Allow settling before clock gating or the caller's whole-player shutdown.
+     * See the iFlash report in nuxcodes/rockpod#37. */
+    if (!ceata && !ata_disk_can_sleep())
+        sleep(HZ / 2);
+
     if (ceata) {
         logf("ata SLEEP %ld", current_tick);
         memset(ceata_taskfile, 0, 16);
@@ -1204,7 +1210,11 @@ static void ata_sleepnow_locked(void)
         PWRCON(0) |= (1 << 5);
         ata_power_down();
     } else if (canflush) {
-        ata_power_down();
+        /* A flush capability is not permission to remove SD-adapter power.
+         * Preserve the rail; clock gating also lets normal shutdown proceed. */
+        PWRCON(0) |= (1 << 5);
+        ata_powered = false;
+        ssd_sleep_tick = current_tick;
     }
 }
 
@@ -1227,9 +1237,24 @@ void ata_spin(void)
     ata_set_active();
 }
 
+/* Some iFlash revisions omit every standard SSD-identification hint.
+ * Match the ATA model as well; this selects the existing clock-gated path. */
+static bool ata_is_iflash(void)
+{
+    char model[41];
+    for (int i = 0; i < 20; i++)
+    {
+        model[2 * i] = identify_info[27 + i] >> 8;
+        model[2 * i + 1] = identify_info[27 + i] & 0xff;
+    }
+    model[40] = '\0';
+    return strstr(model, "iFlash") != NULL;
+}
+
 void ata_set_storage_mode(int mode)
 {
-    bool ssd = (mode == 2) || (mode == 0 && ata_disk_isssd());
+    bool ssd = (mode == 2) ||
+               (mode == 0 && (ata_disk_isssd() || ata_is_iflash()));
     mutex_lock(&ata_mutex);
     if (ssd != ata_ssd_mode && !ata_powered)
     {
@@ -1300,7 +1325,7 @@ int ata_init(void)
         return rc;
 
     /* Auto-detect SSD before settings are loaded */
-    ata_ssd_mode = ata_disk_isssd();
+    ata_ssd_mode = ata_disk_isssd() || ata_is_iflash();
 
     /* Validate before shifting/multiplying firmware-supplied IDENTIFY words. */
     if (!ata_get_log_sector_size(&log_sector_size))
@@ -1426,12 +1451,13 @@ int ata_event(long id, intptr_t data)
             /* Phase 2: SSD deep sleep — cut AUTOLDO after 30s of
              * clock-gate sleep when backlight is off */
             if (ata_ssd_mode && !ata_powered && !ssd_deep_asleep
-                && !is_backlight_on(true)
+                && ata_disk_can_sleep() && !is_backlight_on(true)
                 && TIME_AFTER(current_tick, ssd_sleep_tick + 30 * HZ))
             {
                 mutex_lock(&ata_mutex);
                 if (!ata_usb_storage_active && !ata_powered &&
-                    !ssd_deep_asleep && !is_backlight_on(true) &&
+                    !ssd_deep_asleep && ata_disk_can_sleep() &&
+                    !is_backlight_on(true) &&
                     TIME_AFTER(current_tick, ssd_sleep_tick + 30 * HZ))
                 {
                     logf("ata SSD DEEP %ld", current_tick);

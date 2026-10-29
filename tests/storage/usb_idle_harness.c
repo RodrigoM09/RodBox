@@ -139,7 +139,14 @@ int main(void) {
     setup(); ata_ssd_mode=false; event(Q_STORAGE_SLEEPNOW);
     assert(powers_down==1 && commands==2 && ATA_PIO_CSD==CMD_STANDBY_IMMEDIATE);
     setup(); ceata=true; event(Q_STORAGE_SLEEPNOW); assert(powers_down==1 && ceata_commands==1);
-    setup(); ata_ssd_mode=false; disk_can_sleep=false; event(Q_STORAGE_SLEEPNOW); assert(powers_down==1);
+    setup(); ata_ssd_mode=false; disk_can_sleep=false; long started=current_tick;
+    event(Q_STORAGE_SLEEPNOW); assert(!powers_down && !ide_off && !ata_powered);
+    assert(current_tick-started>=HZ/2 && power_regs[0]==BIT(5));
+    setup(); disk_can_sleep=false; started=current_tick; event(Q_STORAGE_SLEEPNOW);
+    assert(!ata_powered && !powers_down && !ide_off && current_tick-started>=HZ/2);
+    current_tick+=31*HZ; event(Q_STORAGE_TICK); assert(!ide_off && !ssd_deep_asleep);
+    setup(); disk_can_sleep=false; ata_powered=false; event(Q_STORAGE_TICK);
+    assert(!ide_off && !ssd_deep_asleep);
     setup(); ata_sleepnow(); assert(depth==0 && locks==unlocks && flushes==1 && !ata_powered);
     setup(); flush_result=ERR_RC(7); ata_sleepnow();
     assert(ata_powered && !powers_down && !ide_off && flushes==1 && !power_regs[0]);
