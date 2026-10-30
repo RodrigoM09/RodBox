@@ -15,6 +15,8 @@
 #include "widgets/list.h"               /* enum list_row_kind */
 
 void root_menu(void) NORETURN_ATTR;
+/* Destination of Menu in Now Playing; resumes the originating Music list. */
+int root_menu_wps_back(void);
 struct menu_table {
     char *string;
     const struct menu_item_ex *item;

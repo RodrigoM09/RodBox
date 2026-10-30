@@ -1,6 +1,6 @@
 # Ongoing code audit
 
-Current checkpoint: **PB28**, updated 2026-10-30. This remains a partial, evidence-based review, not an every-line certification. [PB28](PB28-ARTWORK-CLEANUP.md) fixes a reproduced unmount cleanup leak while preserving [PB27](PB27-DATABASE-UNIQUENESS.md) and earlier work. All 47 host suites and the native PB28 build passed. The user confirmed normal startup/artwork, followed by matching firmware/artist images, valid cached-image structures and a clean filesystem on the first reconnect. The full PB27 restore and post-repair checksum pass completed; long-term storage acceptance remains open.
+Current checkpoint: **PB29**, updated 2026-10-30. This remains a partial, evidence-based review, not an every-line certification. [PB29](PB29-NAVIGATION.md) changes the regular Music/Now Playing Menu return and preserves [PB28's cleanup correction](PB28-ARTWORK-CLEANUP.md). The native PB29 build and installation-time firmware/artwork/filesystem checks passed; its restart and two Menu paths remain unconfirmed. The preceding PB28 build passed 47 host suites, and its first restart/reconnect was clean. The full PB27 restore and post-repair checksum pass completed; long-term storage acceptance remains open.
 
 | Finding | Current evidence and state |
 | --- | --- |
@@ -16,6 +16,7 @@ Current checkpoint: **PB28**, updated 2026-10-30. This remains a partial, eviden
 | Initial Music database cannot reclaim playback-owned memory | PB26 bounded allocation/shrink correction; regression and on-device database/Music playback checks pass. |
 | Database merge buffer can misalign duplicate-name CRC word accesses | PB27 aligns both allocation paths and bounds rounding overflow; actual allocator/insertion regression reproduces PB26’s invalid access and passes after correction. Existing duplicate records were separately deduplicated with all track fields preserved. |
 | Replaced artwork still held by a reader leaks clusters at unmount | PB28 routes reader teardown through deferred unlink cleanup; old callback fails the host regression and fixed callback passes. First hardware reconnect is clean; exact provenance of the earlier 13 orphans remains unproven. |
+| Menu from Music-launched Now Playing always exits to the root | PB29 uses the saved regular Music origin; main-menu Now Playing still returns to the root. Native build and installation checks pass; physical Menu behavior pending. |
 | Files menu appears to return without browsing | User was in the display-filter settings screen; enabling the actual Files menu resolved navigation. No browser-code fix was indicated. |
 | Headset controls and unfinished station engine | Physical headset behavior remains unresolved; station engine is excluded, not shipped or certified. |
 

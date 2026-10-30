@@ -1,0 +1,26 @@
+{
+  "checkpoint": "pb29",
+  "version": "rodbox-pb29-wpsback-261030",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Menu from Music-launched Now Playing resumes the saved Music song list; main-menu Now Playing returns to the main menu; other entry routes retain prior behavior",
+  "status": "installed and remount-verified; user restart and both Menu paths pending",
+  "core_bytes": 1995588,
+  "core_sha256": "acb3246f14512a4b528aefa308bf2232f31cf761d26a1c593adcdf3a7597098a",
+  "validation": {
+    "native_build": "passed; Arm GNU Toolchain 13.2.Rel1",
+    "codecs": "all 40 byte-identical to PB28",
+    "source_review": "Menu mapping, saved Music selection/depth, previous-screen restoration, root origin reset and one-shot route preservation",
+    "installation": "42 firmware hashes and 56 artist-image hashes match; backed-up database/settings/artwork preserved; filesystem clean",
+    "full_host_suite": "not rerun for navigation change; preceding PB28 run passed 47 suites",
+    "music": "no edits; inventory/size/timestamps unchanged; complete checksum pass not repeated"
+  },
+  "pb28_cleanup_preserved": true,
+  "bootloader_changed": false,
+  "formatting_performed": false,
+  "limits": [
+    "Install-time checks ran under PB28 until restart.",
+    "PB29 startup and both navigation routes await user confirmation.",
+    "No claim that all historical corruption or future storage faults are fixed.",
+    "No binaries, media, personal configs, device identifiers or private scripts/logs published."
+  ]
+}

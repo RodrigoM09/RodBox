@@ -84,3 +84,7 @@ From the repository root run `python3 run_audit_tests.py`. Clang/cc and Python 3
 Run `python3 tests/storage/test_unmount_removed_reader.py`. With `--source-root /path/to/older/firmware-source`, the same harness reproduces the PB27 failure. It uses production callback/close code with mocked storage/bookkeeping, not a physical FAT image or complete scheduler.
 
 For device acceptance, begin with a verified clean filesystem and a backup. Exercise artwork generation/replacement and browsing, allow normal shutdown or USB handover, then verify artwork and the filesystem after reconnect. Distinguish original-image hash checks, cached-image structural checks and a full music checksum comparison; they establish different things. PB28 has one clean recorded restart/reconnect, not a completed stress campaign.
+
+## PB29 navigation acceptance
+
+PB29's native build and installation/remount firmware, artwork and filesystem checks passed. Its return paths were reviewed against the active source; the complete 47-suite run is PB28 evidence and was not repeated for this navigation-only change. On-device PB29 startup and both Menu paths remain pending. Follow the two routes in [PB29-NAVIGATION.md](PB29-NAVIGATION.md), including backing completely out to the main menu before selecting Now Playing again. This distinguishes the immediate entry route from the song's earlier browse history.

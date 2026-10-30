@@ -20,13 +20,16 @@
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
   "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
   "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
-  "current_checkpoint": "pb28",
+  "current_checkpoint": "pb29",
   "current_validation": {
     "host_suites_at_pb28_build": 47,
     "pb28_publication_focused_regression": "passed",
-    "native_build": "PB28 passed; image model/checksum verified; codecs match PB27",
+    "native_build": "PB28 and PB29 passed; model/checksum verified; all 40 codecs identical",
     "pb27_full_restore_and_postrepair_checksum": "passed",
     "pb28_first_restart_reconnect": "firmware/artwork/filesystem passed; no orphan clusters",
-    "long_term_storage_reliability": "unresolved"
+    "long_term_storage_reliability": "unresolved",
+    "pb29_installation": "firmware/artwork hashes and filesystem passed; music inventory/size/timestamps unchanged",
+    "pb29_runtime": "pending restart and two Menu return routes",
+    "pb29_full_host_suite": "not rerun; preceding PB28 cumulative run passed 47 suites"
   }
 }

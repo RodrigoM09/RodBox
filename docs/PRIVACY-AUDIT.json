@@ -24,5 +24,14 @@
     "packaging/rgnano/config.cfg is an upstream packaging fixture, not personal device configuration"
   ],
   "source_build_and_portable_tests": "passed; see VERIFICATION.json",
-  "privacy_boundary": "Known private identifiers are checked privately; the identifier list itself is never published. Original binary build products, media, device configs, database/progress and raw logs remain private."
+  "privacy_boundary": "Known private identifiers are checked privately; the identifier list itself is never published. Original binary build products, media, device configs, database/progress and raw logs remain private.",
+  "followup_pb28_pb29": {
+    "scope": "Changed/new files since published PB27; earlier full-history counts remain historical.",
+    "changed_files_reviewed": 27,
+    "known_private_identifier_or_secret_patterns_found": false,
+    "relative_documentation_links_checked": true,
+    "private_media_binaries_scripts_and_raw_logs_included": false,
+    "commit_metadata": "RodBox contributors <contributors@rodbox.invalid>",
+    "checkpoint_scope": "PB28 and PB29 source, focused regression, generic Album Artist example and current evidence notes"
+  }
 }

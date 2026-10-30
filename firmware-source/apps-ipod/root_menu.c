@@ -86,6 +86,15 @@ static int last_screen = GO_TO_ROOT; /* unfortunatly needed so we can resume
 /* Set while the screen being loaded was reached by BACK */
 static bool came_back;
 
+int root_menu_wps_back(void)
+{
+    /* Music retains its browse depth and selected song across playback.
+     * A main-menu Now Playing entry has GO_TO_ROOT as its origin. Keep
+     * other routes at the root: some are one-shot actions, not resumable
+     * screens (notably the album-cover track-list entry point). */
+    return last_screen == GO_TO_DBBROWSER ? GO_TO_PREVIOUS : GO_TO_ROOT;
+}
+
 static int previous_music = GO_TO_WPS; /* Toggles behavior of the return-to
                                         * playback-button. Upstream this also
                                         * tracked the FM screen; this fork has
