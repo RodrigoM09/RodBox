@@ -1,6 +1,6 @@
 # PB24–PB26: historical experimental status
 
-Historical scope: this page records evidence through PB26. [PB27 is the current experimental checkpoint](PB27-DATABASE-UNIQUENESS.md). At PB26 publication on 2026-10-29, PB26 (`rodbox-pb26-dbbootstrap-261028`) was the latest experimental source checkpoint for ipod6g / S5L8702 / 64 MB. It preserves the earlier PodBox/Scrim, Music/Audiobooks, native progress, artwork, analysis and input adaptations plus the [PB20–PB23 durability changes](PB20-PB23-DURABILITY.md). The unfinished station engine remains excluded. The bootloader was not changed.
+Historical scope: this page records evidence through PB26. [PB30 is the current experimental checkpoint](PB30-DIRECTORY-END.md). At PB26 publication on 2026-10-29, PB26 (`rodbox-pb26-dbbootstrap-261028`) was the latest experimental source checkpoint for ipod6g / S5L8702 / 64 MB. It preserves the earlier PodBox/Scrim, Music/Audiobooks, native progress, artwork, analysis and input adaptations plus the [PB20–PB23 durability changes](PB20-PB23-DURABILITY.md). The unfinished station engine remains excluded. The bootloader was not changed.
 
 ## Focused changes
 

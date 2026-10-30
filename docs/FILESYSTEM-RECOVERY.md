@@ -2,7 +2,7 @@
 
 ## Historical PB16–PB18 recovery record
 
-The following describes that earlier checkpoint, not the currently installed build. See the PB28 follow-up below for later results.
+The following describes that earlier checkpoint, not the currently installed build. See the PB28 and PB30 follow-ups below for later results.
 
 Persistent font read errors and failed filesystem checks followed the write
 failures. Normal restart and another host port did not clear those read errors.
@@ -46,3 +46,9 @@ protocol recovery needs a separate tested fix. See [audit status](AUDIT-STATUS.m
 ## Follow-up through PB28 (2026-10-30)
 
 The full library restore and post-repair checksum pass later completed under PB27. Further artwork activity preceded 13 orphan clusters. PB28 corrects a demonstrated deferred-unlink leak at unmount; the old clusters were separately repaired without formatting. The first PB28 restart/reconnect is clean. These later observations do not retroactively resolve older direct-reader inconsistencies or establish a single historical corruption cause. See [PB28 evidence](PB28-ARTWORK-CLEANUP.md); private device-specific recovery scripts remain excluded.
+
+## PB30 diagnostic-report recovery (2026-10-30)
+
+PB29 later exposed duplicate `unreadable.txt` / `unreadable.dat` directory records and cross-links, including a shared reference with the playlist-control file. A prior successful filesystem repair alone had left duplicate names, so the next check failed again. PB30 fixes the reproduced directory end-marker defect; it does not automatically remove already-exposed records.
+
+The approved recovery backed up protected files, repaired cross-links, verified the filesystem, and only then removed all duplicate disposable diagnostic reports. Clean remount checks separated removal passes. PB30 installation preserved protected data and music inventory/size/timestamps without formatting or music edits. After normal playback/artwork, shutdown and restart, the first PB30 reconnect was clean; each diagnostic report regenerated once. Full audio checksums were not repeated. See [PB30 validation](PB30-DIRECTORY-END.md).

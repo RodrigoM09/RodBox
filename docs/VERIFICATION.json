@@ -12,7 +12,8 @@
     "pb7": "passed",
     "pb8": "passed",
     "pb9": "passed",
-    "pb10": "passed, as recorded in TESTING.md"
+    "pb10": "passed, as recorded in TESTING.md",
+    "pb30": "first playback/artwork/shutdown/restart/reconnect cycle passed"
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
@@ -20,16 +21,22 @@
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
   "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
   "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
-  "current_checkpoint": "pb29",
+  "current_checkpoint": "pb30",
   "current_validation": {
     "host_suites_at_pb28_build": 47,
     "pb28_publication_focused_regression": "passed",
-    "native_build": "PB28 and PB29 passed; model/checksum verified; all 40 codecs identical",
+    "native_build": "PB30 passed; 40 codecs identical to PB29",
     "pb27_full_restore_and_postrepair_checksum": "passed",
     "pb28_first_restart_reconnect": "firmware/artwork/filesystem passed; no orphan clusters",
     "long_term_storage_reliability": "unresolved",
     "pb29_installation": "firmware/artwork hashes and filesystem passed; music inventory/size/timestamps unchanged",
-    "pb29_runtime": "pending restart and two Menu return routes",
-    "pb29_full_host_suite": "not rerun; preceding PB28 cumulative run passed 47 suites"
+    "pb29_runtime": "normal startup and both Menu paths confirmed; later diagnostic-report cross-links investigated in PB30",
+    "pb29_full_host_suite": "not rerun; preceding PB28 cumulative run passed 47 suites",
+    "pb30_focused_host_suites": 8,
+    "pb30_directory_regression": "old production code fails; PB30 and final publication test pass",
+    "pb30_installation": "42 firmware files, 56 artist images and 594 cached-image structures verified; protected data preserved; filesystem clean",
+    "pb30_first_playback_shutdown_reconnect": "user startup/playback/artwork/shutdown/restart confirmed; read-only filesystem passed with no cross-links, orphan clusters or duplicate cache names; both reports regenerated once",
+    "pb30_full_music_checksum": "not repeated; inventory/size/timestamps preserved during installation",
+    "pb30_full_host_suite": "not rerun; preceding PB28 result remains historical"
   }
 }

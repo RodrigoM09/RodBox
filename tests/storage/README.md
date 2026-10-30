@@ -72,3 +72,7 @@ Additional actual-source ASan/UBSan suites:
 
 Filesystem and transport mocks reproduce specific failures. They do not make FAT
 journaled or establish which event caused physical-device corruption.
+
+## FAT directory end marker (PB30)
+
+Run `python3 tests/storage/test_fat_directory_end.py`; `--source /path/to/older/fat.c` reproduces the old stale-record visibility failure. Production `add_dir_entry()` and `write_longname()` run against a byte-array directory/cache under ASan/UBSan. The fixture checks stale records after the first zero marker, stale slots consumed by long names, live neighbors before the marker, 512–4096-byte sector layouts, chain/maximum-directory boundaries and successor-read failure. Storage, filename helpers and cache operations are mocked; this is not a full FAT image or device test.

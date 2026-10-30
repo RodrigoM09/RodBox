@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB29** (`rodbox-pb29-wpsback-261030`). Menu from Now Playing returns to the saved album/song list when playback was entered through Music; opening Now Playing from the main menu returns there instead. The native build, installation hashes and filesystem check passed; **PB29 restart and both Menu routes still need on-device confirmation**. All earlier changes, including [PB28's deferred artwork-file cleanup](docs/PB28-ARTWORK-CLEANUP.md), are retained. PB28 passed 47 host suites and its first restart/reconnect showed matching artwork and no orphan clusters. The full PB27 library restore and post-repair checksum pass completed, but sustained storage reliability remains unproven. See [PB29 behavior and acceptance](docs/PB29-NAVIGATION.md).
+Latest experimental source checkpoint: **PB30** (`rodbox-pb30-dirend-261030`). It fixes a FAT directory end-marker bug that could expose stale deleted entries and references to reused storage. Eight focused host suites and the native build passed. After repair and installation, the user confirmed normal startup, playback, artwork, shutdown and restart; the subsequent read-only check found **no cross-links, orphaned clusters or duplicate cache names**. Both diagnostic reports regenerated as single files. PB29's two Menu paths are confirmed and all earlier improvements are retained. This is one successful device cycle, not long-term storage certification. See [PB30 fix and results](docs/PB30-DIRECTORY-END.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

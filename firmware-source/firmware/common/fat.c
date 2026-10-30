@@ -1860,7 +1860,7 @@ static int add_dir_entry(struct bpb *fat_bpb, struct fat_filestr *parentstr,
                             / FATLONG_NAME_CHARS + 1;
     }
 
-    int entry = 0, entries_found = 0, firstentry = -1;
+    int entry = 0, entries_found = 0, firstentry = -1, endentry = -1;
     const int entperclus = DIR_ENTRIES_PER_SECTOR*fat_bpb->bpb_secperclus;
 
     /* step 1: search for a sufficiently-long run of free entries and check
@@ -1888,6 +1888,7 @@ static int add_dir_entry(struct bpb *fat_bpb, struct fat_filestr *parentstr,
         {
         case 0:    /* all remaining entries in cluster are free */
             DEBUGF("Found end of dir %d\n", entry);
+            endentry = entry;
             int found = entperclus - (entry % entperclus);
             entries_found += found;
             entry += found; /* move entry passed end of cluster */
@@ -1958,6 +1959,32 @@ static int add_dir_entry(struct bpb *fat_bpb, struct fat_filestr *parentstr,
         }
 
         firstentry = entry - entries_found;
+    }
+
+    /* Bytes after the first zero entry are undefined, not necessarily zero.
+     * Consuming that marker without moving it exposes old directory records,
+     * including references to clusters that have since been freed/reused.
+     * Clear the consumed slots and the successor before publishing the name.
+     * A deleted gap wholly before the marker must keep its live successor. */
+    const int nextentry = firstentry + entries_needed;
+    if (endentry >= 0 && nextentry > endentry)
+    {
+        dc_lock_cache();
+        for (int i = endentry; i <= nextentry && i < MAX_DIRENTRIES; i++)
+        {
+            union raw_dirent *ent = cache_direntry(fat_bpb, parentstr, i);
+            if (!ent)
+            {
+                /* A full chain needs no extra cluster just for a marker. */
+                if (i == nextentry && parentstr->eof)
+                    break;
+                dc_unlock_cache();
+                FAT_ERROR(-7);
+            }
+            ent->name[0] = 0;
+            dc_dirty_buf(ent);
+        }
+        dc_unlock_cache();
     }
 
     /* remember the parent directory entry information */

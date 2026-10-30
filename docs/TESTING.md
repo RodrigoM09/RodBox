@@ -1,6 +1,6 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current cumulative acceptance, see [PB27 database uniqueness](PB27-DATABASE-UNIQUENESS.md).
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB30 directory-end results](PB30-DIRECTORY-END.md).
 
 ## Focused tests
 
@@ -87,4 +87,23 @@ For device acceptance, begin with a verified clean filesystem and a backup. Exer
 
 ## PB29 navigation acceptance
 
-PB29's native build and installation/remount firmware, artwork and filesystem checks passed. Its return paths were reviewed against the active source; the complete 47-suite run is PB28 evidence and was not repeated for this navigation-only change. On-device PB29 startup and both Menu paths remain pending. Follow the two routes in [PB29-NAVIGATION.md](PB29-NAVIGATION.md), including backing completely out to the main menu before selecting Now Playing again. This distinguishes the immediate entry route from the song's earlier browse history.
+PB29's native build and installation/remount firmware, artwork and filesystem checks passed. The user subsequently confirmed normal startup and both Menu paths: Music-launched Now Playing returns to the original song list, while main-menu Now Playing returns to the main menu. Later checks found diagnostic-report cross-links and duplicate directory names, investigated separately in PB30. The preceding 47-suite run belongs to PB28 and was not repeated for PB29.
+
+## PB30 directory end marker and device acceptance
+
+The following eight focused suites passed for PB30:
+
+```sh
+python3 tests/storage/test_fat_directory_end.py
+python3 tests/storage/test_fat_failure_paths.py
+python3 tests/storage/test_unmount_removed_reader.py
+python3 tests/storage/test_unmount_writer.py
+python3 tests/analysis/test_unreadable.py
+python3 tests/analysis/test_libfile_finish.py
+python3 tests/analysis/test_libfile_writes.py
+python3 tests/playback/test_tagcache_handoff.py
+```
+
+The new directory test accepts `--source /path/to/older/fat.c`; old PB29 fails its stale-record visibility assertion. It uses real insertion/name-writing functions with mocked storage, and is discovered automatically by the cumulative runner. PB30's full cumulative suite was not rerun. The focused directory test also passed from the final publication checkout.
+
+After approved recovery and PB30 installation, the user tested normal startup, playback, artwork, shutdown and restart. The read-only reconnect scan returned filesystem exit code 0: no cross-links, orphaned clusters or duplicate cache names; both diagnostic reports regenerated once. This is one successful cycle. Artwork/firmware hashes were checked at installation; the final reconnect checked the version, cache names and filesystem, without another full music checksum pass. See [PB30 details](PB30-DIRECTORY-END.md).

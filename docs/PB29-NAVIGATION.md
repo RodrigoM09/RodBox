@@ -29,8 +29,8 @@ This deliberately covers the regular Music route. Other entry points preserve th
 
 The private binary is not published; paths/dates/toolchain inputs may affect rebuild hashes.
 
-## Pending device check
+## Device follow-up (2026-10-30)
 
-PB29 has been installed and safely ejected, but its startup and navigation have not yet been confirmed by the user. Restart with Hold off and confirm PB29. Select a song through Music → Artist → Album, then press Menu and check that the original song list and selection return. Back out to the main menu, select Now Playing, and check that Menu returns to that main menu. Reconnect for a read-only filesystem check after normal playback/artwork use.
+The user confirmed normal PB29 startup and both Menu paths. Music → Artist → Album → Song → Menu returned to the original song list; main-menu Now Playing → Menu returned to the main menu. Later playback/artwork/shutdown checks found cross-links and duplicate diagnostic-report names despite intact artwork; these were investigated and repaired with [PB30](PB30-DIRECTORY-END.md). Navigation acceptance therefore passed, while PB29 did not establish filesystem reliability.
 
-Installation-time checks ran under PB28 until restart; they are not PB29 runtime acceptance. See [PB28's evidence limits](PB28-ARTWORK-CLEANUP.md) and [TESTING.md](TESTING.md).
+Installation-time checks ran under PB28 until restart. The subsequent user confirmation establishes PB29's navigation behavior; PB30 records the later filesystem correction and successful device cycle. See [TESTING.md](TESTING.md).

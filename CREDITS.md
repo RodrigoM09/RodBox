@@ -63,4 +63,6 @@ PB27’s merge-buffer alignment correction and production allocator/insertion re
 
 PB28's deferred-unlink cleanup correction and production-callback regression were prepared with Codex assistance. The underlying filesystem and artwork implementation remains credited to its original Rockbox/PodBox contributors. The regression uses mocked storage/bookkeeping; all 47 host suites passed and one physical restart/reconnect was clean. Personal media, artwork, device backups and repair scripts are excluded.
 
-PB29's regular-Music/Now Playing return-path adjustment was prepared with Codex assistance using the existing PodBox/Rockbox browser and root-dispatcher state. Source review, native build and installation/remount checks passed. Physical PB29 startup and Menu navigation remain pending; no new upstream code or media was imported.
+PB29's regular-Music/Now Playing return-path adjustment was prepared with Codex assistance using the existing PodBox/Rockbox browser and root-dispatcher state. Source review, native build and installation/remount checks passed. Physical PB29 startup and both Menu paths were subsequently confirmed; no new upstream code or media was imported.
+
+PB30's FAT directory end-marker correction and production-function regression were prepared with Codex assistance. Rockbox's existing FAT implementation and its author/license notices are preserved. Eight focused suites and the native build passed, followed by one clean playback/artwork/shutdown/restart/reconnect cycle. No new external code or media was imported.

@@ -33,5 +33,13 @@
     "private_media_binaries_scripts_and_raw_logs_included": false,
     "commit_metadata": "RodBox contributors <contributors@rodbox.invalid>",
     "checkpoint_scope": "PB28 and PB29 source, focused regression, generic Album Artist example and current evidence notes"
+  },
+  "followup_pb30": {
+    "scope": "Changed/new PB30 source, regression and documentation since PB29; earlier full-history counts remain historical",
+    "known_private_identifier_or_secret_patterns_found": false,
+    "relative_documentation_links_checked": true,
+    "private_media_binaries_scripts_and_raw_logs_included": false,
+    "commit_metadata": "RodBox contributors <contributors@rodbox.invalid>",
+    "changed_files_reviewed": 21
   }
 }

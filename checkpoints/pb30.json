@@ -1,0 +1,40 @@
+{
+  "checkpoint": "pb30",
+  "version": "rodbox-pb30-dirend-261030",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Preserve FAT directory end marker while consuming free space; keep stale deleted records invisible and preserve live neighbors.",
+  "status": "installed; first playback/artwork/shutdown/restart and read-only reconnect passed",
+  "core_bytes": 1995724,
+  "core_sha256": "39f8cab06bfd401590837db40929c1da172a8f80626bbc6cd8c6deec1a637646",
+  "validation": {
+    "native_build": "passed; Arm GNU Toolchain 13.2.Rel1",
+    "focused_host_suites": 8,
+    "focused_tests": [
+      "tests/storage/test_fat_directory_end.py",
+      "tests/storage/test_fat_failure_paths.py",
+      "tests/storage/test_unmount_removed_reader.py",
+      "tests/storage/test_unmount_writer.py",
+      "tests/analysis/test_unreadable.py",
+      "tests/analysis/test_libfile_finish.py",
+      "tests/analysis/test_libfile_writes.py",
+      "tests/playback/test_tagcache_handoff.py"
+    ],
+    "old_pb29_reproduction": "fails stale-record visibility assertion",
+    "publication_directory_regression": "passed",
+    "codecs": "all 40 byte-identical to PB29",
+    "installation": "42 firmware hashes and 56 artist hashes match; 594 cached-image structures valid; 732 backed-up protected files checked except intended core/info replacement",
+    "device_cycle": "user confirmed normal startup/playback/artwork/shutdown/restart; filesystem exit code 0, no cross-links, orphan clusters or duplicate cache names; both reports regenerated once",
+    "full_host_suite": "not rerun; preceding PB28 run passed 47 suites",
+    "music": "no writes; inventory/size/timestamps unchanged; full checksums not repeated"
+  },
+  "existing_damage_recovery": "backed up; cross-links repaired; duplicate disposable diagnostic entries removed only after clean checks",
+  "bootloader_changed": false,
+  "formatting_performed": false,
+  "limits": [
+    "One successful hardware cycle is not long-term storage certification.",
+    "Production-function regression uses mocked storage, not a full FAT image or hardware emulator.",
+    "No raw historical trace establishes the cause of every previous corruption.",
+    "Final reconnect checked version/cache names/filesystem, not fresh artwork or full music hashes.",
+    "No binaries, media, personal configs, device identifiers, private scripts or raw logs published."
+  ]
+}
