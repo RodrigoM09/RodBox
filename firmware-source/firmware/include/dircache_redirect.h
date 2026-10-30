@@ -253,7 +253,7 @@ static inline void fileop_onunmount_internal(struct filestr_base *stream)
     if (stream->flags & FD_WRITE)
         force_close_writer_internal(stream); /* try to save stuff */
     else
-        fileop_onclose_internal(stream);     /* just readers, bye */
+        force_close_reader_internal(stream); /* includes deferred unlink */
 }
 
 

@@ -3,7 +3,7 @@
   "version": "rodbox-pb27-dbunique-261029",
   "target": "ipod6g / S5L8702 / 64 MB",
   "change": "Word-align both database merge allocation paths and bound rounding overflow, preserving playback headroom for valid duplicate-name CRC accesses",
-  "status": "installed; startup and repaired unique artist display confirmed; bulk and future incremental-commit acceptance incomplete",
+  "status": "installed and subsequently superseded; normal startup, unique-name database, full selected transfer and full post-repair checks passed; later artwork-cache orphan clusters prompted PB28",
   "core_sha256": "6d51e1c41cefddbc4b2b61921dd9a75e48fddee5a66ff8679e16d38b29f47282",
   "core_bytes": 1995476,
   "validation": {
@@ -13,13 +13,14 @@
     "preceding_candidate_regression": "PB26 reproduces UBSan misaligned unsigned store",
     "hardware": "Normal startup and unique artist presentation confirmed after separate database deduplication; all 42 firmware files, database references/unique names, three identical database reads and filesystem check passed",
     "database_repair": "Full per-track semantic comparison preserved names, filenames, numeric metadata, flags, play counts, ratings and resume values; original rollback copies retained",
-    "transfer": "All 475 existing music/artwork files matched before resume; three additional approximately 1 GiB batches passed remount hashes/filesystem checks; final restore incomplete"
+    "transfer": "Full selected restore completed; final plan hashes and later full post-repair 1708-file music/artwork comparison passed, with matching firmware/metadata and a clean filesystem. Later artwork-cache orphan clusters were a separate recurrence."
   },
   "bootloader_changed": false,
   "limits": [
-    "On-device confirmation followed separate existing-record repair; future incremental database commits and full-library scaling remain unverified.",
+    "Initial on-device confirmation followed separate existing-record repair; the subsequent 1202-track database passed structure/unique-name checks, but every future incremental merge is not certified.",
     "No single music-corruption root cause or permanent fix has been established.",
     "Host mocks do not certify electrical, DMA, flash, power-loss or every concurrency behavior.",
     "No personal data, private scripts/logs, device identifiers, inventories or firmware binaries are published."
-  ]
+  ],
+  "follow_up_2026_10_30": "Full selected restore, valid 1202-track database and full post-repair checksum comparison completed; later artwork-related orphan clusters prompted PB28. Long-term storage acceptance remains open."
 }

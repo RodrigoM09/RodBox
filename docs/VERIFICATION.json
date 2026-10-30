@@ -12,11 +12,21 @@
     "pb7": "passed",
     "pb8": "passed",
     "pb9": "passed",
-    "pb10": "pending"
+    "pb10": "passed, as recorded in TESTING.md"
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
   "media_or_listening_history_included": false,
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
-  "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged."
+  "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
+  "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
+  "current_checkpoint": "pb28",
+  "current_validation": {
+    "host_suites_at_pb28_build": 47,
+    "pb28_publication_focused_regression": "passed",
+    "native_build": "PB28 passed; image model/checksum verified; codecs match PB27",
+    "pb27_full_restore_and_postrepair_checksum": "passed",
+    "pb28_first_restart_reconnect": "firmware/artwork/filesystem passed; no orphan clusters",
+    "long_term_storage_reliability": "unresolved"
+  }
 }

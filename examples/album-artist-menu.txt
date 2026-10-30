@@ -1,0 +1,5 @@
+# Optional tagnavi menu row; merge into an existing valid menu, not a whole config.
+# fmt_title must already be defined by that configuration.
+# Groups album tracks by their Album Artist tag without editing music files.
+# Missing Album Artist tags still require a metadata policy chosen by the user.
+"Artist" -> albumartist -> album -> title = "fmt_title"

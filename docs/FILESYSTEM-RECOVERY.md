@@ -1,5 +1,9 @@
 # Filesystem recovery and remaining acceptance
 
+## Historical PB16–PB18 recovery record
+
+The following describes that earlier checkpoint, not the currently installed build. See the PB28 follow-up below for later results.
+
 Persistent font read errors and failed filesystem checks followed the write
 failures. Normal restart and another host port did not clear those read errors.
 The independent firmware/settings/progress backup was reverified before repair.
@@ -28,13 +32,17 @@ publishing anything. No new bulk transfer occurred between the clean recovery
 check and this failure. Functional playback alone is therefore insufficient
 acceptance, and large transfers alone do not explain all observed corruption.
 
-Further device updates and transfers are paused. Sustained-transfer reliability
+At that checkpoint, further device updates and transfers were paused. Sustained-transfer reliability
 and the original corruption cause remain unresolved. Host filesystem/file checks
 cannot establish power-loss durability, card health or accessory behavior.
 
 The USB error-recovery host reproducer is deliberately separate from acceptance
 checks. Run `python3 tests/usb/reproduce_write_error.py` from the repository root;
-it currently exits 1 for the known outstanding-OUT overlap. It uses actual
+at this historical checkpoint it exited 1 for the outstanding-OUT overlap. It uses actual
 extracted MSC code with mocked endpoints/storage and no physical USB access.
 It does not prove that overlap caused the initial write failure. Correct
 protocol recovery needs a separate tested fix. See [audit status](AUDIT-STATUS.md).
+
+## Follow-up through PB28 (2026-10-30)
+
+The full library restore and post-repair checksum pass later completed under PB27. Further artwork activity preceded 13 orphan clusters. PB28 corrects a demonstrated deferred-unlink leak at unmount; the old clusters were separately repaired without formatting. The first PB28 restart/reconnect is clean. These later observations do not retroactively resolve older direct-reader inconsistencies or establish a single historical corruption cause. See [PB28 evidence](PB28-ARTWORK-CLEANUP.md); private device-specific recovery scripts remain excluded.

@@ -233,6 +233,7 @@ int test_stream_exists_internal(const char *path, unsigned int callflags);
 
 int open_noiso_internal(const char *path, int oflag); /* file.c */
 void force_close_writer_internal(struct filestr_base *stream); /* file.c */
+void force_close_reader_internal(struct filestr_base *stream); /* file_internal.c */
 
 struct DIRENT;
 int uncached_readdir_dirent(struct filestr_base *stream,

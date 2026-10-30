@@ -660,6 +660,17 @@ file_error:
     return rc;
 }
 
+void force_close_reader_internal(struct filestr_base *stream)
+{
+    /* A reader can be the last reference to an unlinked/replaced file.
+     * Dropping only its binding leaks that file's allocated clusters. Use
+     * the normal close path while the volume is still mounted, including
+     * deferred FAT_RM_DATA cleanup for files replaced by cache writers. */
+    int rc = close_stream_internal(stream);
+    if (rc < 0)
+        panicf("File cleanup failed at unmount (%d). Restart required", rc);
+}
+
 /* create a new stream in the parent directory */
 int create_stream_internal(struct file_base_info *parentinfop,
                            const char *basename, size_t length,
