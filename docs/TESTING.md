@@ -1,6 +1,6 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB31 analysis results](PB31-ANALYSIS.md).
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB32 battery results](PB32-BATTERY.md).
 
 ## Focused tests
 
@@ -111,3 +111,7 @@ After approved recovery and PB30 installation, the user tested normal startup, p
 ## PB31
 
 Three focused analysis suites and the native build passed. Installation hashes and filesystem checks passed; on-device analysis acceptance is pending. See [details and limits](PB31-ANALYSIS.md).
+
+## PB32
+
+Three focused suites and native build passed. User charger-transition acceptance and firmware/database/artwork/filesystem reconnect checks passed. Full music checksums were not repeated. See [details and limits](PB32-BATTERY.md).

@@ -1,6 +1,6 @@
 # Ongoing code audit
 
-Current checkpoint: **PB31**, updated 2026-10-31. [Analysis error handling and verification](PB31-ANALYSIS.md): three focused suites and native build passed; installed firmware and filesystem verified. Hardware analysis acceptance remains pending; original startup cause unconfirmed. Earlier findings below remain historical evidence.
+Current checkpoint: **PB32**, updated 2026-10-31. [Battery continuity fix and results](PB32-BATTERY.md): focused tests/native build passed; user charger-transition test and read-only reconnect verification passed. Actual battery calibration and earlier shutdown cause remain unresolved; PB31 analysis acceptance remains pending. Earlier findings below remain historical evidence.
 
 | Finding | Current evidence and state |
 | --- | --- |

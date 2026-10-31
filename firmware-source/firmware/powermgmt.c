@@ -401,6 +401,31 @@ static int voltage_to_battery_level(int millivolts)
 }
 #endif /* CONFIG_BATTERY_MEASURE & VOLTAGE_MEASURE */
 
+#ifdef IPOD_6G
+/* The Classic has voltage estimates, not a fuel gauge. Its charging and
+ * discharge curves differ by about forty percentage points near 4 V.
+ * Keep the reported estimate monotonic within each power state: connecting
+ * power cannot remove charge, and disconnecting cannot add it. The new
+ * curve catches up as voltage changes. A genuinely empty reading must still
+ * win, and the independent millivolt shutdown checks remain unchanged.
+ * Startup has no previous estimate and uses the selected curve directly. */
+static int classic_battery_percent(int level, bool charging)
+{
+    static int previous = -1;
+    if (level < 0)
+        return level;
+    if (previous >= 0 && level > 0)
+    {
+        if (charging && level < previous)
+            level = previous;
+        else if (!charging && level > previous)
+            level = previous;
+    }
+    previous = level;
+    return level;
+}
+#endif
+
 /* Update battery percentage and time remaining information.
  *
  * This will be called by the power thread after polling new battery data.
@@ -420,6 +445,10 @@ static void battery_status_update(void)
 #else
     /* This should be a compile time error? */
     int level = -1;
+#endif
+
+#ifdef IPOD_6G
+    level = classic_battery_percent(level, charge_state > DISCHARGING);
 #endif
 
 #if CONFIG_BATTERY_MEASURE & TIME_MEASURE

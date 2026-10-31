@@ -56,3 +56,7 @@ Each checkpoint has a matching `checkpoints/<name>.json`. PB1–PB3 are validate
 ## PB31 — 2026-10-31
 
 Stop and report analysis worker startup failures; retain startup error messages and distinguish index memory failures. Three focused suites, native build and installation checks passed. Hardware analysis acceptance pending. See [PB31](PB31-ANALYSIS.md).
+
+## PB32 — 2026-10-31
+
+Classic battery percentage continuity across charging/discharging curves. User transition test and reconnect checks passed; calibration and prior shutdown cause remain unresolved. See [PB32](PB32-BATTERY.md).

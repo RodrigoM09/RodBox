@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB31** (`rodbox-pb31-analysis-261031`). Analysis worker-start failures now stop with an explicit message instead of silently skipping tracks and reporting completion. Startup errors remain visible, and index-memory failures are distinguished from file errors. Three focused host suites and the native build passed; installation verified 42 firmware files and a clean filesystem without music writes. On-device reboot and analysis acceptance remain pending; the original reported startup message was not captured, so its cause is unconfirmed. PB30 storage fixes and earlier improvements are retained. See [PB31 analysis fixes and verification](docs/PB31-ANALYSIS.md).
+Latest experimental source checkpoint: **PB32** (`rodbox-pb32-battery-261031`). Prevents the Classic battery estimate from jumping when switching charging/discharging curves. Three focused suites and native build passed; user confirmed normal startup and stable percentage on charger connection/removal. Reconnect checks passed for firmware, database, artwork and filesystem. This fixes display continuity, not battery calibration or the unconfirmed earlier shutdown. PB31 analysis acceptance remains pending. See [PB32 results](docs/PB32-BATTERY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

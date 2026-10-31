@@ -14,7 +14,8 @@
     "pb9": "passed",
     "pb10": "passed, as recorded in TESTING.md",
     "pb30": "first playback/artwork/shutdown/restart/reconnect cycle passed",
-    "pb31": "pending reboot and analysis test"
+    "pb31": "pending reboot and analysis test",
+    "pb32": "startup and charger-transition test confirmed; read-only reconnect passed"
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
@@ -22,11 +23,11 @@
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
   "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
   "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
-  "current_checkpoint": "pb31",
+  "current_checkpoint": "pb32",
   "current_validation": {
     "host_suites_at_pb28_build": 47,
     "pb28_publication_focused_regression": "passed",
-    "native_build": "PB31 core and codecs passed",
+    "native_build": "PB32 core and codecs passed",
     "pb27_full_restore_and_postrepair_checksum": "passed",
     "pb28_first_restart_reconnect": "firmware/artwork/filesystem passed; no orphan clusters",
     "long_term_storage_reliability": "unresolved",
@@ -42,6 +43,21 @@
     "pb31_focused_host_suites": 3,
     "pb31_installation": "42 firmware hashes verified; protected data preserved; filesystem clean before and after",
     "pb31_music": "no writes; 2243-file inventory sizes and modification times unchanged; full checksums not repeated",
-    "pb31_original_symptom_cause": "unconfirmed"
+    "pb31_original_symptom_cause": "unconfirmed",
+    "pb32": {
+      "focused_host_suites": 3,
+      "native_build": "passed",
+      "firmware_files_verified": 42,
+      "database_active_tracks": 1592,
+      "artist_images_verified": 86,
+      "cached_image_structures_checked": 765,
+      "filesystem": "passed; no cross-links or orphan clusters",
+      "music": "no writes; inventory sizes and timestamps unchanged; full checksums not repeated"
+    },
+    "pb32_limits": [
+      "Voltage estimate can plateau; this is not fuel-gauge calibration",
+      "Prior shutdown cause unresolved",
+      "PB31 analysis hardware acceptance pending"
+    ]
   }
 }
