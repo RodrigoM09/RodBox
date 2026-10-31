@@ -1,6 +1,6 @@
 # Ongoing code audit
 
-Current checkpoint: **PB30**, updated 2026-10-30. [PB30](PB30-DIRECTORY-END.md) fixes a reproduced FAT directory insertion defect that can reveal stale entries after the end marker. Eight focused suites and the native build passed; installation checks passed, followed by normal user-tested playback/artwork/shutdown/restart and a clean read-only filesystem check. The regenerated diagnostic reports have no duplicate names. PB29's Menu paths are confirmed; PB28's cleanup correction and earlier changes remain. This is a partial, evidence-based review with one successful PB30 device cycle, not an every-line or long-term reliability certification.
+Current checkpoint: **PB31**, updated 2026-10-31. [Analysis error handling and verification](PB31-ANALYSIS.md): three focused suites and native build passed; installed firmware and filesystem verified. Hardware analysis acceptance remains pending; original startup cause unconfirmed. Earlier findings below remain historical evidence.
 
 | Finding | Current evidence and state |
 | --- | --- |

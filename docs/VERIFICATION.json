@@ -13,7 +13,8 @@
     "pb8": "passed",
     "pb9": "passed",
     "pb10": "passed, as recorded in TESTING.md",
-    "pb30": "first playback/artwork/shutdown/restart/reconnect cycle passed"
+    "pb30": "first playback/artwork/shutdown/restart/reconnect cycle passed",
+    "pb31": "pending reboot and analysis test"
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
@@ -21,11 +22,11 @@
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
   "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
   "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
-  "current_checkpoint": "pb30",
+  "current_checkpoint": "pb31",
   "current_validation": {
     "host_suites_at_pb28_build": 47,
     "pb28_publication_focused_regression": "passed",
-    "native_build": "PB30 passed; 40 codecs identical to PB29",
+    "native_build": "PB31 core and codecs passed",
     "pb27_full_restore_and_postrepair_checksum": "passed",
     "pb28_first_restart_reconnect": "firmware/artwork/filesystem passed; no orphan clusters",
     "long_term_storage_reliability": "unresolved",
@@ -37,6 +38,10 @@
     "pb30_installation": "42 firmware files, 56 artist images and 594 cached-image structures verified; protected data preserved; filesystem clean",
     "pb30_first_playback_shutdown_reconnect": "user startup/playback/artwork/shutdown/restart confirmed; read-only filesystem passed with no cross-links, orphan clusters or duplicate cache names; both reports regenerated once",
     "pb30_full_music_checksum": "not repeated; inventory/size/timestamps preserved during installation",
-    "pb30_full_host_suite": "not rerun; preceding PB28 result remains historical"
+    "pb30_full_host_suite": "not rerun; preceding PB28 result remains historical",
+    "pb31_focused_host_suites": 3,
+    "pb31_installation": "42 firmware hashes verified; protected data preserved; filesystem clean before and after",
+    "pb31_music": "no writes; 2243-file inventory sizes and modification times unchanged; full checksums not repeated",
+    "pb31_original_symptom_cause": "unconfirmed"
   }
 }

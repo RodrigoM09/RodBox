@@ -22,7 +22,7 @@ HARNESS = r'''
 #define SS_MIN_LENGTH_MS 25000
 #define ANALYSIS_QUICK 0
 static struct {int analysis_depth;} global_settings;
-static bool ss_stop,ss_unplugged,ss_write_failed,already_done,add_ok;
+static bool ss_stop,ss_unplugged,ss_write_failed,ss_worker_failed,already_done,add_ok;
 static int ss_skipped,ss_failed,ss_done,decode_rc,adds;
 static long current_tick,ss_work;
 static unsigned long ss_audio_ms;
@@ -50,8 +50,12 @@ int main(void){
   assert(!ss_write_failed && ss_done==1 && ss_failed==(rc!=TRACK_DECODE_OK) && ss_audio_ms==40000);
  }
  already_done=true;adds=0;assert(ss_measure("track",1,2,2000,120000,NULL));assert(adds==0 && ss_skipped==1);
- already_done=false;decode_rc=TRACK_DECODE_NO_THREAD;assert(ss_measure("track",1,2,2000,120000,NULL));assert(adds==0 && ss_skipped==2);
- puts("PASS: save failure ends measurement and does not count progress; cache/no-thread skips retained; ASan/UBSan");
+ already_done=false;decode_rc=TRACK_DECODE_NO_THREAD;
+ int done_before=ss_done;unsigned long ms_before=ss_audio_ms;
+ assert(!ss_measure("track",1,2,2000,120000,NULL));
+ assert(ss_worker_failed && adds==0 && ss_skipped==1);
+ assert(ss_done==done_before && ss_audio_ms==ms_before);
+ puts("PASS: save failure ends measurement and does not count progress; cache skips retained; worker failure stops without false progress; ASan/UBSan");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='rodbox-scan-') as tmp:

@@ -52,3 +52,7 @@ All publication commits are new sanitized exports, not fabricated original commi
 | pb30 | Preserve FAT directory end markers so stale deleted entries stay hidden | old-code reproduction fails; eight focused suites/native build pass; existing duplicates repaired; user playback/artwork/shutdown/restart and clean reconnect passed |
 
 Each checkpoint has a matching `checkpoints/<name>.json`. PB1–PB3 are validated artifact reconstructions; PB5 is explicitly rolled back. PB10 passed the user's restart/playback checks; PB11 analysis and hardware acceptance remain pending. See BUGS-AND-LESSONS.md for failure/rollback context and CREDITS.md for the imported/inherited code chain.
+
+## PB31 — 2026-10-31
+
+Stop and report analysis worker startup failures; retain startup error messages and distinguish index memory failures. Three focused suites, native build and installation checks passed. Hardware analysis acceptance pending. See [PB31](PB31-ANALYSIS.md).

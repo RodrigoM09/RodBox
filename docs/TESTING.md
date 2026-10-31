@@ -1,6 +1,6 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB30 directory-end results](PB30-DIRECTORY-END.md).
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB31 analysis results](PB31-ANALYSIS.md).
 
 ## Focused tests
 
@@ -107,3 +107,7 @@ python3 tests/playback/test_tagcache_handoff.py
 The new directory test accepts `--source /path/to/older/fat.c`; old PB29 fails its stale-record visibility assertion. It uses real insertion/name-writing functions with mocked storage, and is discovered automatically by the cumulative runner. PB30's full cumulative suite was not rerun. The focused directory test also passed from the final publication checkout.
 
 After approved recovery and PB30 installation, the user tested normal startup, playback, artwork, shutdown and restart. The read-only reconnect scan returned filesystem exit code 0: no cross-links, orphaned clusters or duplicate cache names; both diagnostic reports regenerated once. This is one successful cycle. Artwork/firmware hashes were checked at installation; the final reconnect checked the version, cache names and filesystem, without another full music checksum pass. See [PB30 details](PB30-DIRECTORY-END.md).
+
+## PB31
+
+Three focused analysis suites and the native build passed. Installation hashes and filesystem checks passed; on-device analysis acceptance is pending. See [details and limits](PB31-ANALYSIS.md).

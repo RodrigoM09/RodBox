@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB30** (`rodbox-pb30-dirend-261030`). It fixes a FAT directory end-marker bug that could expose stale deleted entries and references to reused storage. Eight focused host suites and the native build passed. After repair and installation, the user confirmed normal startup, playback, artwork, shutdown and restart; the subsequent read-only check found **no cross-links, orphaned clusters or duplicate cache names**. Both diagnostic reports regenerated as single files. PB29's two Menu paths are confirmed and all earlier improvements are retained. This is one successful device cycle, not long-term storage certification. See [PB30 fix and results](docs/PB30-DIRECTORY-END.md).
+Latest experimental source checkpoint: **PB31** (`rodbox-pb31-analysis-261031`). Analysis worker-start failures now stop with an explicit message instead of silently skipping tracks and reporting completion. Startup errors remain visible, and index-memory failures are distinguished from file errors. Three focused host suites and the native build passed; installation verified 42 firmware files and a clean filesystem without music writes. On-device reboot and analysis acceptance remain pending; the original reported startup message was not captured, so its cause is unconfirmed. PB30 storage fixes and earlier improvements are retained. See [PB31 analysis fixes and verification](docs/PB31-ANALYSIS.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
