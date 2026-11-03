@@ -1,6 +1,6 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB32 battery results](PB32-BATTERY.md).
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB35 Lexus findings](PB35-LEXUS-PROTOCOL.md).
 
 ## Focused tests
 
@@ -115,3 +115,12 @@ Three focused analysis suites and the native build passed. Installation hashes a
 ## PB32
 
 Three focused suites and native build passed. User charger-transition acceptance and firmware/database/artwork/filesystem reconnect checks passed. Full music checksums were not repeated. See [details and limits](PB32-BATTERY.md).
+
+## PB33–PB35 focused USB checks
+
+Run `python3 tests/usb/test_iap_control_reports.py`,
+`python3 tests/usb/test_iap_complete_frame.py`,
+`python3 tests/usb/test_iap_playback_rates.py`, and
+`python3 tests/usb/test_iap_track_info_layout.py`.
+All passed with ASan/UBSan. The layout test validates declarations/fixtures,
+not a working metadata handler. No audio-endpoint hardware recovery is claimed.

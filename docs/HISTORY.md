@@ -60,3 +60,12 @@ Stop and report analysis worker startup failures; retain startup error messages 
 ## PB32 — 2026-10-31
 
 Classic battery percentage continuity across charging/discharging curves. User transition test and reconnect checks passed; calibration and prior shutdown cause remain unresolved. See [PB32](PB32-BATTERY.md).
+
+## PB33–PB35: Lexus interoperability
+
+PB33 enlarges the bounded iAP control buffer to match advertised reports.
+PB34 dispatches complete checksum-valid frames and confirms authentication.
+PB35 defers playback acknowledgements to state changes and fixes rate-list EOF
+parsing. Native builds and focused tests passed. Lexus still has no audio or
+advancing timer; metadata/artwork command support is incomplete. See
+[the current investigation](PB35-LEXUS-PROTOCOL.md). Main remains unchanged.

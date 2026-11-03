@@ -299,7 +299,7 @@ static void sink_play(const void* addr, size_t size) {
      * some accessories will get confused when receiving it while waiting for an ack */
     struct IAPContext* ctx = _iap_acquire_ctx(true);
     struct Platform*   plt = ctx->platform;
-    if(plt->control_pending) {
+    if(plt->control_pending && plt->pending_wants_play) {
         check_act(iap_control_response(ctx, plt->pending_control, true), );
         plt->control_pending = false;
     }
@@ -517,7 +517,11 @@ bool iap_audio_accessory_rates(struct IAPSpan* list) {
     unsigned count  = 0;
     uint32_t rate;
 
-    while(iap_span_read_32(list, &rate)) {
+    /* A rate is a whole big-endian word. Reject malformed lists rather
+     * than accepting a valid prefix, and do not read once past EOF. */
+    check_act(list->size > 0 && list->size % 4 == 0, return false);
+    while(list->size >= 4) {
+        check_act(iap_span_read_32(list, &rate), return false);
         count += 1;
         for(size_t i = 0; i < ARRAYLEN(samprs); i += 1) {
             if(samprs[i] == rate) {

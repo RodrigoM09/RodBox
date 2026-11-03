@@ -151,6 +151,7 @@ enum usb_log_type
                           * audio_status() << 8; for a serial reset, b = the
                           * line said it departed, c = lingoes, d = the
                           * interface state */
+    USB_LOG_IAP_TRACK_REQUEST, /* raw remaining eight bytes of a 12-byte track request */
 };
 
 #define USB_LOG_OUTPUT_GONE    0

@@ -554,6 +554,10 @@ static void format_entry(const struct usb_log_entry *e, uint64_t us,
                      e->d ? ", playback's art used" : "");
             break;
         }
+        case USB_LOG_IAP_TRACK_REQUEST:
+            snprintf(p, size, "iap track request #%u bytes 4..11: %08lx %08lx",
+                     e->b, (unsigned long)e->c, (unsigned long)e->d);
+            break;
         case USB_LOG_IAP_IDENTIFY:
         {
             static const char *const auth[] = {

@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB32** (`rodbox-pb32-battery-261031`). Prevents the Classic battery estimate from jumping when switching charging/discharging curves. Three focused suites and native build passed; user confirmed normal startup and stable percentage on charger connection/removal. Reconnect checks passed for firmware, database, artwork and filesystem. This fixes display continuity, not battery calibration or the unconfirmed earlier shutdown. PB31 analysis acceptance remains pending. See [PB32 results](docs/PB32-BATTERY.md).
+Latest experimental source checkpoint: **PB35** (`rodbox-pb35-lexusdiag-261102`). PB33 fixes advertised iAP report sizes; PB34 restores complete-frame dispatch and successful Lexus authentication; PB35 checks playback-command completion, validates sample-rate lists and improves diagnostics. Builds, focused host tests and installed filesystem checks passed. **Lexus audio is still stalled; metadata/artwork requests remain unsupported.** See [PB35 findings](docs/PB35-LEXUS-PROTOCOL.md). PB32 battery continuity remains confirmed; PB31 Thorough analysis acceptance remains pending.
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

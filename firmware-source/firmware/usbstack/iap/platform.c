@@ -254,7 +254,10 @@ bool iap_platform_control_waits(struct IAPContext* ctx) {
         /* playback starting has usually answered it already, but not where
          * it was playing before and the stream never stopped */
         library_play_held = false;
-    } else if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+    }
+    bool playing = (audio_status() & AUDIO_STATUS_PLAY) &&
+                   !(audio_status() & AUDIO_STATUS_PAUSE);
+    if(playing != plt->pending_wants_play) {
         /* the iAP sink's play answers it first; playback on the built-in
          * sink, or none at all, is answered from here */
         if(!TIME_AFTER(current_tick, plt->pending_tick + 5 * HZ)) {
@@ -270,6 +273,14 @@ bool iap_platform_control_waits(struct IAPContext* ctx) {
 void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl control, struct IAPPlatformPendingControl pending) {
     struct Platform* plt = iap_ctx->platform;
 
+    /* One in-flight request owns the pending transaction. Do not overwrite
+     * it, or queue a second toggle before the first one has taken effect. */
+    if(plt->control_pending) {
+        check_act(iap_control_response(iap_ctx, pending, false), );
+        return;
+    }
+    const bool was_playing = (audio_status() & AUDIO_STATUS_PLAY) &&
+                             !(audio_status() & AUDIO_STATUS_PAUSE);
     IAPBool ret = iap_true;
     /* play, pause, stop and skip end a scan where it has got to */
     if(control <= IAPPlatformControl_Prev) {
@@ -289,6 +300,7 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
             plt->pending_control = pending;
             plt->pending_tick    = current_tick;
             library_play_held    = true;
+            plt->pending_wants_play = true;
             return;
         }
         if(!(audio_status() & AUDIO_STATUS_PLAY) || (audio_status() & AUDIO_STATUS_PAUSE)) {
@@ -347,13 +359,14 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
         goto exit;
     }
     check_act(button_queue_try_post(button, 0), ret = false);
-    if(ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE && audio_status() == 0) {
-        /* we are transitioning to stopped to playing, which may take time.
-         * to maintain synchronization with accessories, do not send an ack until playback actually begins. */
+    if(ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE) {
+        /* Posting a key is not proof that the UI consumed it. Wait for the
+         * requested state, including paused-to-playing and playing-to-paused. */
         plt->control_pending = true;
         plt->pending_control = pending;
         plt->pending_tick    = current_tick;
         library_play_held    = false;
+        plt->pending_wants_play = !was_playing;
         return;
     }
 exit:

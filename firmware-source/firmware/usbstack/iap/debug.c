@@ -105,7 +105,7 @@ void iap_log_report(struct IAPContext* ctx, const void* report, size_t size, boo
 
     /* The header and the first payload bytes, zero-padded: a small report
      * can end before the payload starts. */
-    uint8_t      buf[16] = {0};
+    uint8_t      buf[24] = {0};
     const size_t avail   = size - sizeof(*r);
     memcpy(buf, r->data, MIN(avail, sizeof(buf)));
 
@@ -146,6 +146,16 @@ void iap_log_report(struct IAPContext* ctx, const void* report, size_t size, boo
     }
     usb_log(USB_LOG_IAP, lingo | (from_player ? USB_LOG_IAP_FROM_PLAYER : 0), command,
             payload | trans << 16, first);
+
+    /* Capture all twelve request bytes; the old log lost count/mask.
+     * Require them to be present in this report, not zero padding. */
+    if(!from_player && lingo == IAPLingoID_ExtendedInterface &&
+       (command == 0x0040 || command == 0x0042) && payload == 12 &&
+       (size_t)(p - buf) + 12 <= avail) {
+        usb_log(USB_LOG_IAP_TRACK_REQUEST, 0, trans,
+                (uint32_t)p[4] << 24 | p[5] << 16 | p[6] << 8 | p[7],
+                (uint32_t)p[8] << 24 | p[9] << 16 | p[10] << 8 | p[11]);
+    }
 
     /* The options word decides whether authentication starts, and is past
      * the four bytes above. */
