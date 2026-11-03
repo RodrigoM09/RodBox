@@ -1,0 +1,3 @@
+# PB34: complete HID frames
+
+A complete, checksum-valid iAP frame could carry MoreToFollow and remain buffered indefinitely. The receiver now recognizes complete frames while preserving real fragment assembly and checksum validation. It resets abandoned assembly before capacity checks and avoids an 8-bit length truncation. ASan/UBSan fixtures cover truncation, bad checksums, fragmentation, abandoned data and long frames. Native build passed and Lexus authentication completed. Extended Interface is advertised as 1.12 because newer metadata handlers remain missing; the Lexus still sends those requests. Audio remains unresolved.

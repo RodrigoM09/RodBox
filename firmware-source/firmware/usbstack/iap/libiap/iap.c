@@ -359,7 +359,9 @@ static int32_t handle_command(struct IAPContext* ctx, uint8_t lingo, uint16_t co
                 [IAPLingoID_Microphone]         = {1, 1},
                 [IAPLingoID_SimpleRemote]       = {1, 4},
                 [IAPLingoID_DisplayRemote]      = {1, 5},
-                [IAPLingoID_ExtendedInterface]  = {1, 14},
+                /* 1.13 adds GetDBTrackInfo/GetUIDTrackInfo, not implemented.
+                 * Do not invite a host to select those commands. */
+                [IAPLingoID_ExtendedInterface]  = {1, 12},
                 [IAPLingoID_AccessoryPower]     = {1, 1},
                 [IAPLingoID_USBHostMode]        = {1, 0},
                 [IAPLingoID_RFTuner]            = {1, 1},

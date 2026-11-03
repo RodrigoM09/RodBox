@@ -66,6 +66,30 @@ static int find_output_report_size(struct IAPContext* ctx, uint8_t id) {
     return -1;
 }
 
+/* Some accessories leave MoreToFollow set on an otherwise complete frame.
+ * Length alone is insufficient: only dispatch early with a valid checksum.
+ * _iap_feed_packet still performs its full command/session validation. */
+static size_t complete_frame_size(const uint8_t *data, size_t size) {
+    size_t sof = size && data[0] == IAP_SYNC_BYTE ? 1 : 0;
+    if(size < sof + 2 || data[sof] != IAP_SOF_BYTE)
+        return 0;
+    size_t length = data[sof + 1];
+    size_t header = sof + 2;
+    if(length == 0) {
+        if(size < sof + 4)
+            return 0;
+        length = ((size_t)data[sof + 2] << 8) | data[sof + 3];
+        header = sof + 4;
+    }
+    if(length == 0 || size < header + length + 1)
+        return 0;
+    size_t end = header + length + 1;
+    uint8_t sum = 0;
+    for(size_t i = sof + 1; i < end; ++i)
+        sum += data[i];
+    return sum == 0 ? end : 0;
+}
+
 IAPBool iap_feed_hid_report(struct IAPContext* ctx, const uint8_t* const data, const size_t size) {
     check_ret(size > sizeof(struct IAPHIDReport), iap_false);
     struct IAPHIDReport* report = (struct IAPHIDReport*)data;
@@ -78,8 +102,7 @@ IAPBool iap_feed_hid_report(struct IAPContext* ctx, const uint8_t* const data, c
         check_ret(report_size == (int)size - 1, iap_false, "%d != %d", report_size, (int)size - 1);
     }
 
-    const uint8_t payload_size = report_size - 1;
-    check_act(ctx->hid_recv_buf_cursor + payload_size <= HID_BUFFER_SIZE, { ctx->hid_recv_buf_cursor = 0; return iap_false; }, "hid buffer overflow");
+    const size_t payload_size = report_size - 1;
     if(!(report->link_control & IAPHIDReportLinkControlBits_Continue)) {
         /* not continue, first packet */
         if(ctx->hid_recv_buf_cursor != 0) {
@@ -89,11 +112,13 @@ IAPBool iap_feed_hid_report(struct IAPContext* ctx, const uint8_t* const data, c
     } else {
         check_ret(ctx->hid_recv_buf_cursor > 0, iap_false);
     }
+    check_act(ctx->hid_recv_buf_cursor + payload_size <= HID_BUFFER_SIZE, { ctx->hid_recv_buf_cursor = 0; return iap_false; }, "hid buffer overflow");
     memcpy(ctx->hid_recv_buf + ctx->hid_recv_buf_cursor, report->data, payload_size);
     ctx->hid_recv_buf_cursor += payload_size;
-    if(!(report->link_control & IAPHIDReportLinkControlBits_MoreToFollow)) {
+    size_t complete = complete_frame_size(ctx->hid_recv_buf, ctx->hid_recv_buf_cursor);
+    if(complete || !(report->link_control & IAPHIDReportLinkControlBits_MoreToFollow)) {
         /* no more to follow, last packet */
-        const IAPBool ret        = _iap_feed_packet(ctx, ctx->hid_recv_buf, ctx->hid_recv_buf_cursor);
+        const IAPBool ret        = _iap_feed_packet(ctx, ctx->hid_recv_buf, complete ? complete : ctx->hid_recv_buf_cursor);
         ctx->hid_recv_buf_cursor = 0;
         check_ret(ret, iap_false);
     }
