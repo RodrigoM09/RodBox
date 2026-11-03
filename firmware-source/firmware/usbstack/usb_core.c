@@ -554,7 +554,13 @@ void usb_core_exit(void)
 }
 
 /* for sending/receiving control data */
+#ifdef USB_ENABLE_IAP
+/* iAP high-speed HID advertises input reports up to 767 bytes plus the
+ * report ID. Hosts may fetch every advertised report over endpoint zero. */
+static uint8_t usb_control_data[768] USB_DEVBSS_ATTR;
+#else
 static uint8_t usb_control_data[256] USB_DEVBSS_ATTR;
+#endif
 
 void usb_core_handle_transfer_completion(
     struct usb_transfer_completion_event_data* event)
