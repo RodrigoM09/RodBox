@@ -539,6 +539,8 @@ static void usb_dw_nptx_unqueue(int epnum)
 
 static bool iso_recovering[USB_NUM_ENDPOINTS];
 static bool iso_synced[USB_NUM_ENDPOINTS];
+static unsigned char iso_prime_retries[USB_NUM_ENDPOINTS];
+static bool iso_prime_complete[USB_NUM_ENDPOINTS];
 static bool iso_waiting_token[USB_NUM_ENDPOINTS];
 static uint16_t iso_target_frame[USB_NUM_ENDPOINTS];
 
@@ -547,6 +549,8 @@ static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
     if (epdir == USB_DW_EPDIR_IN) {
         iso_recovering[epnum] = false;
         iso_synced[epnum] = false;
+        iso_prime_retries[epnum] = 0;
+        iso_prime_complete[epnum] = false;
         iso_waiting_token[epnum] = false;
     }
     struct usb_dw_ep* dw_ep = usb_dw_get_ep(epnum, epdir);
@@ -664,6 +668,8 @@ static void usb_dw_reset_endpoints(void)
 {
     memset(iso_recovering, 0, sizeof(iso_recovering));
     memset(iso_synced, 0, sizeof(iso_synced));
+    memset(iso_prime_retries, 0, sizeof(iso_prime_retries));
+    memset(iso_prime_complete, 0, sizeof(iso_prime_complete));
     memset(iso_waiting_token, 0, sizeof(iso_waiting_token));
     /* Initial state for all endpoints, setting OUT EPs as not busy
      * will discard all pending data (if any) on the flush stage.
@@ -767,15 +773,15 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
-        /* Do not guess the host's initial polling phase. Keep the first
-         * buffer owned but unarmed until an actual IN token supplies it. */
+        /* Generic cores synchronize on a token; Classic primes a bounded
+         * sequence of attempts without releasing the first PCM buffer. */
         if (epdir == USB_DW_EPDIR_IN && !iso_synced[epnum])
         {
 #if CONFIG_CPU == S5L8702
             /* The Classic's observed 2.60a core never raises the disabled-
              * endpoint token event in our DMA setup. Prime a real packet
              * in the next microframe instead of leaving EPENA clear forever.
-             * Failed completions still stop the batch pump; no IRQ retry. */
+             * Only untouched first packets may retry after confirmed disable. */
             iso_waiting_token[epnum] = false;
             iso_synced[epnum] = true;
             iso_target_frame[epnum] = (((DWC_DSTS >> 8) & 0x3fff) + 1) & 0x3fff;
@@ -796,7 +802,7 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
             ((iso_target_frame[epnum] & 1) ? SETD1PIDOF : SETD0PIDEF) :
             ((usb_drv_get_frame_number() & 1) ? SETD0PIDEF : SETD1PIDOF);
         DWC_EPCTL(epnum, epdir) =
-            (DWC_EPCTL(epnum, epdir) & ~(SETD0PIDEF | SETD1PIDOF)) |
+            (DWC_EPCTL(epnum, epdir) & ~(EPDIS | SETD0PIDEF | SETD1PIDOF)) |
             EPENA | nak | phase;
 
         /* Keep a bounded record of initial stream scheduling. */
@@ -962,7 +968,9 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
             usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 2,
                     dw_ep->req_size, (DWC_DSTS >> 8) & 0x3fff);
         }
-        iso_target_frame[epnum] = (iso_target_frame[epnum] +
+        iso_prime_complete[epnum] = true;
+        /* The successful bus slot supplies the actual polling phase. */
+        iso_target_frame[epnum] = (((DWC_DSTS >> 8) & 0x3fff) +
                                   (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
     }
 
@@ -1053,8 +1061,9 @@ static void usb_dw_handle_token_mismatch(void)
 #endif /* USB_DW_SHARED_FIFO */
 
 /* A missed periodic IN transfer does not produce XFRC. Disable only its
- * endpoint; finish the failed request after hardware confirms EPDISD. The
- * batch layer stops on this failure until an explicit stream restart.
+ * endpoint; handle the request after hardware confirms EPDISD. Classic may
+ * re-prime an untouched first packet a bounded number of times; otherwise
+ * the batch layer stops until an explicit stream restart.
  * Never touch EP0/storage. */
 static void usb_dw_incomplete_iso_in(void)
 {
@@ -1109,9 +1118,27 @@ static void usb_dw_iepint(int ep)
     {
         struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
         iso_recovering[ep] = false;
+        usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
+#if CONFIG_CPU == S5L8702
+        /* Try both frame parities, bounded to eight re-arms. Never replay a
+         * partial DMA packet or consume another PCM buffer. Hardware must
+         * acknowledge disable before its FIFO and DMA can be reused. */
+        if (d->busy && !iso_prime_complete[ep] && iso_prime_retries[ep] < 8 &&
+            (DWC_EPTSIZ(ep, USB_DW_EPDIR_IN) & 0x7ffff) == d->req_size)
+        {
+            unsigned next = (((DWC_DSTS >> 8) & 0x3fff) + 1) & 0x3fff;
+            if ((next & 1) == (iso_target_frame[ep] & 1))
+                next = (next + 1) & 0x3fff;
+            iso_target_frame[ep] = next;
+            iso_prime_retries[ep]++;
+            usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 4,
+                    iso_target_frame[ep], iso_prime_retries[ep]);
+            usb_dw_epstart(ep, USB_DW_EPDIR_IN, d->req_addr, d->req_size);
+            return; /* discard stale XFRC from the cancelled attempt */
+        }
+#endif
         iso_synced[ep] = false;
         iso_waiting_token[ep] = false;
-        usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
         if (d->busy)
         {
             d->busy = false;

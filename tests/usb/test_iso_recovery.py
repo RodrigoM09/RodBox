@@ -12,6 +12,8 @@ pre=r"""
 #include <stdint.h>
 #include <stdio.h>
 #define USB_NUM_ENDPOINTS 4
+#define S5L8702 8702
+#define CONFIG_CPU S5L8702
 #define USB_DW_EPDIR_IN 1
 #define USB_DIR_IN 128
 #define EPTYP_ISOCHRONOUS 1
@@ -28,22 +30,28 @@ static unsigned iso_errors_logged[4][2];
 #define usb_log(...) ((void)0)
 static unsigned regs_ctl[4],ints[4],DWC_GINTSTS,DWC_DSTS,DWC_DAINTMSK=15;
 static uint16_t iso_target_frame[4];
+static unsigned char iso_prime_retries[4];
+static bool iso_prime_complete[4];
+static unsigned sizes[4],rearms;
+#define DWC_EPTSIZ(e,d) sizes[e]
 #define DWC_DIEPCTL(e) regs_ctl[e]
 #define DWC_DIEPINT(e) ints[e]
 #define GET_DTXFNUM(e) (e)
-struct usb_dw_ep{bool active,busy;int status,complete;};
+struct usb_dw_ep{bool active,busy;int status,complete;void *req_addr;unsigned req_size;};
 static struct usb_dw_ep endpoints[4];
 static bool iso_recovering[4],iso_synced[4],iso_waiting_token[4];
 static unsigned flushed,released,completed,last_ep;
 static struct usb_dw_ep* usb_dw_get_ep(int ep,int dir){assert(dir==1);return &endpoints[ep];}
 
+static void usb_dw_epstart(int e,int dir,void *buf,unsigned size){assert(dir==1&&buf==endpoints[e].req_addr&&size==endpoints[e].req_size);rearms++;}
 static void usb_dw_flush_fifo(int f,int ep){assert(f==TXFFLSH);flushed++;last_ep=ep;}
 static void semaphore_release(int*p){(void)p;released++;}
 static void complete_transfer(int ep,int dir,int status,int n){assert(dir==128&&status==-1&&n==0);assert(!endpoints[ep].busy);completed++;}
 """
 main=r"""
 int main(void){
- for(int e=0;e<4;e++){endpoints[e]=(struct usb_dw_ep){true,true,0,0};regs_ctl[e]=EPENA|(1u<<18);}
+ for(int e=0;e<4;e++){endpoints[e]=(struct usb_dw_ep){true,true,0,0,0,192};regs_ctl[e]=EPENA|(1u<<18);}
+ sizes[1]=0; /* partial transfers must fail, never replay */
  regs_ctl[2]=EPENA|(2u<<18); /* storage/bulk */
  ints[3]=XFRC; /* finished packet must not be cancelled */
  iso_synced[1]=true;iso_target_frame[1]=108;DWC_DSTS=102u<<8;
@@ -65,6 +73,21 @@ int main(void){
   usb_dw_incomplete_iso_in();finish(1,EPDISD);
  }
  assert(iso_errors_logged[1][1]==ISO_LOG_MAX);
+ /* Fresh untouched packet: at most eight re-arms, same ownership,
+    opposite parity, no semaphore or completion until exhausted. */
+ iso_prime_complete[1]=false;iso_prime_retries[1]=0;sizes[1]=192;
+ unsigned before=completed, releases=released;
+ for(unsigned n=0;n<9;n++){
+  endpoints[1].busy=true;iso_recovering[1]=true;iso_synced[1]=true;
+  unsigned parity=iso_target_frame[1]&1;
+  finish(1,EPDISD|XFRC);
+  if(n<8){assert(endpoints[1].busy&&completed==before&&released==releases);assert((iso_target_frame[1]&1)!=parity);}
+ }
+ assert(rearms==8&&completed==before+1);
+ /* Established streams never enter the priming retry path. */
+ iso_prime_complete[1]=true;iso_prime_retries[1]=0;
+ endpoints[1].busy=true;iso_recovering[1]=true;finish(1,EPDISD);
+ assert(rearms==8&&completed==before+2);
  puts("PASS: production ISO recovery selection, deferred completion, bulk/control exclusion, stale/duplicate events");
 }
 """

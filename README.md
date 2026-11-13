@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB42** (`rodbox-pb42-first-packet-261112`). PB40's Lexus trace confirmed successful stop/restart and sample-rate acknowledgements, but the first audio transfer remained unarmed. PB42 directly arms the first S5L8702 audio packet, preserving stop-on-error protection; PB41's companion report and test improvements are included. Eleven focused suites, native build and installation verification passed; filesystem clean. **Lexus audio and live track updates still require hardware acceptance.** See [PB42](docs/PB42-FIRST-TRANSFER.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB43** (`rodbox-pb43-bounded-prime-261112`). PB42's Lexus test reached the first packet but every attempt failed with zero bytes. PB43 adds bounded same-buffer first-packet recovery and successful-frame resynchronization. All 24 USB test scripts, native build and installation verification passed; filesystem clean and USB logging retained. **Lexus audio and live track updates still require hardware acceptance.** See [PB43](docs/PB43-bounded-first-packet.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

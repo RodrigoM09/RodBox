@@ -132,3 +132,7 @@ Ten focused suites cover ISO recovery/service intervals, first-token dispatch, e
 ## PB42
 
 Eleven focused suites passed. The first-packet harness exercises production startup code over all 16,384 frame positions, verifies DMA length/buffer ownership, generic-target behavior and bulk exclusion, and reproduces the PB40 failure. Existing failure-flood, stop/restart, rate-transaction and metadata tests remain passing. Native ipod6g/64MB core and codecs build passed. These tests are not proof of in-car sound or live track updates.
+
+## PB43
+
+All 24 USB test scripts passed. Recovery tests cover eight-retry exhaustion, unchanged buffer ownership, partial-progress and established-stream rejection, deferred disable acknowledgement and stale completions. First-transfer tests cover all 16,384 frame positions and clearing the disable command. Native image checksum and all 12,042 tracked build-source files verified. Hardware audio acceptance remains pending.

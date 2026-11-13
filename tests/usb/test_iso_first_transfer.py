@@ -50,11 +50,12 @@ main=r'''
 int main(void){
  (void)ints;
  for(unsigned f=0;f<16384;f++){
-  ctl[1][0]=(1u<<18)|SETD0PIDEF|SETD1PIDOF;iso_synced[1]=false;DWC_DSTS=f<<8;
+  ctl[1][0]=(1u<<18)|EPDIS|SETD0PIDEF|SETD1PIDOF;iso_synced[1]=false;DWC_DSTS=f<<8;
   usb_dw_epstart(1,USB_DW_EPDIR_IN,pcm,192);
   assert(eps[1][0].busy&&eps[1][0].addr==pcm&&eps[1][0].size==192);
   assert(tsiz[1][0]==(PKTCNT(1)|MCCNT(1)|192));
 #if CONFIG_CPU == S5L8702
+  assert(!(ctl[1][0]&EPDIS));
   assert((ctl[1][0]&EPENA)&&!iso_waiting_token[1]&&iso_synced[1]);
   assert(iso_target_frame[1]==((f+1)&0x3fff));
   assert((ctl[1][0]&(SETD0PIDEF|SETD1PIDOF))==(((f+1)&1)?SETD1PIDOF:SETD0PIDEF));

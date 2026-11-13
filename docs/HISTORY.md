@@ -85,3 +85,7 @@ Each checkpoint was reconstructed from its saved cumulative patch and matched to
 PB41 corrects root-level artwork paths in the companion health report and permits an explicit compiler for playlist harnesses. Seven health tests, 21 guard cases and 50,000 differential cases passed.
 
 PB42 addresses the PB40 trace in which endpoint 81 waited indefinitely with EPENA clear. The S5L8702 first packet is now armed directly; other targets retain token synchronization. Eleven focused suites passed, including a startup regression that fails on PB40. The native core and 40 codecs built and passed image/source/hash verification. Lexus playback acceptance remains pending.
+
+## PB43
+
+PB42 hardware testing recorded three immediate zero-byte failures and no successful audio completions; its filesystem remained clean. PB43 adds bounded same-buffer startup recovery after endpoint-disable acknowledgement, alternates timing parity, clears stale disable state, and anchors subsequent scheduling to successful completion. Partial transfers and established-stream errors retain fail-stop behavior. Lexus acceptance remains pending.
