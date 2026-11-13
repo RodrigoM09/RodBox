@@ -46,6 +46,7 @@ enum usb_log_type
     USB_LOG_INTERFACES,  /* a = driver, b = first, c = one past its last */
     USB_LOG_EP_INIT,     /* a = endpoint, b = type, c = max packet size,
                           * d = the controller register it wrote */
+    USB_LOG_ISO_STATE,   /* a = endpoint, b = waiting/token, c,d = diagnostics */
     USB_LOG_ISO_XFER,    /* an isochronous transfer started: a = endpoint,
                           * b = frame, c, d = controller registers */
     USB_LOG_XFER_FAIL,   /* a transfer the controller would not start:

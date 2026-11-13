@@ -611,7 +611,7 @@ static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
     {
         epmis_msk &= ~(1 << epnum);
         if (!epmis_msk)
-            DWC_DIEPMSK &= ~ITTXFE;
+            DWC_DIEPMSK |= ITTXFE; /* retain ISO first-token observation */
     }
 #endif
 
@@ -710,6 +710,7 @@ static void usb_dw_reset_endpoints(void)
  * few starts, and errors, each up to ISO_LOG_MAX. */
 #define ISO_LOG_MAX 8
 static uint8_t iso_starts_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
+static uint8_t iso_complete_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 
 static int usb_dw_log_ep(int epnum, enum usb_dw_epdir epdir)
@@ -771,6 +772,9 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
         if (epdir == USB_DW_EPDIR_IN && !iso_synced[epnum])
         {
             iso_waiting_token[epnum] = true;
+            DWC_DIEPINT(epnum) = NAKINTRPT | ITTXFE;
+            usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 0,
+                    DWC_GSNPSID, DWC_DIEPCTL(epnum));
             DWC_DIEPCTL(epnum) =
                 (DWC_DIEPCTL(epnum) & ~(EPENA | EPDIS | SETD0PIDEF | SETD1PIDOF)) |
                 CNAK;
@@ -939,8 +943,16 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
     dw_ep->status = 0;
     if (epdir == USB_DW_EPDIR_IN && iso_synced[epnum] &&
         ((DWC_DIEPCTL(epnum) >> 18) & 3) == EPTYP_ISOCHRONOUS)
+    {
+        if (iso_complete_logged[epnum][epdir] < ISO_LOG_MAX)
+        {
+            iso_complete_logged[epnum][epdir]++;
+            usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 2,
+                    dw_ep->req_size, (DWC_DSTS >> 8) & 0x3fff);
+        }
         iso_target_frame[epnum] = (iso_target_frame[epnum] +
                                   (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
+    }
 
   complete:
     if (dw_ep->status != 0 && epnum != 0 &&
@@ -1042,6 +1054,10 @@ static void usb_dw_incomplete_iso_in(void)
         if (d->active && d->busy && !iso_recovering[ep] &&
             (DWC_DAINTMSK & (1u << ep)) && (ctl & EPENA) &&
             !(DWC_DIEPINT(ep) & XFRC) &&
+            /* A global incomplete event can precede this endpoint's next
+             * 1-ms service interval. Do not cancel a future packet. */
+            (!iso_synced[ep] ||
+             ((((DWC_DSTS >> 8) & 0x3fff) - iso_target_frame[ep]) & 0x3fff) < 0x2000) &&
             ((ctl >> 18) & 3) == EPTYP_ISOCHRONOUS)
         {
             iso_recovering[ep] = true;
@@ -1064,6 +1080,8 @@ static bool usb_dw_iso_token(int ep)
     /* Unlike usb_drv_get_frame_number(), preserve HS microframe bits. */
     iso_target_frame[ep] = (((DWC_DSTS >> 8) & 0x3fff) +
                             (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 1,
+            iso_target_frame[ep], DWC_DIEPCTL(ep));
     usb_dw_epstart(ep, USB_DW_EPDIR_IN, d->req_addr, d->req_size);
     return true;
 }
@@ -1072,7 +1090,7 @@ static void usb_dw_iepint(int ep)
 {
     uint32_t epints = DWC_DIEPINT(ep);
     DWC_DIEPINT(ep) = epints;
-    if ((epints & NAKINTRPT) && usb_dw_iso_token(ep))
+    if ((epints & (NAKINTRPT | ITTXFE)) && usb_dw_iso_token(ep))
         return; /* any XFRC in this snapshot predates the newly armed DMA */
 
     if ((epints & EPDISD) && iso_recovering[ep])
@@ -1110,7 +1128,7 @@ static void usb_dw_iepint(int ep)
             DWC_DIEPCTL(ep) |= EPENA;
             epmis_msk &= ~(1 << ep);
             if (!epmis_msk)
-                DWC_DIEPMSK &= ~ITTXFE;
+                DWC_DIEPMSK |= ITTXFE; /* retain ISO first-token observation */
         }
     }
 
@@ -1431,7 +1449,7 @@ static void usb_dw_init(void)
 
     /* Set up interrupts */
     DWC_DOEPMSK = STUP|XFRC;
-    DWC_DIEPMSK = TOC|XFRC|EPDISD|NAKINTRPT;
+    DWC_DIEPMSK = TOC|XFRC|EPDISD|NAKINTRPT|ITTXFE;
 
     /* Unmask all available endpoints */
     DWC_DAINTMSK = 0xffffffff;
@@ -2456,6 +2474,7 @@ void usb_drv_ep_init(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
     usb_dw_target_enable_irq();
 
     iso_starts_logged[epnum][epdir] = 0;
+    iso_complete_logged[epnum][epdir] = 0;
     iso_errors_logged[epnum][epdir] = 0;
     usb_log(USB_LOG_EP_INIT, ep, type, mps, DWC_EPCTL(epnum, epdir));
 

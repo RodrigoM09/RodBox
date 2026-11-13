@@ -101,6 +101,9 @@ static const struct debug_log_info {
                              &global_settings.debug_log_artcache,
                              art_state, NULL, art_held },
 #ifdef HAVE_USBSTACK
+    [DEBUG_LOG_USB_AUDIO] = { LIB_LOGS_DIR "/usb-audio.log", "USB audio", "==",
+                             &global_settings.debug_log_usb,
+                             usb_log_file_state, NULL, NULL },
     [DEBUG_LOG_USB]      = { LIB_USB_LOG, "USB", "==",
                              &global_settings.debug_log_usb,
                              usb_log_file_state, usb_log_file_enable, NULL },

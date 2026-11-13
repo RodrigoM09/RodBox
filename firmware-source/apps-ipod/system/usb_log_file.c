@@ -320,6 +320,12 @@ static void format_entry(const struct usb_log_entry *e, uint64_t us,
                      e->a, eptypes[e->b & 3], (unsigned long)e->c,
                      (unsigned long)e->d);
             break;
+        case USB_LOG_ISO_STATE:
+            snprintf(p, size, "iso ep %02x %s: %08lx %08lx", e->a,
+                     e->b == 2 ? "completed; bytes/frame" :
+                     e->b ? "host token" : "waiting for token; core/ctl",
+                     (unsigned long)e->c, (unsigned long)e->d);
+            break;
         case USB_LOG_ISO_XFER:
             snprintf(p, size, "ep %02x iso start, frame %d: %08lx %08lx",
                      e->a, e->b, (unsigned long)e->c, (unsigned long)e->d);
@@ -669,7 +675,7 @@ void usb_log_file_write(void)
     unsigned long seq, head;
     struct usb_log_entry e;
     char line[112];
-    int fd;
+    int fd, audio_fd = -1;
 
     /* The log's lock is held from open to close: the screen writes from the
      * UI thread and the writer from its own, and neither may append lines
@@ -692,7 +698,20 @@ void usb_log_file_write(void)
             continue;
         format_entry(&e, widen_us(e.us), line, sizeof line);
         fdprintf(fd, "%s\n", line);
+        /* Database enumeration can rotate the main log in seconds. Keep
+         * bounded stream events independently, using the same safe writer. */
+        if (e.type == USB_LOG_ISO_STATE || e.type == USB_LOG_ISO_XFER ||
+            e.type == USB_LOG_ISO_ERROR || e.type == USB_LOG_ALT ||
+            e.type == USB_LOG_IAP_STREAM || e.type == USB_LOG_IAP_RATE ||
+            e.type == USB_LOG_IAP_RATES || e.type == USB_LOG_IAP_ERROR ||
+            e.type == USB_LOG_INSERT || e.type == USB_LOG_SET_CONFIG ||
+            e.type == USB_LOG_BUS_RESET)
+        {
+            if (audio_fd < 0) audio_fd = debug_log_open(DEBUG_LOG_USB_AUDIO);
+            if (audio_fd >= 0) fdprintf(audio_fd, "%s\n", line);
+        }
     }
+    if (audio_fd >= 0) debug_log_close(DEBUG_LOG_USB_AUDIO, audio_fd);
     usb_log_set_written(head);
     debug_log_close(DEBUG_LOG_USB, fd);
 }
@@ -808,6 +827,9 @@ void usb_log_file_init(void)
     /* Here rather than in debug_log_init(): the sound card's buffers exist
      * now, for the header to report */
     if (global_settings.debug_log_usb)
+    {
         debug_log_header(DEBUG_LOG_USB, "started");
+        debug_log_header(DEBUG_LOG_USB_AUDIO, "started");
+    }
     update_attach();
 }

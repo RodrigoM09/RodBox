@@ -42,26 +42,9 @@ void iap_on_track_playback_index(uint32_t index, bool track_ready) {
 
     struct IAPContext* ctx = _iap_acquire_ctx(false);
 
-    if(track_ready) {
-        /* called from from audio_finish_load_track() */
-        goto notify;
-    }
-
-    /* called from audio_playlist_track_change() */
-    struct Platform* plt = ctx->platform;
-    if(plt->aa_slot < 0) {
-        goto notify;
-    }
-    if(playback_current_aa_hid(plt->aa_slot) >= 0) {
-        /* artwork ready, maybe preloaded track */
-        goto notify;
-    } else {
-        /* artwork not ready, maybe after a playlist jump.
-         * in this case, we will be called again from audio_finish_load_track(),
-         * with track_ready == true. */
-        return;
-    }
-notify:
+    /* Track identity must not depend on artwork loading. An absent cover
+     * or stalled PCM pipeline must not suppress the car's metadata refresh. */
+    (void)track_ready;
     iap_notify_track_playback_index(ctx, index);
 }
 

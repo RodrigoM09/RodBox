@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb39",
+  "version": "rodbox-pb39-iso-window-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "ISO service windows and track notifications",
+  "native_build": "passed (recorded at build time)",
+  "installed": true,
+  "filesystem_check_passed": true,
+  "hardware_status": "Installed and tested: audio startup and restart failures preserved in diagnostics; filesystem clean.",
+  "core_bytes": 2001460,
+  "core_sha256": "7e6ca2e6f99ef6d37e918292467b0a5b9a4f41b5bb3725f852918fc9c941aea7",
+  "source_reconstruction_hashes_verified": 15,
+  "music_files_written": false
+}

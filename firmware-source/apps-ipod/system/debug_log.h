@@ -29,6 +29,7 @@ enum debug_log_id {
     DEBUG_LOG_METADATA,
     DEBUG_LOG_SKIN,
     DEBUG_LOG_TASKS,
+    DEBUG_LOG_USB_AUDIO,
     DEBUG_LOG_COUNT,
 };
 

@@ -2,7 +2,7 @@ from pathlib import Path
 import subprocess,tempfile
 r=Path(__file__).resolve().parents[2]
 s=(r/'firmware-source/apps-ipod/iap/iap-library.c').read_text()
-a=s.index('bool iap_library_track_field(');b=s.index('bool iap_library_select(',a)
+a=s.index('void iap_library_fallback_name(');b=s.index('bool iap_library_select(',a)
 pre=r"""
 #include <stdint.h>
 #include <stddef.h>
@@ -10,14 +10,20 @@ pre=r"""
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-enum{FOLDER_NONE,TYPE_TRACK,tag_title,tag_artist,tag_album,tag_genre,tag_composer,tag_length,tag_tracknumber};
+enum{FOLDER_NONE,TYPE_TRACK,tag_title,tag_artist,tag_album,tag_genre,tag_composer,tag_length,tag_tracknumber,tag_filename};
 static int folder=FOLDER_NONE;static unsigned list_count=2;static bool queue=false;
-struct entry{int idx;};struct block{struct entry entries[2];};
-static struct block storage={{{42},{7}}},*block=&storage;
+struct entry{int idx;};struct block{struct entry entries[2];int tcs;char name[256];};
+static struct block storage={.entries={{42},{7}}},*block=&storage;
 static bool build(int t){return t==TYPE_TRACK;}
 static bool iap_library_tracks_are_queue(void){return queue;}
-static bool tagcache_entry_string(int idx,int t,char*b,size_t n){snprintf(b,n,"%d:%d",idx,t);return true;}
+static bool missing=false;
+static bool tagcache_entry_string(int idx,int t,char*b,size_t n){if(missing)return false;snprintf(b,n,"%d:%d",idx,t);return true;}
 static bool tagcache_entry_numeric(int idx,int t,long*n){*n=idx*100+t;return true;}
+static void strmemccpy(char*b,const char*s,size_t n){snprintf(b,n,"%s",s);}
+static bool tagcache_search_ready(void){return true;}
+static bool tagcache_search(int*t,int tag){(void)t;return tag==tag_filename;}
+static bool tagcache_retrieve(int*t,int idx,int tag,char*b,size_t n){(void)t;assert(idx==42&&tag==tag_filename);snprintf(b,n,"/Music/Samples/Sample01.flac");return true;}
+static void tagcache_search_finish(int*t){(void)t;}
 static void iap_utf8_cut(char*s){(void)s;}
 static int tagcache_path_slots(void){return 3;}
 static bool tagcache_path_slot(int n,uint64_t*k,int*idx){int ids[]={7,99,42};*idx=ids[n];*k=1000+ids[n];return true;}
@@ -32,6 +38,11 @@ int main(void){
  assert(iap_library_track_field(0,13,text,sizeof text,&n)&&n==4200+tag_tracknumber);
  assert(!iap_library_track_field(2,1,text,sizeof text,&n));
  assert(!iap_library_track_field(0,8,text,sizeof text,&n));
+ missing=true;
+ assert(iap_library_track_field(0,1,text,sizeof text,&n)&&!strcmp(text,"Sample01"));
+ assert(iap_library_track_field(0,2,text,sizeof text,&n)&&!strcmp(text,"Unknown Artist"));
+ char tiny[2];iap_library_fallback_name(1,"/a.flac",tiny,sizeof tiny);assert(tiny[1]==0);
+ iap_library_fallback_name(1,NULL,text,sizeof text);assert(!strcmp(text,"Unknown Title"));
  queue=true;assert(!iap_library_track_field(0,1,text,sizeof text,&n));
  queue=false;folder=3;assert(!iap_library_track_field(0,1,text,sizeof text,&n));
  puts("PASS: real filtered metadata accessor uses selected database index, stable UID, bounds and queue/folder guards");
