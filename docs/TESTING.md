@@ -140,3 +140,7 @@ All 24 USB test scripts passed. Recovery tests cover eight-retry exhaustion, unc
 ## PB44
 
 All 25 USB scripts passed. Production recovery harness models a FIFO-loaded packet with zero DMA bytes remaining but one unsent packet, plus retry bounds and transmitted-packet rejection. Log harness tests EOF reconciliation, non-USB exclusion, short writes, sync/truncate errors and successful retry. Native image and tracked build-source identity verified. These checks do not prove hardware acceptance.
+
+## PB45
+
+All 26 USB scripts passed. Production harnesses cover late matching SET_CUR recovery, stale/invalid-rate and disabled-stream exclusions, restart failure, busy-control dispatch and retry, one-time posting, independent state changes and timeout. Existing failure-flood guards remain passing. Native firmware checksum and tracked source match verified; no device writes or installation.

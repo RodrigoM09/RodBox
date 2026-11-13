@@ -261,12 +261,16 @@ bool iap_platform_control_waits(struct IAPContext* ctx) {
         /* the iAP sink's play answers it first; playback on the built-in
          * sink, or none at all, is answered from here */
         if(!TIME_AFTER(current_tick, plt->pending_tick + 5 * HZ)) {
+            if(plt->pending_button &&
+               button_queue_try_post(BUTTON_MULTIMEDIA_PLAYPAUSE, 0))
+                plt->pending_button = false;
             return true;
         }
         ok = false;
     }
     check_act(iap_control_response(ctx, plt->pending_control, ok), );
     plt->control_pending = false;
+    plt->pending_button = false;
     return false;
 }
 
@@ -279,6 +283,7 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
         check_act(iap_control_response(iap_ctx, pending, false), );
         return;
     }
+    plt->pending_button = false;
     const bool was_playing = (audio_status() & AUDIO_STATUS_PLAY) &&
                              !(audio_status() & AUDIO_STATUS_PAUSE);
     IAPBool ret = iap_true;
@@ -358,7 +363,18 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
     if(button == BUTTON_NONE) {
         goto exit;
     }
-    check_act(button_queue_try_post(button, 0), ret = false);
+    ret = button_queue_try_post(button, 0);
+    if(!ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE) {
+        /* A nonempty physical-key queue is backpressure, not an assertion.
+         * Keep one transaction and retry on the normal bounded control tick. */
+        plt->control_pending = true;
+        plt->pending_control = pending;
+        plt->pending_tick = current_tick;
+        plt->pending_wants_play = !was_playing;
+        plt->pending_button = true;
+        library_play_held = false;
+        return;
+    }
     if(ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE) {
         /* Posting a key is not proof that the UI consumed it. Wait for the
          * requested state, including paused-to-playing and playing-to-paused. */

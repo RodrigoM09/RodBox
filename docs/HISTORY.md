@@ -93,3 +93,7 @@ PB42 hardware testing recorded three immediate zero-byte failures and no success
 ## PB44
 
 PB43 hardware testing still showed no audio completions or retries and found excess usb.log allocation. PB44 corrects retry eligibility to use unsent packet count, records the raw register, and commits/reconciles USB diagnostic files before consuming ring entries. Built and tested only; hardware acceptance pending.
+
+## PB45
+
+PB44 hardware retries activated but exhausted before the final host rate command; filesystem passed. PB45 restarts an enabled failed pump on matching SET_CUR and gives each explicit restart a fresh endpoint priming budget. Busy Play/Pause requests are deferred with bounded acknowledgement instead of rejected as assertions. Built only; hardware acceptance pending.

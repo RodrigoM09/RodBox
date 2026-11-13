@@ -666,6 +666,9 @@ int usb_drv_batch_start(void)
         return -1;
     if(!batch_stopped)
         return 0;
+    /* An explicit restart after failure gets a fresh bounded priming
+     * budget. Never reset an already running stream. */
+    usb_drv_reset_endpoint(EP_NUM(batch_ep), true);
     batch_stopped = false;
     return batch_get_and_send();
 }

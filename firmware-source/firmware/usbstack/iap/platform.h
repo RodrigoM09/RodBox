@@ -36,6 +36,7 @@ struct Platform {
     struct IAPPlatformPendingControl pending_control;
     bool                             control_pending;
     bool                             pending_wants_play;
+    bool                             pending_button;
     long                             pending_tick;
 
     int aa_slot;

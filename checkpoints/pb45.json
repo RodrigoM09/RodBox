@@ -1,0 +1,15 @@
+{
+  "checkpoint": "pb45",
+  "version": "rodbox-pb45-host-restart-261112",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "native_build": "passed",
+  "usb_test_scripts_passed": 26,
+  "firmware_files": 42,
+  "tracked_source_files_matched": 12042,
+  "image_checksum_valid": true,
+  "installed": false,
+  "device_writes": false,
+  "music_files_written": false,
+  "hardware_acceptance": "pending",
+  "core_sha256": "3da1511b5be0d4f88c1a49b46a93cb0f3d9bc96d819a83f8c155d70041445cf0"
+}

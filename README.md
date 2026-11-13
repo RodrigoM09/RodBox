@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB44** (`rodbox-pb44-retry-log-261112`). Uses packet count rather than DMA byte count for bounded first-packet retries, and checks USB log persistence with log-only allocation reconciliation. All 25 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB44](docs/PB44-RETRY-LOG.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB45** (`rodbox-pb45-host-restart-261112`). Recovers a stopped audio stream after the host’s late matching sample-rate command, and defers Play/Pause when the button queue is busy. All 26 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB45](docs/PB45-HOST-RESTART.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -592,6 +592,14 @@ bool iap_audio_set_sampr(uint32_t sampr) {
 
     cur_freq = freq;
 
+#ifdef USB_BATCH_NON_NATIVE
+    /* SET_INTERFACE can precede the host's final SET_CUR by several ms.
+     * Startup may have failed before polling begins. This explicit host
+     * command may restart it; a running pump remains untouched. */
+    if(enabled)
+        check_act(iap_audio_enable(), return false);
+#endif
+
     LOG("sampr=%lu, set_freq=%d cur_freq=%d", sampr, set_freq, cur_freq);
 
     return true;
