@@ -156,3 +156,7 @@ All 27 USB scripts passed. Expanded production recovery tests cover 16,384 frame
 ## PB48
 
 All 28 USB scripts passed. The real descriptor initializer regression fails on PB47 and passes on PB48; a production IRQ logger harness checks bounded output, token/completion indications, excluded endpoints/events and no register mutation. Native checksum and tracked-source identity verified. No device writes or installation.
+
+## PB49
+
+All 29 USB scripts passed. The real endpoint reset regression fails against PB48 and passes against PB49, including idle/busy and endpoint exclusions. Logger tests replay 0xc2 disable events and verify independently bounded token evidence after other logs saturate. Native image and source identity verified. No device writes or installation.

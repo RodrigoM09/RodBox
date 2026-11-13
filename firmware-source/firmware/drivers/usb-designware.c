@@ -719,6 +719,7 @@ static uint8_t iso_starts_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_complete_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_irq_logged[USB_NUM_ENDPOINTS];
+static uint8_t iso_token_irq_logged[USB_NUM_ENDPOINTS];
 
 static int usb_dw_log_ep(int epnum, enum usb_dw_epdir epdir)
 {
@@ -1123,12 +1124,19 @@ static bool usb_dw_iso_token(int ep)
  * the diagnostic budget before the host polls. No register writes here. */
 static void usb_dw_log_iso_irq(int ep, uint32_t epints)
 {
-    if (ep && usb_dw_get_ep(ep, USB_DW_EPDIR_IN)->active &&
-        ((DWC_DIEPCTL(ep) >> 18) & 3) == EPTYP_ISOCHRONOUS &&
-        (epints & ~(EPDISD | TXFE)) && iso_irq_logged[ep] < ISO_LOG_MAX)
+    if (!ep || !usb_dw_get_ep(ep, USB_DW_EPDIR_IN)->active ||
+        ((DWC_DIEPCTL(ep) >> 18) & 3) != EPTYP_ISOCHRONOUS)
+        return;
+
+    /* INEPNE is caused by our SNAK/disable sequence, not host traffic.
+     * Give token indications their own budget: other errors/completions
+     * must not hide a later host request. Log raw flags for interpretation. */
+    bool token = (epints & (NAKINTRPT | ITTXFE)) != 0;
+    uint8_t *budget = token ? &iso_token_irq_logged[ep] : &iso_irq_logged[ep];
+    if ((epints & ~(EPDISD | TXFE | INEPNE)) && *budget < ISO_LOG_MAX)
     {
-        iso_irq_logged[ep]++;
-        usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 6,
+        (*budget)++;
+        usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, token ? 7 : 6,
                 epints, (DWC_DSTS >> 8) & 0x3fff);
     }
 }
@@ -1597,6 +1605,21 @@ void usb_drv_reset_endpoint(int endpoint, bool send)
     usb_dw_target_disable_irq();
     if (usb_dw_get_ep(epnum, epdir)->busy)
         usb_dw_flush_endpoint(epnum, epdir);
+    /* Failure completes the request and clears busy before a host-directed
+     * restart. Reset software priming state even in that idle case, without
+     * flushing hardware or producing a second completion. */
+    if (epdir == USB_DW_EPDIR_IN && usb_dw_get_ep(epnum, epdir)->active &&
+        ((DWC_DIEPCTL(epnum) >> 18) & 3) == EPTYP_ISOCHRONOUS)
+    {
+        iso_recovering[epnum] = false;
+        iso_synced[epnum] = false;
+        iso_waiting_token[epnum] = false;
+        iso_prime_retries[epnum] = 0;
+        iso_prime_complete[epnum] = false;
+        iso_target_frame[epnum] = 0;
+        iso_irq_logged[epnum] = 0;
+        iso_token_irq_logged[epnum] = 0;
+    }
     usb_dw_target_enable_irq();
 }
 
@@ -2550,7 +2573,10 @@ void usb_drv_ep_init(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
     iso_starts_logged[epnum][epdir] = 0;
     iso_complete_logged[epnum][epdir] = 0;
     iso_errors_logged[epnum][epdir] = 0;
-    if (epdir == USB_DW_EPDIR_IN) iso_irq_logged[epnum] = 0;
+    if (epdir == USB_DW_EPDIR_IN) {
+        iso_irq_logged[epnum] = 0;
+        iso_token_irq_logged[epnum] = 0;
+    }
     usb_log(USB_LOG_EP_INIT, ep, type, mps, DWC_EPCTL(epnum, epdir));
 
     dw_ep->active = true;

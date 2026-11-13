@@ -109,3 +109,7 @@ PB46 confirmed 192-byte packets but no audio completions. PB47 retains each init
 ## PB48
 
 PB47 still recorded no audio completions despite the extended window; filesystem passed. PB48 explicitly declares synchronous ISO audio to match its host-paced packet source and records bounded raw endpoint interrupt indications. Built only; hardware acceptance pending.
+
+## PB49
+
+PB48 exposed exhausted state surviving idle endpoint reset and disable/NAK-effective events consuming the IRQ log budget. PB49 resets active ISO IN priming state on explicit idle/busy resets and separates token diagnostics from completion/error logs. Built only; hardware acceptance pending.

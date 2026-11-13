@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB48** (`rodbox-pb48-audio-sync-261112`). Declares the host-paced audio stream as synchronous and adds bounded endpoint-interrupt diagnostics. All 28 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB48](docs/PB48-AUDIO-SYNC.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB49** (`rodbox-pb49-retry-reset-261112`). Resets exhausted idle-stream retry state and reserves a separate diagnostic budget for host-token indications. All 29 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB49](docs/PB49-RETRY-RESET.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
