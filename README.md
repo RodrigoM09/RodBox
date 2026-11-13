@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB45** (`rodbox-pb45-host-restart-261112`). Recovers a stopped audio stream after the host’s late matching sample-rate command, and defers Play/Pause when the button queue is busy. All 26 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB45](docs/PB45-HOST-RESTART.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB46** (`rodbox-pb46-audio-packet-261112`). Matches the hardware audio endpoint’s packet limit to the advertised 192-byte stream and buffers. All 27 USB test scripts and native build verification passed; the new regression fails against PB45. **Built, not installed; Lexus audio remains unverified.** See [PB46](docs/PB46-PACKET-SIZE.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -44,7 +44,9 @@
 
 struct usb_class_driver_ep_allocation usb_iap_ep_allocs[2] = {
     /* uac input */
-    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_IN, .optional = false, .mps = 1024},
+    /* Match the descriptor and staging buffers at both bus speeds. The
+     * controller must not expect a 1024-byte packet for a 192-byte stream. */
+    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_IN, .optional = false, .mps = AS_PACKET_SIZE},
     /* hid input */
     {.type = USB_ENDPOINT_XFER_INT, .dir = DIR_IN, .optional = false, .mps = 64},
 };

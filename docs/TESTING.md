@@ -144,3 +144,7 @@ All 25 USB scripts passed. Production recovery harness models a FIFO-loaded pack
 ## PB45
 
 All 26 USB scripts passed. Production harnesses cover late matching SET_CUR recovery, stale/invalid-rate and disabled-stream exclusions, restart failure, busy-control dispatch and retry, one-time posting, independent state changes and timeout. Existing failure-flood guards remain passing. Native firmware checksum and tracked source match verified; no device writes or installation.
+
+## PB46
+
+All 27 USB scripts passed. The packet-size regression compiles actual allocation/descriptor initializers, fails against PB45 and passes against PB46. Existing retry, rate recovery, control queue and log tests remain passing. Native firmware checksum and tracked-source match verified. No installation or device writes.

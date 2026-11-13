@@ -97,3 +97,7 @@ PB43 hardware testing still showed no audio completions or retries and found exc
 ## PB45
 
 PB44 hardware retries activated but exhausted before the final host rate command; filesystem passed. PB45 restarts an enabled failed pump on matching SET_CUR and gives each explicit restart a fresh endpoint priming budget. Busy Play/Pause requests are deferred with bounded acknowledgement instead of rejected as assertions. Built only; hardware acceptance pending.
+
+## PB46
+
+PB45 still had no successful audio completions; filesystem passed. PB46 replaces the mismatched 1024-byte iAP endpoint allocation with the same 192-byte constant used by its descriptor and buffers. Built only; hardware acceptance pending.
