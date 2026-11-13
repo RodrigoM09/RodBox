@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb37",
+  "version": "rodbox-pb37-audio-stop-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Stop PCM consumption after failed USB transfers",
+  "native_build": "passed (recorded at build time)",
+  "installed": true,
+  "filesystem_check_passed": true,
+  "hardware_status": "Installed and tested: failure flood stopped, but Lexus audio remained stalled.",
+  "core_bytes": 1999736,
+  "core_sha256": "4af4d943b7feba18f6f2c08939400377c81ed65a0d3dfc6964c551b0345edb06",
+  "source_reconstruction_hashes_verified": 9,
+  "music_files_written": false
+}

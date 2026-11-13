@@ -613,6 +613,7 @@ static uint8_t batch_ep = 0;
 static bool batch_stopped;
 static usb_drv_batch_get_more batch_get_more;
 static volatile uint32_t batch_failed;
+static size_t batch_pending_length;
 
 int usb_drv_batch_init(int ep, usb_drv_batch_get_more get_more)
 {
@@ -622,7 +623,9 @@ int usb_drv_batch_init(int ep, usb_drv_batch_get_more get_more)
     }
     batch_ep = ep;
     batch_get_more = get_more;
-    batch_stopped  = false;
+    batch_stopped  = true;
+    batch_pending_length = 0;
+    batch_failed = 0;
     return 0;
 }
 
@@ -636,18 +639,31 @@ int usb_drv_batch_deinit(void)
 
 static int batch_get_and_send(void)
 {
+    if(batch_stopped)
+        return 0;
     const void* ptr;
     size_t len;
     batch_get_more(&ptr, &len);
     if(len == 0 || batch_stopped) {
+        batch_stopped = true;
+        batch_pending_length = 0;
         return 0;
     }
-    return usb_drv_send_nonblocking(EP_NUM(batch_ep), (void*)ptr, len);
+    batch_pending_length = len;
+    int ret = usb_drv_send_nonblocking(EP_NUM(batch_ep), (void*)ptr, len);
+    if(ret != 0) {
+        batch_failed++;
+        batch_stopped = true;
+        batch_pending_length = 0;
+    }
+    return ret;
 }
 
 int usb_drv_batch_start(void)
 {
     logf("usb_core: batch start");
+    if(!batch_stopped)
+        return 0;
     batch_stopped = false;
     return batch_get_and_send();
 }
@@ -655,13 +671,24 @@ int usb_drv_batch_start(void)
 int usb_drv_batch_stop(void)
 {
     batch_stopped = true;
+    batch_pending_length = 0;
     return 0;
 }
 
-static void batch_xfer_complete(void) {
-    if(batch_stopped) {
+/* An unsuccessful ISO transaction did not deliver a packet. Pulling fresh PCM
+ * here advances the track at the failure interrupt rate (8 kHz in PB36).
+ * Stop on failure/short completion until explicit interface restart. Do not
+ * retry in IRQ context or reuse a mixer-owned buffer after its lifetime. */
+static void batch_xfer_complete(int status, int length) {
+    if(batch_stopped)
+        return;
+    if(status != 0 || length < 0 || (size_t)length != batch_pending_length) {
+        batch_failed++;
+        batch_stopped = true;
+        batch_pending_length = 0;
         return;
     }
+    batch_pending_length = 0;
     batch_get_and_send();
 }
 
@@ -1472,9 +1499,7 @@ void usb_core_transfer_complete(int ep, int dir, int status, int length) {
 #ifdef USB_BATCH_NON_NATIVE
     /* batch api */
     if(batch_ep != 0 && (ep | dir) == batch_ep) {
-        if(status != 0)
-            batch_failed++;
-        batch_xfer_complete();
+        batch_xfer_complete(status, length);
         return;
     }
 #endif

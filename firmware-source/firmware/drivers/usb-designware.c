@@ -1015,7 +1015,8 @@ static void usb_dw_handle_token_mismatch(void)
 
 /* A missed periodic IN transfer does not produce XFRC. Disable only its
  * endpoint; finish the failed request after hardware confirms EPDISD. The
- * normal batch completion then queues fresh audio. Never touch EP0/storage. */
+ * batch layer stops on this failure until an explicit stream restart.
+ * Never touch EP0/storage. */
 static void usb_dw_incomplete_iso_in(void)
 {
     DWC_GINTSTS = IISOIXFR;
@@ -1050,7 +1051,11 @@ static void usb_dw_iepint(int ep)
             d->busy = false;
             d->status = -1;
             semaphore_release(&d->complete);
-            usb_log(USB_LOG_ISO_ERROR, ep | USB_DIR_IN, 0, -1, 0);
+            if (iso_errors_logged[ep][USB_DW_EPDIR_IN] < ISO_LOG_MAX)
+            {
+                iso_errors_logged[ep][USB_DW_EPDIR_IN]++;
+                usb_log(USB_LOG_ISO_ERROR, ep | USB_DIR_IN, 0, -1, 0);
+            }
             complete_transfer(ep, USB_DIR_IN, -1, 0);
         }
         return; /* XFRC in this snapshot belongs to the cancelled request. */

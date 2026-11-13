@@ -23,6 +23,8 @@ pre=r"""
 #define IISOIXFR (1u<<20)
 #define TXFFLSH 1
 #define USB_LOG_ISO_ERROR 0
+#define ISO_LOG_MAX 8
+static unsigned iso_errors_logged[4][2];
 #define usb_log(...) ((void)0)
 static unsigned regs_ctl[4],ints[4],DWC_GINTSTS,DWC_DAINTMSK=15;
 #define DWC_DIEPCTL(e) regs_ctl[e]
@@ -51,6 +53,12 @@ int main(void){
  finish(1,EPDISD);assert(completed==1); /* no duplicate callback */
  endpoints[1].busy=true;DWC_DAINTMSK=0;usb_dw_incomplete_iso_in();assert(!iso_recovering[1]);
  DWC_DAINTMSK=15;endpoints[1].active=false;usb_dw_incomplete_iso_in();assert(!iso_recovering[1]);
+ endpoints[1].active=true;
+ for(int n=0;n<100;n++){
+  endpoints[1].busy=true;regs_ctl[1]=EPENA|(1u<<18);
+  usb_dw_incomplete_iso_in();finish(1,EPDISD);
+ }
+ assert(iso_errors_logged[1][1]==ISO_LOG_MAX);
  puts("PASS: production ISO recovery selection, deferred completion, bulk/control exclusion, stale/duplicate events");
 }
 """
