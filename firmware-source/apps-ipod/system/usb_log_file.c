@@ -322,6 +322,7 @@ static void format_entry(const struct usb_log_entry *e, uint64_t us,
             break;
         case USB_LOG_ISO_STATE:
             snprintf(p, size, "iso ep %02x %s: %08lx %08lx", e->a,
+                     e->b == 6 ? "irq flags/frame" :
                      e->b == 5 ? "incomplete; size-reg/request" :
                      e->b == 4 ? "re-prime; frame/attempt" :
                      e->b == 3 ? "primed; frame/core" :

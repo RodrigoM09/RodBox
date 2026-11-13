@@ -171,7 +171,9 @@ static struct usb_as_iso_audio_endpoint ipod_audio_stream_1_endpoint = {
     .bLength          = USB_DT_ENDPOINT_AUDIO_SIZE,
     .bDescriptorType  = USB_DT_ENDPOINT,
     .bEndpointAddress = -1, /* dynamic */
-    .bmAttributes     = USB_ENDPOINT_XFER_ISOC,
+    /* PCM is generated per 1-ms USB service interval, not from an
+     * independent free-running capture clock. Advertise that clock model. */
+    .bmAttributes     = USB_ENDPOINT_XFER_ISOC | USB_ENDPOINT_SYNC_SYNC,
     .wMaxPacketSize   = AS_PACKET_SIZE,
     .bInterval        = -1, /* dynamic */
     .bRefresh         = 0,

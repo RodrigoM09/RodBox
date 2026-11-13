@@ -13,6 +13,7 @@ code=r'''
 #include <stdint.h>
 #include <stdio.h>
 #define USB_ENDPOINT_XFER_ISOC 1
+#define USB_ENDPOINT_SYNC_SYNC (3<<2)
 #define USB_ENDPOINT_XFER_INT 3
 #define DIR_IN 1
 #define USB_DT_ENDPOINT_AUDIO_SIZE 9
@@ -23,6 +24,7 @@ struct usb_as_iso_audio_endpoint {int bLength,bDescriptorType,bEndpointAddress,b
 int main(void){
  int mps=usb_iap_ep_allocs[0].mps;
  assert(mps==ipod_audio_stream_1_endpoint.wMaxPacketSize);
+ assert(ipod_audio_stream_1_endpoint.bmAttributes==0x0d);
  assert(mps==192&&mps<=1023); /* legal also at full speed */
  assert(usb_iap_ep_allocs[1].mps==64); /* HID unchanged */
  for(unsigned n=176;n<=192;n+=4){

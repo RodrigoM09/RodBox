@@ -718,6 +718,7 @@ static void usb_dw_reset_endpoints(void)
 static uint8_t iso_starts_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_complete_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
+static uint8_t iso_irq_logged[USB_NUM_ENDPOINTS];
 
 static int usb_dw_log_ep(int epnum, enum usb_dw_epdir epdir)
 {
@@ -1117,9 +1118,25 @@ static bool usb_dw_iso_token(int ep)
     return true;
 }
 
+/* Bounded evidence of host token/completion/error indications. Exclude
+ * software-disable-only and FIFO-empty-only events so they cannot exhaust
+ * the diagnostic budget before the host polls. No register writes here. */
+static void usb_dw_log_iso_irq(int ep, uint32_t epints)
+{
+    if (ep && usb_dw_get_ep(ep, USB_DW_EPDIR_IN)->active &&
+        ((DWC_DIEPCTL(ep) >> 18) & 3) == EPTYP_ISOCHRONOUS &&
+        (epints & ~(EPDISD | TXFE)) && iso_irq_logged[ep] < ISO_LOG_MAX)
+    {
+        iso_irq_logged[ep]++;
+        usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 6,
+                epints, (DWC_DSTS >> 8) & 0x3fff);
+    }
+}
+
 static void usb_dw_iepint(int ep)
 {
     uint32_t epints = DWC_DIEPINT(ep);
+    usb_dw_log_iso_irq(ep, epints);
     DWC_DIEPINT(ep) = epints;
     if ((epints & (NAKINTRPT | ITTXFE)) && usb_dw_iso_token(ep))
         return; /* any XFRC in this snapshot predates the newly armed DMA */
@@ -2533,6 +2550,7 @@ void usb_drv_ep_init(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
     iso_starts_logged[epnum][epdir] = 0;
     iso_complete_logged[epnum][epdir] = 0;
     iso_errors_logged[epnum][epdir] = 0;
+    if (epdir == USB_DW_EPDIR_IN) iso_irq_logged[epnum] = 0;
     usb_log(USB_LOG_EP_INIT, ep, type, mps, DWC_EPCTL(epnum, epdir));
 
     dw_ep->active = true;

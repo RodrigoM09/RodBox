@@ -152,3 +152,7 @@ All 27 USB scripts passed. The packet-size regression compiles actual allocation
 ## PB47
 
 All 27 USB scripts passed. Expanded production recovery tests cover 16,384 frame-counter positions, every early slot in the startup service interval, boundary expiry, wraparound and unchanged established/full-speed policy. The regression fails on PB46. Native image checksum and tracked-source identity passed; no device writes or installation.
+
+## PB48
+
+All 28 USB scripts passed. The real descriptor initializer regression fails on PB47 and passes on PB48; a production IRQ logger harness checks bounded output, token/completion indications, excluded endpoints/events and no register mutation. Native checksum and tracked-source identity verified. No device writes or installation.

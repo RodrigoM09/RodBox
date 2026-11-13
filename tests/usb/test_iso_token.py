@@ -13,6 +13,7 @@ pre=r'''
 #define USB_DIR_IN 128
 #define USB_LOG_ISO_STATE 0
 #define usb_log(...) ((void)0)
+#define usb_dw_log_iso_irq(ep,ints) ((void)0)
 #define EPENA (1u<<31)
 #define EPTYP_ISOCHRONOUS 1
 #define NAKINTRPT (1u<<13)
@@ -52,6 +53,6 @@ int main(void){
 }
 '''
 with tempfile.TemporaryDirectory() as d:
- p=Path(d);(p/'t.c').write_text(pre+s[a:b]+'static void dispatch_irq(int ep){'+dispatch+'tail++;}'+main)
+ p=Path(d);(p/'t.c').write_text(pre+s[a:s.index('static void usb_dw_log_iso_irq(',a)]+'static void dispatch_irq(int ep){'+dispatch+'tail++;}'+main)
  subprocess.run(['clang','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(p/'t.c'),'-o',str(p/'t')],check=True)
  subprocess.run([str(p/'t')],check=True)

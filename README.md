@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB47** (`rodbox-pb47-service-window-261112`). Gives high-speed Classic audio startup a full polling interval before cancelling an incomplete packet. All 27 USB test scripts and native build verification passed; the timing regression fails against PB46. **Built, not installed; Lexus audio remains unverified.** See [PB47](docs/PB47-SERVICE-WINDOW.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB48** (`rodbox-pb48-audio-sync-261112`). Declares the host-paced audio stream as synchronous and adds bounded endpoint-interrupt diagnostics. All 28 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB48](docs/PB48-AUDIO-SYNC.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

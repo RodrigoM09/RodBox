@@ -105,3 +105,7 @@ PB45 still had no successful audio completions; filesystem passed. PB46 replaces
 ## PB47
 
 PB46 confirmed 192-byte packets but no audio completions. PB47 retains each initial high-speed packet for the advertised eight-microframe polling interval before bounded recovery. Established/full-speed timing is unchanged. Built only; hardware acceptance pending.
+
+## PB48
+
+PB47 still recorded no audio completions despite the extended window; filesystem passed. PB48 explicitly declares synchronous ISO audio to match its host-paced packet source and records bounded raw endpoint interrupt indications. Built only; hardware acceptance pending.
