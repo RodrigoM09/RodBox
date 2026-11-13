@@ -69,3 +69,13 @@ PB35 defers playback acknowledgements to state changes and fixes rate-list EOF
 parsing. Native builds and focused tests passed. Lexus still has no audio or
 advancing timer; metadata/artwork command support is incomplete. See
 [the current investigation](PB35-LEXUS-PROTOCOL.md). Main remains unchanged.
+
+## PB36–PB40: audio transport and metadata follow-up
+
+- PB36: ISO failure recovery and metadata/artwork handlers; the car test exposed noise and accelerated playback.
+- PB37: stop consuming PCM after failed or short transfers; silence remained.
+- PB38: host-token synchronization and missing-tag display fallbacks; nonempty metadata replies observed, audio unresolved.
+- PB39: service-window checks, artwork-independent track notifications and separate audio logs; diagnostics confirmed stalled startup and failed restart. Filesystem clean.
+- PB40: cancel the pending audio endpoint on stop, permit restart after failure, serialize/coalesce rate requests, correlate acknowledgements and unify timeout cleanup. Installed and verified; in-car acceptance pending.
+
+Each checkpoint was reconstructed from its saved cumulative patch and matched to recorded source hashes before publication. The ten focused PB40 suites were rerun on the restored checkout. Native compilation and installation results are from the original build/install records, not new device tests.

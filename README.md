@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB35** (`rodbox-pb35-lexusdiag-261102`). PB33 fixes advertised iAP report sizes; PB34 restores complete-frame dispatch and successful Lexus authentication; PB35 checks playback-command completion, validates sample-rate lists and improves diagnostics. Builds, focused host tests and installed filesystem checks passed. **Lexus audio is still stalled; metadata/artwork requests remain unsupported.** See [PB35 findings](docs/PB35-LEXUS-PROTOCOL.md). PB32 battery continuity remains confirmed; PB31 Thorough analysis acceptance remains pending.
+Latest experimental source checkpoint: **PB40** (`rodbox-pb40-restart-261103`). PB36–PB39 add metadata/artwork handlers, stop failed-transfer PCM consumption, refine audio scheduling and preserve audio diagnostics. PB40 fixes pending USB transfers across stop/restart and serializes sample-rate negotiation. Native builds, focused host tests and installation checks passed. **Working Lexus audio and live track updates remain unconfirmed: PB39 still failed, and PB40 awaits an in-car test.** See [PB40 changes](docs/PB40-LEXUS.md) and [checkpoint history](docs/HISTORY.md). PB32 battery continuity remains confirmed; PB31 Thorough analysis acceptance remains pending.
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -124,3 +124,7 @@ Run `python3 tests/usb/test_iap_control_reports.py`,
 `python3 tests/usb/test_iap_track_info_layout.py`.
 All passed with ASan/UBSan. The layout test validates declarations/fixtures,
 not a working metadata handler. No audio-endpoint hardware recovery is claimed.
+
+## PB40 publication verification
+
+Ten focused suites cover ISO recovery/service intervals, first-token dispatch, endpoint ownership, batch failure and stop/restart, playback/rate parsing, serialized sample-rate transactions, track notifications, metadata wire format, filtered metadata and artwork times. Tests use mocked hardware and cannot establish Lexus audio compatibility. PB40 installation verified 42 firmware files, database/artwork structure and filesystem cleanliness; music inventory/size/mtime stayed unchanged. No full music checksum was repeated.

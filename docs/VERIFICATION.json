@@ -59,5 +59,14 @@
       "Prior shutdown cause unresolved",
       "PB31 analysis hardware acceptance pending"
     ]
+  },
+  "latest_checkpoint": "PB40",
+  "pb40_publication": {
+    "source_hashes_verified": true,
+    "focused_suites_passed": 10,
+    "native_build": "passed at original build time",
+    "installed_and_verified": true,
+    "lexus_hardware_acceptance": "pending",
+    "full_music_checksum_repeated": false
   }
 }

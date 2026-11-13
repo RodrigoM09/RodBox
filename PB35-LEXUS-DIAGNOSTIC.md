@@ -1,3 +1,5 @@
+> Historical PB35 record. The current experimental checkpoint is [PB40](docs/PB40-LEXUS.md); Lexus acceptance remains pending.
+
 # PB35: Lexus diagnostics and command acknowledgements
 
 Installed and tested. Authentication succeeds; play/pause changes are acknowledged
