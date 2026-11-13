@@ -497,7 +497,8 @@ IAPBool iap_platform_get_storage_space(struct IAPContext* iap_ctx, uint64_t* tot
 }
 
 /* taken from iap-core.c */
-static void get_trackinfo(const unsigned int track, struct mp3entry* id3) {
+static bool get_trackinfo(const unsigned int track, struct mp3entry* id3) {
+    if(track >= (unsigned)playlist_amount()) return false;
     int tracknum = track;
     tracknum += playlist_get_first_index(NULL);
     if(tracknum >= playlist_amount()) {
@@ -507,15 +508,19 @@ static void get_trackinfo(const unsigned int track, struct mp3entry* id3) {
     /* Stopped, the current track's tags are empty */
     if(playlist_next(0) != tracknum || !(audio_status() & AUDIO_STATUS_PLAY)) {
         struct playlist_track_info info;
-        playlist_get_track_info(NULL, tracknum, &info);
+        if(playlist_get_track_info(NULL, tracknum, &info) != 0) return false;
+        memset(id3, 0, sizeof(*id3));
         /* The database first: a dock listing a playlist asks for every
          * track, and the file is a parse each. */
         if(!tagcache_fill_tags(id3, info.filename)) {
-            get_metadata(id3, -1, info.filename);
+            if(!get_metadata(id3, -1, info.filename)) return false;
         }
     } else {
-        memcpy(id3, audio_current_track(), sizeof(*id3));
+        const struct mp3entry *current = audio_current_track();
+        if(!current) return false;
+        memcpy(id3, current, sizeof(*id3));
     }
+    return true;
 }
 
 IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformTrackInfo* info) {
@@ -526,7 +531,7 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
      * parse below already strains */
     static struct mp3entry     id3;
     check_act(playlist_get_track_info(NULL, index, &track) == 0, return iap_false);
-    get_trackinfo(index, &id3);
+    check_act(get_trackinfo(index, &id3), return iap_false);
 
     if(info->total_ms != NULL) {
         *info->total_ms = id3.length;
@@ -559,7 +564,12 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
         check_act(iap_span_append(info->album, s, strlen(s) + 1), return iap_false);
     }
     if(info->title != NULL) {
-        const char* s = id3.title ? id3.title : "";
+        char fallback[256];
+        const char* s = id3.title;
+        if(!s || !*s) {
+            iap_library_fallback_name(1, id3.path, fallback, sizeof(fallback));
+            s = fallback;
+        }
         check_act(iap_span_append(info->title, s, strlen(s) + 1), return iap_false);
     }
     return iap_true;
@@ -584,7 +594,7 @@ IAPBool iap_platform_track_field(struct IAPContext* ctx, IAPBool database,
     } else {
         static struct mp3entry id3; /* USB thread only; off the small stack */
         check_act(index < (uint32_t)playlist_amount(), return iap_false);
-        get_trackinfo(index, &id3);
+        check_act(get_trackinfo(index, &id3), return iap_false);
         switch(type) {
         case 0: number = has_art(ctx->platform, index) ?
                          IAPIPodStateTrackCapBits_HasAlbumArts : 0; break;
@@ -597,6 +607,10 @@ IAPBool iap_platform_track_field(struct IAPContext* ctx, IAPBool database,
         case 7: number = iap_library_key(id3.path); break;
         case 13: number = id3.tracknum > 0 ? id3.tracknum : 0; break;
         default: return iap_false;
+        }
+        if(type >= 1 && type <= 5 && (!text || !*text)) {
+            iap_library_fallback_name(type, id3.path, name, sizeof(name));
+            text = name;
         }
     }
     if(type >= 1 && type <= 5) {

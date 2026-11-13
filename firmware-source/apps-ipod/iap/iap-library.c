@@ -1152,12 +1152,40 @@ bool iap_library_name(int type, uint32_t index, char *buf, size_t size)
         return false;
 
     const struct entry *e = &block->entries[index];
-    bool named = type == TYPE_TRACK
-        ? tagcache_entry_string(e->idx, tag_title, buf, size)
-        : tagcache_seek_string(level_tag[type_level(type)], e->key, buf, size);
+    if (type == TYPE_TRACK)
+    {
+        uint64_t unused;
+        return iap_library_track_field(index, 1, buf, size, &unused);
+    }
+    bool named = tagcache_seek_string(level_tag[type_level(type)], e->key, buf, size);
     if (!named)
         strmemccpy(buf, UNTAGGED, size);
     return true;
+}
+
+/* Presentation fallback only; never writes tags back to the music file. */
+void iap_library_fallback_name(unsigned type, const char *path,
+                               char *text, size_t size)
+{
+    static const char *const unknown[] = {
+        "", "Unknown Title", "Unknown Artist", "Unknown Album",
+        "Unknown Genre", "Unknown Composer"
+    };
+    if (type < 1 || type > 5 || !size) return;
+    const char *name = unknown[type];
+    if (type == 1 && path && *path)
+    {
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if (*base) name = base;
+    }
+    strmemccpy(text, name, size);
+    if (type == 1 && name != unknown[type])
+    {
+        char *dot = strrchr(text, '.');
+        if (dot && dot != text) *dot = 0;
+    }
+    iap_utf8_cut(text);
 }
 
 bool iap_library_track_field(uint32_t index, unsigned type, char *text,
@@ -1174,8 +1202,23 @@ bool iap_library_track_field(uint32_t index, unsigned type, char *text,
                                    tag_genre, tag_composer};
         if (!size) return false;
         text[0] = 0;
-        tagcache_entry_string(idx, tags[type - 1], text, size);
-        iap_utf8_cut(text);
+        if (tagcache_entry_string(idx, tags[type - 1], text, size) && text[0])
+        {
+            iap_utf8_cut(text);
+            return true;
+        }
+        /* Real untagged tracks sort first in the All Songs listing. The
+         * Lexus asks for that entry, not necessarily the playing track. */
+        const char *path = NULL;
+        if (type == 1 && tagcache_search_ready() &&
+            tagcache_search(&block->tcs, tag_filename))
+        {
+            if (tagcache_retrieve(&block->tcs, idx, tag_filename,
+                                  block->name, sizeof(block->name)))
+                path = block->name;
+            tagcache_search_finish(&block->tcs);
+        }
+        iap_library_fallback_name(type, path, text, size);
         return true;
     }
     if (type == 0) return true; /* no optional capabilities promised */

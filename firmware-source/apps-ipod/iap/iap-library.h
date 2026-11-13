@@ -21,6 +21,8 @@
 /* False for a category not offered, or one that cannot be read now. */
 bool iap_library_count(int type, uint32_t *count);
 /* Metadata in the current filtered Track listing; never starts playback. */
+void iap_library_fallback_name(unsigned type, const char *path,
+                               char *text, size_t size);
 bool iap_library_track_field(uint32_t index, unsigned type, char *text,
                              size_t size, uint64_t *number);
 bool iap_library_name(int type, uint32_t index, char *buf, size_t size);

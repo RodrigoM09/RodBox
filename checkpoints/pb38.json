@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb38",
+  "version": "rodbox-pb38-host-sync-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Host-token synchronization and missing-tag fallbacks",
+  "native_build": "passed (recorded at build time)",
+  "installed": true,
+  "filesystem_check_passed": true,
+  "hardware_status": "Installed and tested: nonempty metadata replies observed; Lexus audio and live track updates unresolved.",
+  "core_bytes": 2000920,
+  "core_sha256": "db2c68a712be92a795e5011050e01b52f0854f4b4d7fe26ad22b54ed308ceffb",
+  "source_reconstruction_hashes_verified": 10,
+  "music_files_written": false
+}

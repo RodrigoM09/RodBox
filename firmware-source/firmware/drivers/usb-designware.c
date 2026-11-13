@@ -538,13 +538,16 @@ static void usb_dw_nptx_unqueue(int epnum)
 #endif /* USB_DW_SHARED_FIFO */
 
 static bool iso_recovering[USB_NUM_ENDPOINTS];
-static bool iso_hs_odd[USB_NUM_ENDPOINTS];
+static bool iso_synced[USB_NUM_ENDPOINTS];
+static bool iso_waiting_token[USB_NUM_ENDPOINTS];
+static uint16_t iso_target_frame[USB_NUM_ENDPOINTS];
 
 static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
 {
     if (epdir == USB_DW_EPDIR_IN) {
         iso_recovering[epnum] = false;
-        iso_hs_odd[epnum] = false;
+        iso_synced[epnum] = false;
+        iso_waiting_token[epnum] = false;
     }
     struct usb_dw_ep* dw_ep = usb_dw_get_ep(epnum, epdir);
     dw_ep->busy = false;
@@ -660,7 +663,8 @@ static void usb_dw_configure_ep(const struct usb_drv_ep_alloc_ctx* ctx, int epnu
 static void usb_dw_reset_endpoints(void)
 {
     memset(iso_recovering, 0, sizeof(iso_recovering));
-    memset(iso_hs_odd, 0, sizeof(iso_hs_odd));
+    memset(iso_synced, 0, sizeof(iso_synced));
+    memset(iso_waiting_token, 0, sizeof(iso_waiting_token));
     /* Initial state for all endpoints, setting OUT EPs as not busy
      * will discard all pending data (if any) on the flush stage.
      */
@@ -762,11 +766,18 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
-        /* Full speed targets the next frame. At high speed the supported
-         * audio interval is 1 ms; retain the working microframe parity and
-         * try the opposite after an incomplete transfer. */
-        uint32_t phase = usb_drv_port_speed() ?
-            (iso_hs_odd[epnum] ? SETD1PIDOF : SETD0PIDEF) :
+        /* Do not guess the host's initial polling phase. Keep the first
+         * buffer owned but unarmed until an actual IN token supplies it. */
+        if (epdir == USB_DW_EPDIR_IN && !iso_synced[epnum])
+        {
+            iso_waiting_token[epnum] = true;
+            DWC_DIEPCTL(epnum) =
+                (DWC_DIEPCTL(epnum) & ~(EPENA | EPDIS | SETD0PIDEF | SETD1PIDOF)) |
+                CNAK;
+            return;
+        }
+        uint32_t phase = epdir == USB_DW_EPDIR_IN ?
+            ((iso_target_frame[epnum] & 1) ? SETD1PIDOF : SETD0PIDEF) :
             ((usb_drv_get_frame_number() & 1) ? SETD0PIDEF : SETD1PIDOF);
         DWC_EPCTL(epnum, epdir) =
             (DWC_EPCTL(epnum, epdir) & ~(SETD0PIDEF | SETD1PIDOF)) |
@@ -926,6 +937,10 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
     }
 
     dw_ep->status = 0;
+    if (epdir == USB_DW_EPDIR_IN && iso_synced[epnum] &&
+        ((DWC_DIEPCTL(epnum) >> 18) & 3) == EPTYP_ISOCHRONOUS)
+        iso_target_frame[epnum] = (iso_target_frame[epnum] +
+                                  (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
 
   complete:
     if (dw_ep->status != 0 && epnum != 0 &&
@@ -1035,16 +1050,37 @@ static void usb_dw_incomplete_iso_in(void)
     }
 }
 
+/* Like DWC2's ISO-IN NAK synchronization: the token gives the host's
+ * service phase. Re-arm the SAME pending buffer, never pull new PCM here. */
+static bool usb_dw_iso_token(int ep)
+{
+    struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
+    if (ep == 0 || !d->active || !d->busy || !iso_waiting_token[ep] ||
+        (DWC_DIEPCTL(ep) & EPENA) ||
+        ((DWC_DIEPCTL(ep) >> 18) & 3) != EPTYP_ISOCHRONOUS)
+        return false;
+    iso_waiting_token[ep] = false;
+    iso_synced[ep] = true;
+    /* Unlike usb_drv_get_frame_number(), preserve HS microframe bits. */
+    iso_target_frame[ep] = (((DWC_DSTS >> 8) & 0x3fff) +
+                            (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
+    usb_dw_epstart(ep, USB_DW_EPDIR_IN, d->req_addr, d->req_size);
+    return true;
+}
+
 static void usb_dw_iepint(int ep)
 {
     uint32_t epints = DWC_DIEPINT(ep);
     DWC_DIEPINT(ep) = epints;
+    if ((epints & NAKINTRPT) && usb_dw_iso_token(ep))
+        return; /* any XFRC in this snapshot predates the newly armed DMA */
 
     if ((epints & EPDISD) && iso_recovering[ep])
     {
         struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
         iso_recovering[ep] = false;
-        if (usb_drv_port_speed()) iso_hs_odd[ep] = !iso_hs_odd[ep];
+        iso_synced[ep] = false;
+        iso_waiting_token[ep] = false;
         usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
         if (d->busy)
         {
@@ -1395,7 +1431,7 @@ static void usb_dw_init(void)
 
     /* Set up interrupts */
     DWC_DOEPMSK = STUP|XFRC;
-    DWC_DIEPMSK = TOC|XFRC|EPDISD;
+    DWC_DIEPMSK = TOC|XFRC|EPDISD|NAKINTRPT;
 
     /* Unmask all available endpoints */
     DWC_DAINTMSK = 0xffffffff;
