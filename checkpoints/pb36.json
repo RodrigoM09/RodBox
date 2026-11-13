@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb36",
+  "version": "rodbox-pb36-lexus-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Lexus audio recovery and metadata handlers",
+  "native_build": "passed (recorded at build time)",
+  "installed": true,
+  "filesystem_check_passed": true,
+  "hardware_status": "Installed and tested: noise and accelerated playback time; superseded by PB37.",
+  "core_bytes": 1999564,
+  "core_sha256": "900f4197d0a0c87864bc607f92d64aa5ae4f9d05623210df01b05c080f9644f8",
+  "source_reconstruction_hashes_verified": 8,
+  "music_files_written": false
+}

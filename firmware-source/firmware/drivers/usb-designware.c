@@ -537,8 +537,15 @@ static void usb_dw_nptx_unqueue(int epnum)
 }
 #endif /* USB_DW_SHARED_FIFO */
 
+static bool iso_recovering[USB_NUM_ENDPOINTS];
+static bool iso_hs_odd[USB_NUM_ENDPOINTS];
+
 static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
 {
+    if (epdir == USB_DW_EPDIR_IN) {
+        iso_recovering[epnum] = false;
+        iso_hs_odd[epnum] = false;
+    }
     struct usb_dw_ep* dw_ep = usb_dw_get_ep(epnum, epdir);
     dw_ep->busy = false;
     dw_ep->status = -1;
@@ -652,6 +659,8 @@ static void usb_dw_configure_ep(const struct usb_drv_ep_alloc_ctx* ctx, int epnu
 
 static void usb_dw_reset_endpoints(void)
 {
+    memset(iso_recovering, 0, sizeof(iso_recovering));
+    memset(iso_hs_odd, 0, sizeof(iso_hs_odd));
     /* Initial state for all endpoints, setting OUT EPs as not busy
      * will discard all pending data (if any) on the flush stage.
      */
@@ -753,23 +762,17 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
-        /*
-         * Handle frame scheduling for isochronous endpoints.
-         *
-         * TODO: this needs to take into account the endpoint's bInterval,
-         * and currently will not work for USB 2.0 endpoints that require
-         * one packet per microframe. For slower USB 2.0 endpoints data is
-         * only transferred on *even* frames; SETD1PIDOF is not used.
-         * This also breaks for USB 1.0 endpoints with bInterval > 1 for
-         * the same reason.
-         */
-        if (usb_drv_port_speed() || (usb_drv_get_frame_number() & 1))
-            DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
-        else
-            DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD1PIDOF;
+        /* Full speed targets the next frame. At high speed the supported
+         * audio interval is 1 ms; retain the working microframe parity and
+         * try the opposite after an incomplete transfer. */
+        uint32_t phase = usb_drv_port_speed() ?
+            (iso_hs_odd[epnum] ? SETD1PIDOF : SETD0PIDEF) :
+            ((usb_drv_get_frame_number() & 1) ? SETD0PIDEF : SETD1PIDOF);
+        DWC_EPCTL(epnum, epdir) =
+            (DWC_EPCTL(epnum, epdir) & ~(SETD0PIDEF | SETD1PIDOF)) |
+            EPENA | nak | phase;
 
-        /* The raw interrupt status carries the incomplete-isochronous bits,
-         * which are not enabled as interrupts. */
+        /* Keep a bounded record of initial stream scheduling. */
         if (iso_starts_logged[epnum][epdir] < ISO_LOG_MAX)
         {
             iso_starts_logged[epnum][epdir]++;
@@ -1010,10 +1013,48 @@ static void usb_dw_handle_token_mismatch(void)
 }
 #endif /* USB_DW_SHARED_FIFO */
 
+/* A missed periodic IN transfer does not produce XFRC. Disable only its
+ * endpoint; finish the failed request after hardware confirms EPDISD. The
+ * normal batch completion then queues fresh audio. Never touch EP0/storage. */
+static void usb_dw_incomplete_iso_in(void)
+{
+    DWC_GINTSTS = IISOIXFR;
+    for (int ep = 1; ep < USB_NUM_ENDPOINTS; ep++)
+    {
+        struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
+        uint32_t ctl = DWC_DIEPCTL(ep);
+        if (d->active && d->busy && !iso_recovering[ep] &&
+            (DWC_DAINTMSK & (1u << ep)) && (ctl & EPENA) &&
+            !(DWC_DIEPINT(ep) & XFRC) &&
+            ((ctl >> 18) & 3) == EPTYP_ISOCHRONOUS)
+        {
+            iso_recovering[ep] = true;
+            DWC_DIEPCTL(ep) = ctl | SNAK | EPDIS;
+        }
+    }
+}
+
 static void usb_dw_iepint(int ep)
 {
     uint32_t epints = DWC_DIEPINT(ep);
     DWC_DIEPINT(ep) = epints;
+
+    if ((epints & EPDISD) && iso_recovering[ep])
+    {
+        struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
+        iso_recovering[ep] = false;
+        if (usb_drv_port_speed()) iso_hs_odd[ep] = !iso_hs_odd[ep];
+        usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
+        if (d->busy)
+        {
+            d->busy = false;
+            d->status = -1;
+            semaphore_release(&d->complete);
+            usb_log(USB_LOG_ISO_ERROR, ep | USB_DIR_IN, 0, -1, 0);
+            complete_transfer(ep, USB_DIR_IN, -1, 0);
+        }
+        return; /* XFRC in this snapshot belongs to the cancelled request. */
+    }
 
     if (epints & TOC)
     {
@@ -1136,6 +1177,9 @@ static void usb_dw_irq(void)
     }
 #endif /* USB_DW_ARCH_SLAVE */
 #endif /* USB_DW_SHARED_FIFO */
+
+    if (gintsts & IISOIXFR)
+        usb_dw_incomplete_iso_in();
 
     if (gintsts & (OEPINT | IEPINT))
     {
@@ -1346,13 +1390,13 @@ static void usb_dw_init(void)
 
     /* Set up interrupts */
     DWC_DOEPMSK = STUP|XFRC;
-    DWC_DIEPMSK = TOC|XFRC;
+    DWC_DIEPMSK = TOC|XFRC|EPDISD;
 
     /* Unmask all available endpoints */
     DWC_DAINTMSK = 0xffffffff;
     usb_endpoints = DWC_DAINTMSK;
 
-    uint32_t gintmsk = USBRST|ENUMDNE|IEPINT|OEPINT;
+    uint32_t gintmsk = USBRST|ENUMDNE|IEPINT|OEPINT|IISOIXFR;
 #ifdef USB_DW_ARCH_SLAVE
     gintmsk |= RXFLVL;
 #endif

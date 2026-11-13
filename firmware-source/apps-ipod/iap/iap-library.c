@@ -1160,6 +1160,49 @@ bool iap_library_name(int type, uint32_t index, char *buf, size_t size)
     return true;
 }
 
+bool iap_library_track_field(uint32_t index, unsigned type, char *text,
+                             size_t size, uint64_t *number)
+{
+    if (folder != FOLDER_NONE || iap_library_tracks_are_queue() ||
+        !build(TYPE_TRACK) || index >= list_count)
+        return false;
+    int idx = block->entries[index].idx;
+    *number = 0;
+    if (type >= 1 && type <= 5)
+    {
+        static const int tags[] = {tag_title, tag_artist, tag_album,
+                                   tag_genre, tag_composer};
+        if (!size) return false;
+        text[0] = 0;
+        tagcache_entry_string(idx, tags[type - 1], text, size);
+        iap_utf8_cut(text);
+        return true;
+    }
+    if (type == 0) return true; /* no optional capabilities promised */
+    if (type == 6 || type == 13)
+    {
+        long n = 0;
+        tagcache_entry_numeric(idx, type == 6 ? tag_length : tag_tracknumber, &n);
+        *number = n > 0 ? n : 0;
+        return true;
+    }
+    if (type == 7)
+    {
+        int slots = tagcache_path_slots();
+        for (int n = 0; n < slots; n++)
+        {
+            int slot_idx;
+            uint64_t key;
+            if (tagcache_path_slot(n, &key, &slot_idx) && slot_idx == idx)
+            {
+                *number = key;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool iap_library_select(int type, uint32_t index, int sort)
 {
     int level = type_level(type);

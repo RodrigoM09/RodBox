@@ -100,6 +100,11 @@ struct IAPContext {
     uint32_t                     db_record_end;
     int32_t                      db_record_trans_id;
     uint8_t                      db_record_type;
+    uint32_t metadata_index, metadata_end, metadata_mask;
+    int32_t metadata_trans_id;
+    uint16_t metadata_reply;
+    uint8_t metadata_type;
+    IAPBool metadata_database;
     uint8_t                      trans_id_support; /* TransIDSupport */
     uint8_t                      auth_major;       /* accessory's auth protocol */
     /* notification.c */

@@ -565,6 +565,51 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
     return iap_true;
 }
 
+IAPBool iap_platform_track_count(struct IAPContext* ctx, IAPBool database,
+                                 uint32_t* count) {
+    if(database) return iap_platform_get_db_count(ctx, IAPDatabaseType_Track, count);
+    *count = playlist_amount();
+    return iap_true;
+}
+
+IAPBool iap_platform_track_field(struct IAPContext* ctx, IAPBool database,
+        uint32_t index, unsigned type, struct IAPSpan* out) {
+    uint64_t number = 0;
+    const char* text = "";
+    char name[256];
+    if(database && !iap_library_tracks_are_queue()) {
+        check_act(iap_library_track_field(index, type, name, sizeof(name), &number),
+                  return iap_false);
+        text = name;
+    } else {
+        static struct mp3entry id3; /* USB thread only; off the small stack */
+        check_act(index < (uint32_t)playlist_amount(), return iap_false);
+        get_trackinfo(index, &id3);
+        switch(type) {
+        case 0: number = has_art(ctx->platform, index) ?
+                         IAPIPodStateTrackCapBits_HasAlbumArts : 0; break;
+        case 1: text = id3.title; break;
+        case 2: text = id3.artist; break;
+        case 3: text = id3.album; break;
+        case 4: text = id3.genre_string; break;
+        case 5: text = id3.composer; break;
+        case 6: number = id3.length; break;
+        case 7: number = iap_library_key(id3.path); break;
+        case 13: number = id3.tracknum > 0 ? id3.tracknum : 0; break;
+        default: return iap_false;
+        }
+    }
+    if(type >= 1 && type <= 5) {
+        if(!text) text = "";
+        return iap_span_append(out, text, strlen(text) + 1);
+    }
+    if(type == 7) return iap_span_write_64(out, number);
+    if(type == 13) return number <= 65535 && iap_span_write_16(out, number);
+    if(type == 0 || type == 6)
+        return number <= UINT32_MAX && iap_span_write_32(out, number);
+    return iap_false;
+}
+
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index) {
     (void)iap_ctx;
     /* audio_skip() locks up on an offset past the end rather than refusing it */

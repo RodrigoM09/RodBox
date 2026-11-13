@@ -122,6 +122,9 @@ IAPBool iap_platform_get_lineout_usage(struct IAPContext* iap_ctx, IAPBool* used
 /* the disk's size and free space, in bytes */
 IAPBool iap_platform_get_storage_space(struct IAPContext* iap_ctx, uint64_t* total, uint64_t* avail);
 IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformTrackInfo* info);
+IAPBool iap_platform_track_field(struct IAPContext*, IAPBool database,
+        uint32_t index, unsigned type, struct IAPSpan*);
+IAPBool iap_platform_track_count(struct IAPContext*, IAPBool database, uint32_t*);
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index);
 IAPBool iap_platform_open_artwork(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformArtwork* artwork);
 IAPBool iap_platform_get_artwork_ptr(struct IAPContext* iap_ctx, struct IAPPlatformArtwork* artwork, struct IAPSpan* span);
