@@ -101,3 +101,7 @@ PB44 hardware retries activated but exhausted before the final host rate command
 ## PB46
 
 PB45 still had no successful audio completions; filesystem passed. PB46 replaces the mismatched 1024-byte iAP endpoint allocation with the same 192-byte constant used by its descriptor and buffers. Built only; hardware acceptance pending.
+
+## PB47
+
+PB46 confirmed 192-byte packets but no audio completions. PB47 retains each initial high-speed packet for the advertised eight-microframe polling interval before bounded recovery. Established/full-speed timing is unchanged. Built only; hardware acceptance pending.

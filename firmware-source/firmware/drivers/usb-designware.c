@@ -1072,13 +1072,23 @@ static void usb_dw_incomplete_iso_in(void)
     {
         struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
         uint32_t ctl = DWC_DIEPCTL(ep);
+        unsigned deadline = iso_target_frame[ep];
+#if CONFIG_CPU == S5L8702
+        /* Before the first completion the host's polling phase is unknown.
+         * iAP advertises bInterval=4 at HS (eight microframes). A global
+         * incomplete interrupt in an earlier slot is not a missed service
+         * interval: keep the same FIFO packet available for the full window.
+         * After the first completion retain the known-phase failure policy. */
+        if (!iso_prime_complete[ep] && usb_drv_port_speed())
+            deadline = (deadline + 7) & 0x3fff;
+#endif
         if (d->active && d->busy && !iso_recovering[ep] &&
             (DWC_DAINTMSK & (1u << ep)) && (ctl & EPENA) &&
             !(DWC_DIEPINT(ep) & XFRC) &&
             /* A global incomplete event can precede this endpoint's next
              * 1-ms service interval. Do not cancel a future packet. */
             (!iso_synced[ep] ||
-             ((((DWC_DSTS >> 8) & 0x3fff) - iso_target_frame[ep]) & 0x3fff) < 0x2000) &&
+             ((((DWC_DSTS >> 8) & 0x3fff) - deadline) & 0x3fff) < 0x2000) &&
             ((ctl >> 18) & 3) == EPTYP_ISOCHRONOUS)
         {
             iso_recovering[ep] = true;

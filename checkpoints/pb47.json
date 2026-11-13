@@ -1,0 +1,16 @@
+{
+  "checkpoint": "pb47",
+  "version": "rodbox-pb47-service-window-261112",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "native_build": "passed",
+  "usb_test_scripts_passed": 27,
+  "regression_fails_pb46_passes_pb47": true,
+  "firmware_files": 42,
+  "tracked_source_files_matched": 12042,
+  "image_checksum_valid": true,
+  "installed": false,
+  "device_writes": false,
+  "music_files_written": false,
+  "hardware_acceptance": "pending",
+  "core_sha256": "74c6515ff46703098f8b49f441bb37bbce4c5f5cca367a35b31400983a240e57"
+}

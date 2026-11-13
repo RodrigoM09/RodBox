@@ -1,7 +1,7 @@
 from pathlib import Path
-import subprocess,tempfile
+import subprocess,tempfile,sys
 r=Path(__file__).resolve().parents[2]
-s=(r/'firmware-source/firmware/drivers/usb-designware.c').read_text()
+s=(Path(sys.argv[1]) if len(sys.argv)>1 else r/'firmware-source/firmware/drivers/usb-designware.c').read_text()
 a=s.index('static void usb_dw_incomplete_iso_in(');b=s.index('static void usb_dw_iepint(',a)
 helper=s[a:s.index('static bool usb_dw_iso_token(',a)]
 a=s.index('    if ((epints & EPDISD) && iso_recovering[ep])',b);b=s.index('    if (epints & TOC)',a)
@@ -33,6 +33,8 @@ static uint16_t iso_target_frame[4];
 static unsigned char iso_prime_retries[4];
 static bool iso_prime_complete[4];
 static unsigned sizes[4],rearms;
+static bool highspeed=true;
+static int usb_drv_port_speed(void){return highspeed;}
 #define DWC_EPTSIZ(e,d) sizes[e]
 #define DWC_DIEPCTL(e) regs_ctl[e]
 #define DWC_DIEPINT(e) ints[e]
@@ -51,10 +53,12 @@ static void complete_transfer(int ep,int dir,int status,int n){assert(dir==128&&
 """
 main=r"""
 int main(void){
+ (void)usb_drv_port_speed;
  for(int e=0;e<4;e++){endpoints[e]=(struct usb_dw_ep){true,true,0,0,0,192};regs_ctl[e]=EPENA|(1u<<18);}
  sizes[1]=0; /* packet count zero: never replay */
  regs_ctl[2]=EPENA|(2u<<18); /* storage/bulk */
  ints[3]=XFRC; /* finished packet must not be cancelled */
+ iso_prime_complete[1]=true;
  iso_synced[1]=true;iso_target_frame[1]=108;DWC_DSTS=102u<<8;
  usb_dw_incomplete_iso_in();assert(!iso_recovering[1]); /* future HS interval */
  iso_target_frame[1]=2;DWC_DSTS=16382u<<8;
@@ -89,6 +93,24 @@ int main(void){
  iso_prime_complete[1]=true;iso_prime_retries[1]=0;
  endpoints[1].busy=true;iso_recovering[1]=true;finish(1,EPDISD);
  assert(rearms==8&&completed==before+2);
+ /* Unknown HS phase must survive every early microframe, including wrap.
+    Same endpoint remains armed until the entire advertised interval elapses. */
+ iso_prime_complete[1]=false;iso_synced[1]=true;ints[1]=0;
+ for(unsigned f=0;f<16384;f++){
+  iso_recovering[1]=false;endpoints[1].busy=true;regs_ctl[1]=EPENA|(1u<<18);
+  iso_target_frame[1]=(f+1)&0x3fff;
+  for(unsigned k=0;k<8;k++){
+   DWC_DSTS=((f+k)&0x3fff)<<8;usb_dw_incomplete_iso_in();
+   assert(!iso_recovering[1]&&!(regs_ctl[1]&EPDIS));
+  }
+  DWC_DSTS=((f+8)&0x3fff)<<8;usb_dw_incomplete_iso_in();assert(iso_recovering[1]);
+ }
+ /* Full-speed one-frame scheduling and established HS streams unchanged. */
+ for(unsigned mode=0;mode<2;mode++){
+  highspeed=mode;iso_prime_complete[1]=mode;iso_recovering[1]=false;
+  regs_ctl[1]=EPENA|(1u<<18);iso_target_frame[1]=8;DWC_DSTS=8<<8;
+  usb_dw_incomplete_iso_in();assert(iso_recovering[1]);
+ }
  puts("PASS: production ISO recovery selection, deferred completion, bulk/control exclusion, stale/duplicate events");
 }
 """

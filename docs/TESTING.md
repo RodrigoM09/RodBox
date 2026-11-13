@@ -148,3 +148,7 @@ All 26 USB scripts passed. Production harnesses cover late matching SET_CUR reco
 ## PB46
 
 All 27 USB scripts passed. The packet-size regression compiles actual allocation/descriptor initializers, fails against PB45 and passes against PB46. Existing retry, rate recovery, control queue and log tests remain passing. Native firmware checksum and tracked-source match verified. No installation or device writes.
+
+## PB47
+
+All 27 USB scripts passed. Expanded production recovery tests cover 16,384 frame-counter positions, every early slot in the startup service interval, boundary expiry, wraparound and unchanged established/full-speed policy. The regression fails on PB46. Native image checksum and tracked-source identity passed; no device writes or installation.

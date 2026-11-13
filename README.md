@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB46** (`rodbox-pb46-audio-packet-261112`). Matches the hardware audio endpoint’s packet limit to the advertised 192-byte stream and buffers. All 27 USB test scripts and native build verification passed; the new regression fails against PB45. **Built, not installed; Lexus audio remains unverified.** See [PB46](docs/PB46-PACKET-SIZE.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB47** (`rodbox-pb47-service-window-261112`). Gives high-speed Classic audio startup a full polling interval before cancelling an incomplete packet. All 27 USB test scripts and native build verification passed; the timing regression fails against PB46. **Built, not installed; Lexus audio remains unverified.** See [PB47](docs/PB47-SERVICE-WINDOW.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
