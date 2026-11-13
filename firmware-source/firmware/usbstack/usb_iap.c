@@ -507,6 +507,7 @@ static int usb_iap_set_interface(int intf, int alt) {
         return -1;
     }
     stream.alt = alt;
+    usb_log(USB_LOG_ALT, intf, alt, 0, 0);
     return 0;
 }
 

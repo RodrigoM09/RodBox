@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb50",
+  "version": "rodbox-pb50-audio-probe-261112",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "native_build": "passed",
+  "usb_test_scripts_passed": 30,
+  "firmware_files": 42,
+  "tracked_source_files_matched": 12042,
+  "image_checksum_valid": true,
+  "installed": false,
+  "music_files_written": false,
+  "hardware_acceptance": "pending; diagnostic build, audio remains unresolved",
+  "core_sha256": "d26baefec64339914803571a9e284b5f3cf20adbb59394e6e515c852409abf39"
+}

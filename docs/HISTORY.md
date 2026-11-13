@@ -113,3 +113,7 @@ PB47 still recorded no audio completions despite the extended window; filesystem
 ## PB49
 
 PB48 exposed exhausted state surviving idle endpoint reset and disable/NAK-effective events consuming the IRQ log budget. PB49 resets active ISO IN priming state on explicit idle/busy resets and separates token diagnostics from completion/error logs. Built only; hardware acceptance pending.
+
+## PB50
+
+PB49 recorded zero audio completions across 36 retries. PB50 captures successful stream alternate settings and bounded endpoint/mask/frame snapshots before recovery. Scheduling is unchanged; this is a diagnostic build, not a confirmed fix. The separately approved two-orphan repair passed without formatting or music writes.

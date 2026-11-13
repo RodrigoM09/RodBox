@@ -1,0 +1,14 @@
+{
+  "firmware-source/apps-ipod/system/usb_log_file.c": {
+    "bytes": 35266,
+    "sha256": "874e90967b1a03c4bcd489d94acba47eca16eb05153f02133df29ec474898bb5"
+  },
+  "firmware-source/firmware/drivers/usb-designware.c": {
+    "bytes": 84732,
+    "sha256": "79df8ff47bc81dcaea0f597aa334a05c620fd8f30935c55adb60c1f204fcc6b3"
+  },
+  "firmware-source/firmware/usbstack/usb_iap.c": {
+    "bytes": 30036,
+    "sha256": "0904138cb7c6ac12d9e687c585e0082baf1eb8f6837a9c9057605a84c71352a3"
+  }
+}

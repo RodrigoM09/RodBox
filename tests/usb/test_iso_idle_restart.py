@@ -11,14 +11,14 @@ pre=r'''
 enum usb_dw_epdir{USB_DW_EPDIR_IN,USB_DW_EPDIR_OUT};
 static struct ep{bool active,busy;} eps[4][2];
 static bool iso_recovering[4],iso_synced[4],iso_waiting_token[4],iso_prime_complete[4];
-static unsigned iso_prime_retries[4],iso_target_frame[4],iso_irq_logged[4],iso_token_irq_logged[4];
+static unsigned iso_prime_retries[4],iso_target_frame[4],iso_irq_logged[4],iso_token_irq_logged[4],iso_probe_logged[4];
 static unsigned ctl[4],irq,flushes;
 #define DWC_DIEPCTL(e) ctl[e]
 static struct ep* usb_dw_get_ep(int e,int d){return &eps[e][d];}
 static void usb_dw_target_disable_irq(void){assert(!irq);irq=1;}
 static void usb_dw_target_enable_irq(void){assert(irq);irq=0;}
 static void usb_dw_flush_endpoint(int e,int d){assert(irq&&eps[e][d].busy);eps[e][d].busy=false;flushes++;}
-static void exhausted(void){iso_prime_retries[1]=8;iso_prime_complete[1]=true;iso_synced[1]=true;iso_recovering[1]=true;iso_waiting_token[1]=true;iso_target_frame[1]=99;iso_irq_logged[1]=8;iso_token_irq_logged[1]=8;}
+static void exhausted(void){iso_prime_retries[1]=8;iso_prime_complete[1]=true;iso_synced[1]=true;iso_recovering[1]=true;iso_waiting_token[1]=true;iso_target_frame[1]=99;iso_irq_logged[1]=8;iso_token_irq_logged[1]=8;iso_probe_logged[1]=8;}
 '''
 main=r'''
 int main(void){
@@ -26,7 +26,7 @@ int main(void){
  for(unsigned busy=0;busy<2;busy++){
   exhausted();eps[1][0].busy=busy;usb_drv_reset_endpoint(0x81,true);
   assert(!iso_prime_retries[1]&&!iso_prime_complete[1]&&!iso_synced[1]&&!iso_recovering[1]&&!iso_waiting_token[1]);
-  assert(!iso_target_frame[1]&&!iso_irq_logged[1]&&!iso_token_irq_logged[1]&&!irq);
+  assert(!iso_target_frame[1]&&!iso_irq_logged[1]&&!iso_token_irq_logged[1]&&!iso_probe_logged[1]&&!irq);
   assert(flushes==busy&&ctl[1]==(1u<<18));
  }
  exhausted();ctl[1]=2u<<18;usb_drv_reset_endpoint(0x81,true);assert(iso_prime_retries[1]==8);

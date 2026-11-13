@@ -28,6 +28,7 @@ pre=r"""
 #define ISO_LOG_MAX 8
 static unsigned iso_errors_logged[4][2];
 #define usb_log(...) ((void)0)
+#define usb_dw_log_iso_recovery(ep) ((void)0)
 static unsigned regs_ctl[4],ints[4],DWC_GINTSTS,DWC_DSTS,DWC_DAINTMSK=15;
 static uint16_t iso_target_frame[4];
 static unsigned char iso_prime_retries[4];

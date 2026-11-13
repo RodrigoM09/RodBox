@@ -160,3 +160,7 @@ All 28 USB scripts passed. The real descriptor initializer regression fails on P
 ## PB49
 
 All 29 USB scripts passed. The real endpoint reset regression fails against PB48 and passes against PB49, including idle/busy and endpoint exclusions. Logger tests replay 0xc2 disable events and verify independently bounded token evidence after other logs saturate. Native image and source identity verified. No device writes or installation.
+
+## PB50
+
+All 30 USB scripts passed, including production snapshot payload/bounds/no-register-write tests under ASan/UBSan and reset-budget checks. Native image checksum, 42 artifact hashes and 12,042 tracked source files verified. PB50 is built only; Lexus acceptance remains pending. Post-repair PB49 filesystem passed; protected files verified and music inventory/size/mtime unchanged, without a full music checksum scan.

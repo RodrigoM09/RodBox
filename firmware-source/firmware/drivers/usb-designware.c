@@ -720,6 +720,7 @@ static uint8_t iso_complete_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_irq_logged[USB_NUM_ENDPOINTS];
 static uint8_t iso_token_irq_logged[USB_NUM_ENDPOINTS];
+static uint8_t iso_probe_logged[USB_NUM_ENDPOINTS];
 
 static int usb_dw_log_ep(int epnum, enum usb_dw_epdir epdir)
 {
@@ -1062,6 +1063,21 @@ static void usb_dw_handle_token_mismatch(void)
 }
 #endif /* USB_DW_SHARED_FIFO */
 
+/* Capture the endpoint before recovery's SNAK/EPDIS changes its state.
+ * Bounded snapshots do not enable interrupts or alter transfer handling. */
+static void usb_dw_log_iso_recovery(int ep)
+{
+    if (iso_probe_logged[ep] >= ISO_LOG_MAX)
+        return;
+    iso_probe_logged[ep]++;
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 8,
+            DWC_DIEPCTL(ep), DWC_DIEPINT(ep));
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 9,
+            DWC_DIEPMSK, DWC_DAINTMSK);
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 10,
+            (DWC_DSTS >> 8) & 0x3fff, DWC_GINTSTS);
+}
+
 /* A missed periodic IN transfer does not produce XFRC. Disable only its
  * endpoint; handle the request after hardware confirms EPDISD. Classic may
  * re-prime an untouched first packet a bounded number of times; otherwise
@@ -1093,6 +1109,7 @@ static void usb_dw_incomplete_iso_in(void)
              ((((DWC_DSTS >> 8) & 0x3fff) - deadline) & 0x3fff) < 0x2000) &&
             ((ctl >> 18) & 3) == EPTYP_ISOCHRONOUS)
         {
+            usb_dw_log_iso_recovery(ep);
             iso_recovering[ep] = true;
             DWC_DIEPCTL(ep) = ctl | SNAK | EPDIS;
         }
@@ -1619,6 +1636,7 @@ void usb_drv_reset_endpoint(int endpoint, bool send)
         iso_target_frame[epnum] = 0;
         iso_irq_logged[epnum] = 0;
         iso_token_irq_logged[epnum] = 0;
+        iso_probe_logged[epnum] = 0;
     }
     usb_dw_target_enable_irq();
 }
@@ -2576,6 +2594,7 @@ void usb_drv_ep_init(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
     if (epdir == USB_DW_EPDIR_IN) {
         iso_irq_logged[epnum] = 0;
         iso_token_irq_logged[epnum] = 0;
+        iso_probe_logged[epnum] = 0;
     }
     usb_log(USB_LOG_EP_INIT, ep, type, mps, DWC_EPCTL(epnum, epdir));
 
