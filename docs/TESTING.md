@@ -128,3 +128,7 @@ not a working metadata handler. No audio-endpoint hardware recovery is claimed.
 ## PB40 publication verification
 
 Ten focused suites cover ISO recovery/service intervals, first-token dispatch, endpoint ownership, batch failure and stop/restart, playback/rate parsing, serialized sample-rate transactions, track notifications, metadata wire format, filtered metadata and artwork times. Tests use mocked hardware and cannot establish Lexus audio compatibility. PB40 installation verified 42 firmware files, database/artwork structure and filesystem cleanliness; music inventory/size/mtime stayed unchanged. No full music checksum was repeated.
+
+## PB42
+
+Eleven focused suites passed. The first-packet harness exercises production startup code over all 16,384 frame positions, verifies DMA length/buffer ownership, generic-target behavior and bulk exclusion, and reproduces the PB40 failure. Existing failure-flood, stop/restart, rate-transaction and metadata tests remain passing. Native ipod6g/64MB core and codecs build passed. These tests are not proof of in-car sound or live track updates.

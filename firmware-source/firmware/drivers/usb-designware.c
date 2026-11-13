@@ -771,6 +771,17 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
          * buffer owned but unarmed until an actual IN token supplies it. */
         if (epdir == USB_DW_EPDIR_IN && !iso_synced[epnum])
         {
+#if CONFIG_CPU == S5L8702
+            /* The Classic's observed 2.60a core never raises the disabled-
+             * endpoint token event in our DMA setup. Prime a real packet
+             * in the next microframe instead of leaving EPENA clear forever.
+             * Failed completions still stop the batch pump; no IRQ retry. */
+            iso_waiting_token[epnum] = false;
+            iso_synced[epnum] = true;
+            iso_target_frame[epnum] = (((DWC_DSTS >> 8) & 0x3fff) + 1) & 0x3fff;
+            usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 3,
+                    iso_target_frame[epnum], DWC_GSNPSID);
+#else
             iso_waiting_token[epnum] = true;
             DWC_DIEPINT(epnum) = NAKINTRPT | ITTXFE;
             usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 0,
@@ -779,6 +790,7 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
                 (DWC_DIEPCTL(epnum) & ~(EPENA | EPDIS | SETD0PIDEF | SETD1PIDOF)) |
                 CNAK;
             return;
+#endif
         }
         uint32_t phase = epdir == USB_DW_EPDIR_IN ?
             ((iso_target_frame[epnum] & 1) ? SETD1PIDOF : SETD0PIDEF) :

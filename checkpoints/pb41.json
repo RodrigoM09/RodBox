@@ -1,6 +1,6 @@
 {
   "checkpoint": "pb41",
-  "status": "prepared source candidate",
+  "status": "source checkpoint; host helpers and tests only",
   "firmware_base": "PB40 / rodbox-pb40-restart-261103",
   "firmware_source_changed": false,
   "firmware_image_built": false,

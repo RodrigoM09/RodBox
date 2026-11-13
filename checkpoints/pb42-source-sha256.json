@@ -1,0 +1,10 @@
+{
+  "firmware-source/firmware/drivers/usb-designware.c": {
+    "bytes": 79628,
+    "sha256": "f2e8af589f3e9c64360caf58522055b58340f7aeefb5dc1b060a9a9ec00b91a9"
+  },
+  "firmware-source/apps-ipod/system/usb_log_file.c": {
+    "bytes": 34217,
+    "sha256": "760d7dad7d7515b3cbc8ef265058fe213376ec73084da90c8671a5b51a3d0273"
+  }
+}

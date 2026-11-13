@@ -79,3 +79,9 @@ advancing timer; metadata/artwork command support is incomplete. See
 - PB40: cancel the pending audio endpoint on stop, permit restart after failure, serialize/coalesce rate requests, correlate acknowledgements and unify timeout cleanup. Installed and verified; in-car acceptance pending.
 
 Each checkpoint was reconstructed from its saved cumulative patch and matched to recorded source hashes before publication. The ten focused PB40 suites were rerun on the restored checkout. Native compilation and installation results are from the original build/install records, not new device tests.
+
+## PB41–PB42
+
+PB41 corrects root-level artwork paths in the companion health report and permits an explicit compiler for playlist harnesses. Seven health tests, 21 guard cases and 50,000 differential cases passed.
+
+PB42 addresses the PB40 trace in which endpoint 81 waited indefinitely with EPENA clear. The S5L8702 first packet is now armed directly; other targets retain token synchronization. Eleven focused suites passed, including a startup regression that fails on PB40. The native core and 40 codecs built and passed image/source/hash verification. Lexus playback acceptance remains pending.

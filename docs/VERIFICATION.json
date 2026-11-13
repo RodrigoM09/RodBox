@@ -60,7 +60,7 @@
       "PB31 analysis hardware acceptance pending"
     ]
   },
-  "latest_checkpoint": "PB40",
+  "latest_checkpoint": "PB42",
   "pb40_publication": {
     "source_hashes_verified": true,
     "focused_suites_passed": 10,
@@ -68,5 +68,21 @@
     "installed_and_verified": true,
     "lexus_hardware_acceptance": "pending",
     "full_music_checksum_repeated": false
+  },
+  "pb42_publication": {
+    "checkpoint": "pb42",
+    "version": "rodbox-pb42-first-packet-261112",
+    "target": "ipod6g / S5L8702 / 64 MB",
+    "native_build": "passed",
+    "focused_suites_passed": 11,
+    "regression_fails_pb40_passes_pb42": true,
+    "installed": true,
+    "firmware_files_verified": 42,
+    "filesystem_check_passed": true,
+    "usb_logging_enabled": true,
+    "music_files_written": false,
+    "full_music_checksum_repeated": false,
+    "hardware_acceptance": "pending reboot and Lexus test",
+    "core_sha256": "24dad46185b132c5c2a1588f3e38d696bbedc91bff744b59abeaf2fbe733f5ed"
   }
 }
