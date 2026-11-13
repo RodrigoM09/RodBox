@@ -22,12 +22,16 @@ pre=r"""
 #define SNAK (1u<<27)
 #define XFRC 1
 #define EPDISD 2
+#define TOC 8
+#define AHBERR 4
 #define IISOIXFR (1u<<20)
 #define TXFFLSH 1
 #define USB_LOG_ISO_ERROR 0
 #define ISO_LOG_MAX 8
 static unsigned iso_errors_logged[4][2];
-#define usb_log(...) ((void)0)
+#define USB_LOG_ISO_STATE 1
+static unsigned retry_logs, incomplete_logs;
+#define usb_log(t,e,b,c,d) do { if ((t)==1 && (b)==4) retry_logs++; if ((t)==1 && (b)==5) incomplete_logs++; } while(0)
 #define usb_dw_log_iso_recovery(ep) ((void)0)
 static unsigned regs_ctl[4],ints[4],DWC_GINTSTS,DWC_DSTS,DWC_DAINTMSK=15;
 static uint16_t iso_target_frame[4];
@@ -79,21 +83,31 @@ int main(void){
   usb_dw_incomplete_iso_in();finish(1,EPDISD);
  }
  assert(iso_errors_logged[1][1]==ISO_LOG_MAX);
- /* Fresh untouched packet: at most eight re-arms, same ownership,
-    opposite parity, no semaphore or completion until exhausted. */
- iso_prime_complete[1]=false;iso_prime_retries[1]=0;sizes[1]=1u<<19; /* DMA fully loaded, packet still unsent: PB43 rejected this */
+ /* Host startup may exceed eight attempts. Retain the same packet for
+    10000 service windows without completion, new PCM or counter wrap. */
+ iso_prime_complete[1]=false;iso_prime_retries[1]=0;sizes[1]=1u<<19;
  unsigned before=completed, releases=released;
- for(unsigned n=0;n<9;n++){
+ retry_logs=incomplete_logs=0;
+ for(unsigned n=0;n<10000;n++){
   endpoints[1].busy=true;iso_recovering[1]=true;iso_synced[1]=true;
   unsigned parity=iso_target_frame[1]&1;
-  finish(1,EPDISD|XFRC);
-  if(n<8){assert(endpoints[1].busy&&completed==before&&released==releases);assert((iso_target_frame[1]&1)!=parity);}
+  finish(1,EPDISD);
+  assert(endpoints[1].busy&&completed==before&&released==releases);
+  assert((iso_target_frame[1]&1)!=parity);
+  assert(iso_prime_retries[1]<=ISO_LOG_MAX);
  }
- assert(rearms==8&&completed==before+1);
- /* Established streams never enter the priming retry path. */
- iso_prime_complete[1]=true;iso_prime_retries[1]=0;
- endpoints[1].busy=true;iso_recovering[1]=true;finish(1,EPDISD);
- assert(rearms==8&&completed==before+2);
+ assert(rearms==10000&&iso_prime_retries[1]==ISO_LOG_MAX);
+ assert(retry_logs==ISO_LOG_MAX&&incomplete_logs==ISO_LOG_MAX);
+ /* Stop, hardware faults, delivered packets and established-stream loss
+    must not enter the startup retry path. */
+ for(unsigned mode=0;mode<5;mode++){
+  endpoints[1].active=mode!=0;endpoints[1].busy=true;
+  iso_prime_complete[1]=mode==1;iso_recovering[1]=true;
+  sizes[1]=mode==2?0:1u<<19;
+  finish(1,EPDISD|(mode==3?TOC:mode==4?AHBERR:0));
+  assert(rearms==10000&&completed==before+mode+1);
+ }
+ endpoints[1].active=true;
  /* Unknown HS phase must survive every early microframe, including wrap.
     Same endpoint remains armed until the entire advertised interval elapses. */
  iso_prime_complete[1]=false;iso_synced[1]=true;ints[1]=0;

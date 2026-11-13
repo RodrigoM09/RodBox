@@ -1,0 +1,17 @@
+{
+  "checkpoint": "pb51",
+  "version": "rodbox-pb51-startup-wait-261113",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "native_build": "passed",
+  "usb_test_scripts_passed": 30,
+  "regression_fails_pb50_passes_pb51": true,
+  "firmware_files": 42,
+  "changed_source_files_matched": 1,
+  "source_baseline": "PB50 previously verified full tree; PB51 incremental driver checked",
+  "image_checksum_valid": true,
+  "installed": false,
+  "device_writes": false,
+  "music_files_written": false,
+  "hardware_acceptance": "pending; host startup delay remains a hypothesis",
+  "core_sha256": "d34b646543322bb768ae0d0528aa250c3f5a6a22ff1aa7a94bbf4d0222c49e92"
+}

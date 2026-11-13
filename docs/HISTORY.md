@@ -117,3 +117,7 @@ PB48 exposed exhausted state surviving idle endpoint reset and disable/NAK-effec
 ## PB50
 
 PB49 recorded zero audio completions across 36 retries. PB50 captures successful stream alternate settings and bounded endpoint/mask/frame snapshots before recovery. Scheduling is unchanged; this is a diagnostic build, not a confirmed fix. The separately approved two-orphan repair passed without formatting or music writes.
+
+## PB51
+
+PB50 still produced no audio. PB51 removes the eight-attempt terminal startup failure for the same unsent first packet, while preserving stream cancellation, error exclusions and bounded logging. Host readiness delay is a hypothesis; Lexus playback is unverified. No device writes or installation.

@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB50** (`rodbox-pb50-audio-probe-261112`). Adds bounded stream/recovery diagnostics after PB49 still delivered no Lexus audio. All 30 USB test scripts and native build verification passed. **Built, not installed; audio remains unresolved.** See [PB50](docs/PB50-AUDIO-PROBE.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB51** (`rodbox-pb51-startup-wait-261113`). Keeps an unsent initial USB audio packet pending instead of permanently stopping after eight attempts; PCM ownership and bounded logging are preserved. All 30 USB tests and native build verification passed. **Built, not installed; Lexus playback remains unverified.** See [PB51](docs/PB51-STARTUP-WAIT.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

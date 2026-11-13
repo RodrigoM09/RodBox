@@ -776,8 +776,8 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
-        /* Generic cores synchronize on a token; Classic primes a bounded
-         * sequence of attempts without releasing the first PCM buffer. */
+        /* Generic cores synchronize on a token; Classic keeps an unsent
+         * first packet pending without releasing its PCM buffer. */
         if (epdir == USB_DW_EPDIR_IN && !iso_synced[epnum])
         {
 #if CONFIG_CPU == S5L8702
@@ -1080,7 +1080,7 @@ static void usb_dw_log_iso_recovery(int ep)
 
 /* A missed periodic IN transfer does not produce XFRC. Disable only its
  * endpoint; handle the request after hardware confirms EPDISD. Classic may
- * re-prime an untouched first packet a bounded number of times; otherwise
+ * re-prime an untouched first packet while the stream remains active; otherwise
  * the batch layer stops until an explicit stream restart.
  * Never touch EP0/storage. */
 static void usb_dw_incomplete_iso_in(void)
@@ -1174,14 +1174,19 @@ static void usb_dw_iepint(int ep)
         /* Read before flushing: XFRSIZ tracks DMA-to-FIFO progress, not
          * packets delivered on the bus (see usb_dw_bytes_in_txfifo). */
         uint32_t remaining = DWC_EPTSIZ(ep, USB_DW_EPDIR_IN);
-        usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 5, remaining, d->req_size);
+        if (iso_prime_retries[ep] < ISO_LOG_MAX || iso_prime_complete[ep])
+            usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 5, remaining, d->req_size);
 #endif
         usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
 #if CONFIG_CPU == S5L8702
-        /* Try both frame parities, bounded to eight re-arms. Never replay a
-         * transmitted packet or consume another PCM buffer. Hardware must
-         * acknowledge disable before its FIFO and DMA can be reused. */
-        if (d->busy && !iso_prime_complete[ep] && iso_prime_retries[ep] < 8 &&
+        /* A host may select the stream before it starts polling. Keep the
+         * SAME unsent first packet pending until delivery or stream stop;
+         * eight missed slots are not a permanent transport failure.
+         * Only one recovery per service window, after confirmed disable.
+         * Never replay delivered/partially delivered packets, advance PCM,
+         * or retry hardware errors. Diagnostic counters saturate. */
+        if (d->active && d->busy && !iso_prime_complete[ep] &&
+            !(epints & (TOC | AHBERR)) &&
             d->req_size > 0 &&
             d->req_size <= usb_dw_maxpktsize(ep, USB_DW_EPDIR_IN) &&
             ((remaining >> 19) & 0x3ff) == 1)
@@ -1190,9 +1195,12 @@ static void usb_dw_iepint(int ep)
             if ((next & 1) == (iso_target_frame[ep] & 1))
                 next = (next + 1) & 0x3fff;
             iso_target_frame[ep] = next;
-            iso_prime_retries[ep]++;
-            usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 4,
-                    iso_target_frame[ep], iso_prime_retries[ep]);
+            if (iso_prime_retries[ep] < ISO_LOG_MAX)
+            {
+                iso_prime_retries[ep]++;
+                usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 4,
+                        iso_target_frame[ep], iso_prime_retries[ep]);
+            }
             usb_dw_epstart(ep, USB_DW_EPDIR_IN, d->req_addr, d->req_size);
             return; /* discard stale XFRC from the cancelled attempt */
         }

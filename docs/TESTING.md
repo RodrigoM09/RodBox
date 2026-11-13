@@ -164,3 +164,7 @@ All 29 USB scripts passed. The real endpoint reset regression fails against PB48
 ## PB50
 
 All 30 USB scripts passed, including production snapshot payload/bounds/no-register-write tests under ASan/UBSan and reset-budget checks. Native image checksum, 42 artifact hashes and 12,042 tracked source files verified. PB50 is built only; Lexus acceptance remains pending. Post-repair PB49 filesystem passed; protected files verified and music inventory/size/mtime unchanged, without a full music checksum scan.
+
+## PB51
+
+All 30 USB scripts passed. The production startup regression fails on PB50 and passes on PB51 for 10,000 missed service windows, same-buffer ownership, bounded logs/counters, fault and cancellation exclusions. ASan/UBSan, native build, image checksum, 42 artifact hashes and changed-source comparison passed against the previously verified PB50 baseline. Hardware testing remains pending.
