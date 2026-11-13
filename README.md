@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest experimental source checkpoint: **PB43** (`rodbox-pb43-bounded-prime-261112`). PB42's Lexus test reached the first packet but every attempt failed with zero bytes. PB43 adds bounded same-buffer first-packet recovery and successful-frame resynchronization. All 24 USB test scripts, native build and installation verification passed; filesystem clean and USB logging retained. **Lexus audio and live track updates still require hardware acceptance.** See [PB43](docs/PB43-bounded-first-packet.md) and [history](docs/HISTORY.md).
+Latest experimental source checkpoint: **PB44** (`rodbox-pb44-retry-log-261112`). Uses packet count rather than DMA byte count for bounded first-packet retries, and checks USB log persistence with log-only allocation reconciliation. All 25 USB test scripts and native build verification passed. **Built, not installed; Lexus audio remains unverified.** See [PB44](docs/PB44-RETRY-LOG.md) and [history](docs/HISTORY.md).
 
 `main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

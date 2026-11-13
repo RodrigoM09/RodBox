@@ -322,6 +322,7 @@ static void format_entry(const struct usb_log_entry *e, uint64_t us,
             break;
         case USB_LOG_ISO_STATE:
             snprintf(p, size, "iso ep %02x %s: %08lx %08lx", e->a,
+                     e->b == 5 ? "incomplete; size-reg/request" :
                      e->b == 4 ? "re-prime; frame/attempt" :
                      e->b == 3 ? "primed; frame/core" :
                      e->b == 2 ? "completed; bytes/frame" :
@@ -678,6 +679,7 @@ void usb_log_file_write(void)
     struct usb_log_entry e;
     char line[112];
     int fd, audio_fd = -1;
+    bool written_ok = true;
 
     /* The log's lock is held from open to close: the screen writes from the
      * UI thread and the writer from its own, and neither may append lines
@@ -699,7 +701,11 @@ void usb_log_file_write(void)
         if (!usb_log_read(seq, &e))
             continue;
         format_entry(&e, widen_us(e.us), line, sizeof line);
-        fdprintf(fd, "%s\n", line);
+        if (fdprintf(fd, "%s\n", line) != (int)strlen(line) + 1)
+        {
+            written_ok = false;
+            break;
+        }
         /* Database enumeration can rotate the main log in seconds. Keep
          * bounded stream events independently, using the same safe writer. */
         if (e.type == USB_LOG_ISO_STATE || e.type == USB_LOG_ISO_XFER ||
@@ -710,11 +716,26 @@ void usb_log_file_write(void)
             e.type == USB_LOG_BUS_RESET)
         {
             if (audio_fd < 0) audio_fd = debug_log_open(DEBUG_LOG_USB_AUDIO);
-            if (audio_fd >= 0) fdprintf(audio_fd, "%s\n", line);
+            if (audio_fd < 0 ||
+                fdprintf(audio_fd, "%s\n", line) != (int)strlen(line) + 1)
+            {
+                written_ok = false;
+                break;
+            }
         }
     }
-    if (audio_fd >= 0) debug_log_close(DEBUG_LOG_USB_AUDIO, audio_fd);
-    usb_log_set_written(head);
+    if (audio_fd >= 0)
+    {
+        if (debug_log_sync(DEBUG_LOG_USB_AUDIO, audio_fd) < 0)
+            written_ok = false;
+        debug_log_close(DEBUG_LOG_USB_AUDIO, audio_fd);
+    }
+    if (debug_log_sync(DEBUG_LOG_USB, fd) < 0)
+        written_ok = false;
+    /* Publish while holding the log lock, only after durable writes. A
+     * failure may duplicate lines on retry, but must not lose the evidence. */
+    if (written_ok)
+        usb_log_set_written(head);
     debug_log_close(DEBUG_LOG_USB, fd);
 }
 

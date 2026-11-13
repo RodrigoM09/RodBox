@@ -43,6 +43,7 @@ static bool iso_recovering[4],iso_synced[4],iso_waiting_token[4];
 static unsigned flushed,released,completed,last_ep;
 static struct usb_dw_ep* usb_dw_get_ep(int ep,int dir){assert(dir==1);return &endpoints[ep];}
 
+static unsigned usb_dw_maxpktsize(int ep,int dir){(void)ep;(void)dir;return 192;}
 static void usb_dw_epstart(int e,int dir,void *buf,unsigned size){assert(dir==1&&buf==endpoints[e].req_addr&&size==endpoints[e].req_size);rearms++;}
 static void usb_dw_flush_fifo(int f,int ep){assert(f==TXFFLSH);flushed++;last_ep=ep;}
 static void semaphore_release(int*p){(void)p;released++;}
@@ -51,7 +52,7 @@ static void complete_transfer(int ep,int dir,int status,int n){assert(dir==128&&
 main=r"""
 int main(void){
  for(int e=0;e<4;e++){endpoints[e]=(struct usb_dw_ep){true,true,0,0,0,192};regs_ctl[e]=EPENA|(1u<<18);}
- sizes[1]=0; /* partial transfers must fail, never replay */
+ sizes[1]=0; /* packet count zero: never replay */
  regs_ctl[2]=EPENA|(2u<<18); /* storage/bulk */
  ints[3]=XFRC; /* finished packet must not be cancelled */
  iso_synced[1]=true;iso_target_frame[1]=108;DWC_DSTS=102u<<8;
@@ -75,7 +76,7 @@ int main(void){
  assert(iso_errors_logged[1][1]==ISO_LOG_MAX);
  /* Fresh untouched packet: at most eight re-arms, same ownership,
     opposite parity, no semaphore or completion until exhausted. */
- iso_prime_complete[1]=false;iso_prime_retries[1]=0;sizes[1]=192;
+ iso_prime_complete[1]=false;iso_prime_retries[1]=0;sizes[1]=1u<<19; /* DMA fully loaded, packet still unsent: PB43 rejected this */
  unsigned before=completed, releases=released;
  for(unsigned n=0;n<9;n++){
   endpoints[1].busy=true;iso_recovering[1]=true;iso_synced[1]=true;

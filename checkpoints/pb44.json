@@ -1,0 +1,16 @@
+{
+  "checkpoint": "pb44",
+  "version": "rodbox-pb44-retry-log-261112",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "native_build": "passed",
+  "usb_test_scripts_passed": 25,
+  "firmware_files": 42,
+  "tracked_source_files_matched": 12042,
+  "image_checksum_valid": true,
+  "installed": false,
+  "device_writes": false,
+  "music_files_written": false,
+  "filesystem_repaired": false,
+  "hardware_acceptance": "pending",
+  "core_sha256": "23c5549cb95cf93ea0e85f4208ef21f64cf65dcc2dc2e13e9bdf9f46671f9f7b"
+}

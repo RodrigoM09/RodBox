@@ -1118,13 +1118,21 @@ static void usb_dw_iepint(int ep)
     {
         struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
         iso_recovering[ep] = false;
+#if CONFIG_CPU == S5L8702
+        /* Read before flushing: XFRSIZ tracks DMA-to-FIFO progress, not
+         * packets delivered on the bus (see usb_dw_bytes_in_txfifo). */
+        uint32_t remaining = DWC_EPTSIZ(ep, USB_DW_EPDIR_IN);
+        usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 5, remaining, d->req_size);
+#endif
         usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
 #if CONFIG_CPU == S5L8702
         /* Try both frame parities, bounded to eight re-arms. Never replay a
-         * partial DMA packet or consume another PCM buffer. Hardware must
+         * transmitted packet or consume another PCM buffer. Hardware must
          * acknowledge disable before its FIFO and DMA can be reused. */
         if (d->busy && !iso_prime_complete[ep] && iso_prime_retries[ep] < 8 &&
-            (DWC_EPTSIZ(ep, USB_DW_EPDIR_IN) & 0x7ffff) == d->req_size)
+            d->req_size > 0 &&
+            d->req_size <= usb_dw_maxpktsize(ep, USB_DW_EPDIR_IN) &&
+            ((remaining >> 19) & 0x3ff) == 1)
         {
             unsigned next = (((DWC_DSTS >> 8) & 0x3fff) + 1) & 0x3fff;
             if ((next & 1) == (iso_target_frame[ep] & 1))

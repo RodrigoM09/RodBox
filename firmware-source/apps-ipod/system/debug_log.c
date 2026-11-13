@@ -260,6 +260,22 @@ int debug_log_open(enum debug_log_id id)
     return fd;
 }
 
+/* Reconcile only USB diagnostic chains, never media files. Commit buffered
+ * data before trimming to logical EOF, then publish the resulting metadata.
+ * Call with the per-log lock held. Preserve errors for the ring consumer. */
+int debug_log_sync(enum debug_log_id id, int fd)
+{
+    if (fsync(fd) < 0)
+        return -1;
+    if (id == DEBUG_LOG_USB || id == DEBUG_LOG_USB_AUDIO)
+    {
+        off_t size = ffilesize(fd);
+        if (size < 0 || ftruncate(fd, size) < 0 || fsync(fd) < 0)
+            return -1;
+    }
+    return 0;
+}
+
 void debug_log_close(enum debug_log_id id, int fd)
 {
     close(fd);

@@ -89,3 +89,7 @@ PB42 addresses the PB40 trace in which endpoint 81 waited indefinitely with EPEN
 ## PB43
 
 PB42 hardware testing recorded three immediate zero-byte failures and no successful audio completions; its filesystem remained clean. PB43 adds bounded same-buffer startup recovery after endpoint-disable acknowledgement, alternates timing parity, clears stale disable state, and anchors subsequent scheduling to successful completion. Partial transfers and established-stream errors retain fail-stop behavior. Lexus acceptance remains pending.
+
+## PB44
+
+PB43 hardware testing still showed no audio completions or retries and found excess usb.log allocation. PB44 corrects retry eligibility to use unsent packet count, records the raw register, and commits/reconciles USB diagnostic files before consuming ring entries. Built and tested only; hardware acceptance pending.

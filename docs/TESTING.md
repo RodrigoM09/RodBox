@@ -136,3 +136,7 @@ Eleven focused suites passed. The first-packet harness exercises production star
 ## PB43
 
 All 24 USB test scripts passed. Recovery tests cover eight-retry exhaustion, unchanged buffer ownership, partial-progress and established-stream rejection, deferred disable acknowledgement and stale completions. First-transfer tests cover all 16,384 frame positions and clearing the disable command. Native image checksum and all 12,042 tracked build-source files verified. Hardware audio acceptance remains pending.
+
+## PB44
+
+All 25 USB scripts passed. Production recovery harness models a FIFO-loaded packet with zero DMA bytes remaining but one unsent packet, plus retry bounds and transmitted-packet rejection. Log harness tests EOF reconciliation, non-USB exclusion, short writes, sync/truncate errors and successful retry. Native image and tracked build-source identity verified. These checks do not prove hardware acceptance.
