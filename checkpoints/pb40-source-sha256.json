@@ -1,0 +1,66 @@
+{
+  "firmware-source/apps-ipod/iap/iap-library.c": {
+    "bytes": 66797,
+    "sha256": "3521df1b944cf77e2c514093e624b057c1e22f9ad2780201bea8e3c9b7770fce"
+  },
+  "firmware-source/apps-ipod/iap/iap-library.h": {
+    "bytes": 6579,
+    "sha256": "5b6dfe4b1e0c8394e9380bbba0554803aa7e644e8a7820b729618e9dc3361a13"
+  },
+  "firmware-source/apps-ipod/system/debug_log.c": {
+    "bytes": 17845,
+    "sha256": "b96e9d8bf804592e59cee8db12bac0214d0d55cc2086d0e6ad607aaf5b40dfe6"
+  },
+  "firmware-source/apps-ipod/system/debug_log.h": {
+    "bytes": 3503,
+    "sha256": "8be9958bde15441f2b9b905291547319edab1eece932c4221dd40ab5d37f21e0"
+  },
+  "firmware-source/apps-ipod/system/usb_log_file.c": {
+    "bytes": 34161,
+    "sha256": "9a4be6408f05cad4cf561a833b81fd6e1087217e20368b3531eb735072231e87"
+  },
+  "firmware-source/firmware/drivers/usb-designware.c": {
+    "bytes": 78997,
+    "sha256": "78195e2630368aaf5f6d2b018a73036b9f6c1e7163d7e2c67e18326708ed4bef"
+  },
+  "firmware-source/firmware/export/usb-designware.h": {
+    "bytes": 12176,
+    "sha256": "5b5bdd4384c8d4169054c25fc701b7d323c0b777c2fde03621269820bac67774"
+  },
+  "firmware-source/firmware/export/usb_log.h": {
+    "bytes": 16184,
+    "sha256": "6e75e381d6324a357a5eb9e05da03b47d621de7876f39debb522e4900eb5f85b"
+  },
+  "firmware-source/firmware/usbstack/iap/audio.c": {
+    "bytes": 20714,
+    "sha256": "d1940a0d93692cac13405b442be7c6e9c707f7a00a4c136864c2066fcb13ce30"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/context.h": {
+    "bytes": 4135,
+    "sha256": "27b5498ce9aae55308c9afce5a92efb68ecc7b3aa6975ff96e820a2e14105a5a"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/iap.c": {
+    "bytes": 87095,
+    "sha256": "095b1ef10b2817962558dcfd88f7ce063e714cdb7b58526c95f6a9e88f1248f6"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/platform.h": {
+    "bytes": 6464,
+    "sha256": "8c166e65ef9cdc18040e223bc0ba31e868638ae682bce683d12a2b51260c35cc"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/span.c": {
+    "bytes": 2150,
+    "sha256": "daf7f330337f8321a52f175d3ff5e48e06d4c70b4fc07773e10994982c7f253f"
+  },
+  "firmware-source/firmware/usbstack/iap/notification.c": {
+    "bytes": 2746,
+    "sha256": "f57aab6304f91313e741dcca2e258782bacf85163bbca8af77bc69ab863014da"
+  },
+  "firmware-source/firmware/usbstack/iap/platform.c": {
+    "bytes": 30927,
+    "sha256": "489e4f98865985c5ff9559c7db303fd1cbc586cfcfdaa2d4ad27f420333b6b94"
+  },
+  "firmware-source/firmware/usbstack/usb_core.c": {
+    "bytes": 58256,
+    "sha256": "332b9f03f1ca06d3603a263d617895f10692cf43f3f913a09549b15a1b213f7e"
+  }
+}

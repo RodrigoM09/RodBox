@@ -662,6 +662,8 @@ static int batch_get_and_send(void)
 int usb_drv_batch_start(void)
 {
     logf("usb_core: batch start");
+    if(!batch_ep || !batch_get_more)
+        return -1;
     if(!batch_stopped)
         return 0;
     batch_stopped = false;
@@ -670,8 +672,14 @@ int usb_drv_batch_start(void)
 
 int usb_drv_batch_stop(void)
 {
+    /* Stop callbacks before cancelling only this stream's pending DMA.
+     * A flag alone leaves the endpoint busy across alt 0 -> alt 1. */
+    int irq = disable_irq_save();
     batch_stopped = true;
     batch_pending_length = 0;
+    restore_irq(irq);
+    if(batch_ep)
+        usb_drv_reset_endpoint(EP_NUM(batch_ep), true);
     return 0;
 }
 

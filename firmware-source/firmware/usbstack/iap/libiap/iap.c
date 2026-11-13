@@ -1205,6 +1205,8 @@ static int32_t handle_command(struct IAPContext* ctx, uint8_t lingo, uint16_t co
             response_span->ptr = NULL;
             if(request->id == IAPDigitalAudioCommandID_TrackNewAudioAttributes) {
                 check_ret(ctx->waiting_for_audio_attrs_ack, 0, "unexpected ack");
+                check_ret(ctx->handling_trans_id == ctx->audio_attrs_trans_id,
+                          0, "stale audio attributes ack");
                 ctx->waiting_for_audio_attrs_ack = iap_false;
                 iap_platform_on_audio_attrs_ack(ctx, request->status == IAPAckStatus_Success);
             }
@@ -1665,21 +1667,35 @@ static IAPBool push_active_event(struct IAPContext* ctx, struct IAPActiveEvent e
 }
 
 static IAPBool process_select_sampr(struct IAPContext* ctx, struct IAPActiveEvent* event) {
-    if(ctx->waiting_for_audio_attrs_ack) {
-        IAP_ERRORF("another sampr request pending");
-    }
-    ctx->waiting_for_audio_attrs_ack = iap_true;
+    check_ret(!ctx->waiting_for_audio_attrs_ack, iap_false);
 
     struct IAPSpan                            request_span = _iap_get_buffer_for_send_payload(ctx);
     struct IAPTrackNewAudioAttributesPayload* request      = iap_span_alloc(&request_span, sizeof(*request));
+    check_ret(request != NULL, iap_false);
     request->sample_rate                                   = swap_32(event->sampr);
     request->sound_check                                   = 0;
     request->volume_adjustment                             = 0;
-    check_ret(_iap_send_packet(ctx, IAPLingoID_DigitalAudio, IAPDigitalAudioCommandID_TrackNewAudioAttributes, _iap_next_trans_id(ctx), request_span.ptr), iap_false);
+    int32_t trans_id = _iap_next_trans_id(ctx);
+    if(!_iap_send_packet(ctx, IAPLingoID_DigitalAudio,
+                        IAPDigitalAudioCommandID_TrackNewAudioAttributes,
+                        trans_id, request_span.ptr)) {
+        iap_platform_on_audio_attrs_ack(ctx, iap_false);
+        return iap_false;
+    }
+    ctx->audio_attrs_trans_id = trans_id;
+    ctx->waiting_for_audio_attrs_ack = iap_true;
     return iap_true;
 }
 
 IAPBool iap_select_sampr(struct IAPContext* ctx, uint32_t sampr) {
+    /* Serialize acknowledged announcements; coalesce unsent rate changes. */
+    if(ctx->waiting_for_audio_attrs_ack) return iap_false;
+    for(size_t i = 0; i < array_size(ctx->active_events); i++) {
+        if(ctx->active_events[i].callback == process_select_sampr) {
+            ctx->active_events[i].sampr = sampr;
+            return iap_true;
+        }
+    }
     struct IAPActiveEvent event = {
         .callback = process_select_sampr,
         .sampr    = sampr,

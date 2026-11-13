@@ -122,6 +122,7 @@ struct IAPContext {
     IAPBool  send_busy : 1;
     IAPBool  flushing_notifications : 1;
     IAPBool  waiting_for_audio_attrs_ack : 1;
+    int32_t audio_attrs_trans_id;
 
     uint8_t phase; /* IAPPhase */
 };

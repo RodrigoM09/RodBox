@@ -82,7 +82,6 @@ static volatile unsigned int pcm_lock_count;
 static bool   accessory_ready; /* its rates accepted, so it can be told ours */
 static int8_t acked_freq; /* the rate the accessory has acked, or -1 */
 static int8_t asked_freq; /* a rate announced and not yet acked, or -1 */
-static long   asked_tick;
 /* An accessory that sets no rate on the stream within half a second of an
  * announcement plays the announced one: some never set one */
 static bool   host_set_rate = true; /* a SET_CUR since the announcement */
@@ -101,6 +100,7 @@ static long   host_rate_set_tick; /* the last SET_CUR, or authentication */
  * still hears of track changes */
 static bool   attrs_owed;
 static long   attrs_owed_tick;
+static int32_t attrs_owed_id;
 
 extern bool iap_initialized;
 
@@ -169,21 +169,24 @@ static void sink_set_freq(uint16_t freq) {
          * kept through a bus reset hears rates before the dock is back */
         return;
     }
+    struct IAPContext* ctx = _iap_acquire_ctx(true);
+    bool accepted = iap_select_sampr(ctx, RATE(freq));
+    _iap_release_ctx();
+    if(!accepted) {
+        track_changed = true; /* retry after the outstanding ack/timeout */
+        return;
+    }
     track_attrs_sent = true;
     track_changed    = false;
     host_set_rate    = false;
     announced_tick   = current_tick;
     if(freq != acked_freq) {
         asked_freq = freq;
-        asked_tick = current_tick;
     } else {
         /* back to the acked rate: an ack still owed is for another */
         asked_freq = -1;
     }
 
-    struct IAPContext* ctx = _iap_acquire_ctx(true);
-    check_act(iap_select_sampr(ctx, RATE(freq)), );
-    _iap_release_ctx();
 }
 
 static size_t calc_packet_size(unsigned long cur_sampr, uint8_t packet_count) {
@@ -344,26 +347,24 @@ void iap_audio_attrs_ack(bool success) {
 }
 
 void iap_audio_tick(void) {
-    if(asked_freq >= 0 && asked_freq == set_freq && TIME_AFTER(current_tick, asked_tick + HZ)) {
-        ERROR("no ack for rate %d, playing anyway", asked_freq);
-        acked_freq = asked_freq;
-        asked_freq = -1;
-    }
     {
         struct IAPContext* ctx = _iap_acquire_ctx(true);
         if(!ctx->waiting_for_audio_attrs_ack) {
             attrs_owed = false;
-        } else if(!attrs_owed) {
+        } else if(!attrs_owed || attrs_owed_id != ctx->audio_attrs_trans_id) {
             attrs_owed      = true;
             attrs_owed_tick = current_tick;
+            attrs_owed_id   = ctx->audio_attrs_trans_id;
         } else if(TIME_AFTER(current_tick, attrs_owed_tick + HZ)) {
             ERROR("no ack for audio attributes, notifying anyway");
             ctx->waiting_for_audio_attrs_ack = iap_false;
             attrs_owed                       = false;
+            /* Complete the same transaction in both protocol and PCM state. */
+            iap_audio_attrs_ack(true);
         }
         _iap_release_ctx();
     }
-    if(track_changed && track_attrs_sent) {
+    if(track_changed && accessory_ready) {
         sink_set_freq(set_freq);
     }
     if(set_freq >= 0 && cur_freq != set_freq && !host_set_rate &&
@@ -496,7 +497,13 @@ bool iap_audio_deinit(void) {
 
 bool iap_audio_enable(void) {
     LOG("enabled=%d", enabled);
+#ifdef USB_BATCH_NON_NATIVE
+    /* The pump may have stopped on a failed completion while the USB
+     * alternate remains enabled. Its start is idempotent while running. */
+    check_act(usb_drv_batch_start() == 0, return false);
+#else
     check_act(enabled || usb_drv_batch_start() == 0, return false);
+#endif
     enabled = true;
     return true;
 }
