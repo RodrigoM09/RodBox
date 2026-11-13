@@ -48,7 +48,7 @@ int main(int argc,char **argv) {
   seed=1664525*seed+1013904223;int pos=(int)(seed%(n+12))-8;
   if(pos==PLAYLIST_REPLACE)pos=n; /* remove-all stub is outside the movement change */
   bool started=(seed>>16)&1,cache=(seed>>17)&1,queue=(seed>>18)&1;
-  int first=n?((seed>>20)%n):0,index=n?((seed>>24)%n):-1;
+  int first=n?(int)((seed>>20)%n):0,index=n?(int)((seed>>24)%n):-1;
   struct result a,b;
   setup_case(n,started,cache,first,index);srand(42);
   snapshot(&a,add_loop(&current_playlist,"comparison",pos,queue,(test&1)?-1:91));
@@ -60,7 +60,7 @@ int main(int argc,char **argv) {
 }
 '''
 c=out/'compare_benchmark.c';c.write_text(pre+function('baseline-guard.c','add_loop')+function(str(Path(sys.argv[1]).resolve()) if len(sys.argv)>1 else '../../firmware-source/apps-ipod/playlist/playlist.c','add_block')+body)
-common=['clang','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(c),'-o',str(out/'compare_benchmark')]
+common=[os.environ.get('CC','clang'),'-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-function',str(c),'-o',str(out/'compare_benchmark')]
 subprocess.run(common+['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'],check=True)
 subprocess.run([str(out/'compare_benchmark')],check=True,env={**os.environ,'UBSAN_OPTIONS':'halt_on_error=1'})
 subprocess.run(common+['-O2'],check=True)

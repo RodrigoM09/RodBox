@@ -18,6 +18,10 @@ def load_complete(path):
         if len(r.get('sha256',''))!=64 or r.get('bytes',-1)<0:raise ValueError('Unverified inventory row')
     return data
 
+def cover(folder,name):
+    # Audio files at the library root have parent '.', whose art is just the bare name.
+    return name if folder=='.' else folder+'/'+name
+
 def build_report(device,archive,recovery=None):
     rows=device['rows'];audio=[r for r in rows if r.get('audio')]
     paths={r['relative'] for r in rows}
@@ -35,8 +39,8 @@ def build_report(device,archive,recovery=None):
     variants=[sorted(v) for v in artists.values() if len(v)>1]
     return {'status':'complete read-only report','device_root':device['root'],'archive_root':archive['root'],
             'audio_tracks':len(audio),'audio_folders':len(dirs),'missing_required_tags':missing_tags,
-            'missing_album_covers':[d for d in dirs if d+'/folder.jpg' not in paths],
-            'missing_artist_photos':[d for d in dirs if d+'/.artist/folder.jpg' not in paths],
+            'missing_album_covers':[d for d in dirs if cover(d,'folder.jpg') not in paths],
+            'missing_artist_photos':[d for d in dirs if cover(d,'.artist/folder.jpg') not in paths],
             'artist_spelling_or_case_variants':variants,
             'files_without_exact_verified_backup':[r['relative'] for r in audio if r['sha256'] not in available],
             'partial_download_artifacts':[r['relative'] for r in archive['rows'] if r['relative'].endswith('.parts')],

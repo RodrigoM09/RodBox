@@ -1,0 +1,17 @@
+{
+  "checkpoint": "pb41",
+  "status": "prepared source candidate",
+  "firmware_base": "PB40 / rodbox-pb40-restart-261103",
+  "firmware_source_changed": false,
+  "firmware_image_built": false,
+  "installed": false,
+  "companion_tests_passed": 7,
+  "playlist_guard_cases_passed": 21,
+  "playlist_differential_cases_passed": 50000,
+  "explicit_CC_test_passed": true,
+  "music_files_written": false,
+  "limits": [
+    "Host-helper/test changes only; no Lexus audio fix or acceptance claim",
+    "Native ARM toolchain/build tree unavailable in checked locations"
+  ]
+}

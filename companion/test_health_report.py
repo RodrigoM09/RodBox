@@ -27,6 +27,11 @@ class HealthTests(unittest.TestCase):
         different=json.loads(json.dumps(self.good));different['rows'][0]['sha256']='b'*64
         self.assertEqual(h.build_report(self.good,different)['files_without_exact_verified_backup'],['Album/song.flac'])
         self.assertEqual(h.build_report(self.good,different,self.good)['files_without_exact_verified_backup'],[])
+    def test_root_level_art_is_found(self):
+        d=json.loads(json.dumps(self.good));d['rows'][0]['relative']='song.flac'
+        d['rows'].extend([{'relative':'folder.jpg','bytes':1,'sha256':'c'*64},{'relative':'.artist/folder.jpg','bytes':1,'sha256':'d'*64}])
+        r=h.build_report(d,d)
+        self.assertEqual(r['missing_album_covers'],[]);self.assertEqual(r['missing_artist_photos'],[])
     def test_success_atomically_replaces_report(self):
         r=h.write_report(self.a,self.b,self.out)
         self.assertEqual(json.loads(self.out.read_text())['audio_tracks'],1)
