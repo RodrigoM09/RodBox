@@ -168,3 +168,7 @@ All 30 USB scripts passed, including production snapshot payload/bounds/no-regis
 ## PB51
 
 All 30 USB scripts passed. The production startup regression fails on PB50 and passes on PB51 for 10,000 missed service windows, same-buffer ownership, bounded logs/counters, fault and cancellation exclusions. ASan/UBSan, native build, image checksum, 42 artifact hashes and changed-source comparison passed against the previously verified PB50 baseline. Hardware testing remains pending.
+
+## PB51 user acceptance — 2026-11-14
+
+User reports Lexus USB audio works; within-album skips update track text, while cross-album/artist selections and artwork remain faulty. This is user-reported acceptance, not a new log-verified result. No post-test device inspection performed during documentation handoff.

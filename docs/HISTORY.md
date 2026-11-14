@@ -121,3 +121,7 @@ PB49 recorded zero audio completions across 36 retries. PB50 captures successful
 ## PB51
 
 PB50 still produced no audio. PB51 removes the eight-attempt terminal startup failure for the same unsent first packet, while preserving stream cancellation, error exclusions and bounded logging. Host readiness delay is a hypothesis; Lexus playback is unverified. No device writes or installation.
+
+## PB51 hardware update — 2026-11-14
+
+User confirms Lexus USB audio playback now works. Cross-album/artist metadata and changed-track artwork remain unresolved. Installation was verified; post-Lexus logs/filesystem have not yet been checked. See HANDOFF.md for continuation context.

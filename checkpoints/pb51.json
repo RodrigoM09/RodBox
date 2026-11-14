@@ -9,9 +9,20 @@
   "changed_source_files_matched": 1,
   "source_baseline": "PB50 previously verified full tree; PB51 incremental driver checked",
   "image_checksum_valid": true,
-  "installed": false,
+  "installed": true,
   "device_writes": false,
   "music_files_written": false,
-  "hardware_acceptance": "pending; host startup delay remains a hypothesis",
-  "core_sha256": "d34b646543322bb768ae0d0528aa250c3f5a6a22ff1aa7a94bbf4d0222c49e92"
+  "hardware_acceptance": "user confirms Lexus USB audio; metadata/artwork incomplete",
+  "core_sha256": "d34b646543322bb768ae0d0528aa250c3f5a6a22ff1aa7a94bbf4d0222c49e92",
+  "pb51_user_test_20261114": {
+    "date": "2026-11-14",
+    "source": "user report",
+    "usb_audio_playback": "works in Lexus",
+    "remaining": [
+      "cross-album/artist metadata stale",
+      "changed-track artwork missing"
+    ],
+    "post_lexus_log_check_performed": false,
+    "post_lexus_filesystem_check_performed": false
+  }
 }

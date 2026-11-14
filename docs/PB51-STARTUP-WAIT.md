@@ -11,3 +11,7 @@ Validation: all 30 USB scripts passed. The production recovery harness fails aga
 Reference comparison: [Linux DWC2 gadget driver](https://raw.githubusercontent.com/torvalds/linux/master/drivers/usb/dwc2/gadget.c), particularly startup token synchronization and incomplete-transfer recovery. It does not establish support for every interrupt on the Classic's older 2.60a core. PB51's retained-buffer policy is a local adaptation, not an upstream patch.
 
 Built only. No installation, filesystem repair, device write or music-file change was performed in this task. USB logging on the connected PB50 device remains enabled.
+
+## Installation and user test update — 2026-11-14
+
+PB51 was installed and verified on November 13: all 42 firmware files and the filesystem passed, USB logging remained enabled, and the iPod was safely ejected without music-file writes. On November 14 the user reported that digital USB audio now plays in the Lexus. Track information updates on skips within the initial album, but stays stale after choosing another album/artist; artwork does not update/show after changing songs. No new PB51 car logs or post-playback filesystem check were collected in this documentation task. Preserve the working audio path and investigate metadata/artwork next.
