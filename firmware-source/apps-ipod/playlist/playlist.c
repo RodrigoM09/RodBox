@@ -4069,6 +4069,11 @@ void playlist_start(int start_index, unsigned long elapsed,
 
     playlist_write_unlock(playlist);
 
+    /* A new album/artist can reuse both the old count and track index.
+     * Invalidate the accessory's cached queue before announcing its track,
+     * including directory and M3U loads which do not insert tracks singly.
+     * Keep the iAP context acquisition outside the playlist write lock. */
+    iap_on_tracks_count(playlist_amount());
     audio_play(elapsed, offset);
     audio_resume();
 }

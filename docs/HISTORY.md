@@ -125,3 +125,7 @@ PB50 still produced no audio. PB51 removes the eight-attempt terminal startup fa
 ## PB51 hardware update — 2026-11-14
 
 User confirms Lexus USB audio playback now works. Cross-album/artist metadata and changed-track artwork remain unresolved. Installation was verified; post-Lexus logs/filesystem have not yet been checked. See HANDOFF.md for continuation context.
+
+## PB52
+
+Announce completed replacement queues before playback and send queue-contents notifications before reused track indices. Refresh per-track artwork capabilities on the USB tick, including ExtendedInterface capability-change events. Convert selected display-relative indices to the same rotated queue positions used by metadata and artwork. PB51's working USB audio driver, PCM path, descriptors and codecs are unchanged. Three new production-source ASan/UBSan regressions failed before and pass after; all 33 USB scripts and the native build pass. Installed with a verified PB51 backup; all 42 firmware files, 1,372 protected files and pre/post filesystem checks passed. Music inventory/size/mtime unchanged for 2,243 files; no full music checksum repeated. Safely ejected. Lexus acceptance remains pending. See PB52-TRACK-REFRESH.md.

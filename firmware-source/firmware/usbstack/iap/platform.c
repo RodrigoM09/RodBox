@@ -642,9 +642,13 @@ IAPBool iap_platform_track_field(struct IAPContext* ctx, IAPBool database,
 
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index) {
     (void)iap_ctx;
-    /* audio_skip() locks up on an offset past the end rather than refusing it */
-    check_act(index < (uint32_t)playlist_amount(), return iap_false);
-    audio_skip((int)index - playlist_next(0));
+    /* iAP indices are display-relative, as metadata and artwork are.
+     * audio_skip() takes an offset in the underlying rotated playlist. */
+    const uint32_t count = playlist_amount();
+    check_act(index < count, return iap_false);
+    uint32_t track = index + playlist_get_first_index(NULL);
+    if(track >= count) track -= count;
+    audio_skip((int)track - playlist_next(0));
     return iap_true;
 }
 

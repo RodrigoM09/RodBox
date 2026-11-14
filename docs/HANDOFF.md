@@ -1,6 +1,16 @@
 # RodBox project handoff — 2026-11-14
 
-## Start here: current outcome and next task
+## Start here: PB52 installed; Lexus acceptance next
+
+**PB52 (`rodbox-pb52-track-refresh-261114`) is built, installed, verified and safely ejected.** All 33 USB scripts pass, including three new production-source ASan/UBSan regressions. Independent patch review found no security or logic defect. The firmware announces completed replacement queues before playback and queue invalidation before track indices, refreshes artwork capabilities on the USB tick, and fixes display-relative track selection in rotated queues. PB51's working audio driver/PCM/descriptors and all 40 codecs are unchanged. See [PB52 notes](PB52-TRACK-REFRESH.md) and `checkpoints/pb52.json`.
+
+The installation verified all 42 firmware files, backed up/read-back-verified 1,372 protected files, checked the database, 86 artist images and 765 cached images, and passed pre/post read-only filesystem checks. Music inventory, sizes and timestamps remained unchanged for 2,243 files; no full music checksum was repeated. Recovery backup: `PB51-before-PB52-20261114-103525` in the private workspace. Artifacts: `prepared-pb52/`; evidence: `PB52-build-verification.json`, `PB52-install-verification.json`, `PB52-evidence/`. Core SHA-256: `24337c5613cfa7f17412d8260ddaddd3c315be959e4938ec2208232285c42906`.
+
+The original `rodbox-community` source/Git files became unreadable with macOS Resource-deadlock errors. PB52 uses a fresh public-PB51 checkout in **`rodbox-pb52-community`**; this is the current local publication repository. Do not mistake the inaccessible original checkout for updated PB52 sources. Four changed native files matched public PB51 before editing, and the pre-build core matched PB51 exactly; the full unchanged native tree was not rehashed.
+
+Fresh PB51 logs were preserved privately and confirm ISO completions plus sustained stream-byte consumption. Main logs had rotated into database enumeration, so the actual album-change requests/subscriptions were unavailable. **PB52's Lexus display/artwork fix and continued audio are not hardware-confirmed.** Next: with Hold off, test initial album, within-album skips, another equal-sized album at the same index, another artist and art-present to art-absent transitions; then pause/resume/reconnect. Capture logs promptly before extensive browsing rotates them. No further installation, repair or music writes are authorized merely by this handoff.
+
+## PB51 background (the following sections preserve prior evidence)
 
 **PB51 now plays digital USB audio in the user's 2015 Lexus ES350 factory stereo.** This is the user's report on 2026-11-14, not a new log-confirmed or filesystem-confirmed result. Preserve this working audio path. Do not restart the investigation from the assumption that Rockbox cannot provide digital USB audio: RodBox contains substantial custom iAP/USB work.
 
@@ -10,7 +20,7 @@ Remaining user-reported behavior:
 - Album artwork does not appear/update after changing songs.
 - Do not infer a new audio failure from these display failures. Playback now works.
 
-Next step: preserve fresh PB51 logs and check the filesystem read-only when the iPod is connected with Hold off. Compare within-album skip with cross-album/cross-artist selection, including the outgoing track-change notification, current track identity, selected database category/record state, metadata response and artwork requests. Determine whether notifications, database selection and artwork use stale album/queue-relative indices. This is an investigation hypothesis, not an established diagnosis. Keep the working USB audio driver unchanged unless evidence demands otherwise. The next firmware version would be PB52; none has been built yet.
+This was the PB51 investigation starting point. The PB52 work and installation above supersede its former pending-build/log/filesystem status; the hardware display symptoms still require Lexus acceptance.
 
 ## Hardware and user constraints
 
@@ -29,7 +39,7 @@ Next step: preserve fresh PB51 logs and check the filesystem read-only when the 
 - Work/publish branch: `community`. `main` is the locked stable reference; do not merge experimental releases into main without explicit instruction.
 - PB51 source commit: `d70811c`; tag `checkpoint/pb51`.
 - PB50 source commit: `2b8533c`; tag `checkpoint/pb50`. PB49: `747c837`.
-- Installed version: `rodbox-pb51-startup-wait-261113`.
+- Previous installed version: `rodbox-pb51-startup-wait-261113`; PB52 is now installed as recorded above.
 - PB51 core SHA-256: `d34b646543322bb768ae0d0528aa250c3f5a6a22ff1aa7a94bbf4d0222c49e92`.
 - Local artifacts: `prepared-pb51/rockbox.ipod`, `rockbox-info.txt`, `codecs/` (40 codecs), `SHA256.json`, `source-sha256.json`, `PB51-from-PB50.patch`, `RECOVERY-NOTES.md`.
 - `PB51-build-verification.json` and `PB51-install-verification.json` are local authoritative build/install evidence. Public records are `checkpoints/pb51.json` and `checkpoints/pb51-source-sha256.json`.

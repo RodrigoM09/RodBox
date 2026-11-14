@@ -172,3 +172,7 @@ All 30 USB scripts passed. The production startup regression fails on PB50 and p
 ## PB51 user acceptance — 2026-11-14
 
 User reports Lexus USB audio works; within-album skips update track text, while cross-album/artist selections and artwork remain faulty. This is user-reported acceptance, not a new log-verified result. No post-test device inspection performed during documentation handoff.
+
+## PB52
+
+All 33 USB scripts pass, including three new production-source regressions for replacement-queue invalidation, wire notification order/artwork capabilities and rotated metadata/artwork/selection identity. Each new regression failed against its relevant PB51 implementation before the fix. ASan/UBSan and independent patch review pass. Native build, embedded version, ip6g checksum, four changed-source comparisons and 42 artifact hashes pass. PB51 controller/audio-path source and all 40 codecs are unchanged. The unchanged full native source tree was not rehashed; the build started from the exact known PB51 core baseline. Installed and safely ejected after verifying all 42 firmware files, 1,372 protected files, database structure, 86 artist images, 765 art-cache headers and pre/post filesystem checks. Music inventory/size/mtime remained unchanged for 2,243 files, not a full-byte music checksum. Retained PB51 logs confirm ISO completions and sustained audio but no longer include the relevant album-selection requests. Lexus PB52 acceptance remains pending; see PB52-TRACK-REFRESH.md for the in-car sequence.

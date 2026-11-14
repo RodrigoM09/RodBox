@@ -14,6 +14,7 @@ void iap_notify_track_time_position(struct IAPContext* ctx, uint32_t pos_ms) {
 
 void iap_notify_track_playback_index(struct IAPContext* ctx, uint32_t index) {
     ctx->notification_data.track_playback_index = index;
+    ctx->track_caps_pending = iap_true;
     ctx->notifications_3 |= 1 << IAPIPodStateType_TrackPlaybackIndex;
     ctx->notifications_4 |= 1 << IAPStatusChangeNotificationType_TrackIndex;
 }
@@ -21,6 +22,7 @@ void iap_notify_track_playback_index(struct IAPContext* ctx, uint32_t index) {
 void iap_notify_track_caps(struct IAPContext* ctx, uint32_t caps) {
     ctx->notification_data.track_caps = caps;
     ctx->notifications_3 |= 1 << IAPIPodStateType_TrackCaps;
+    ctx->notifications_4 |= 1 << IAPStatusChangeNotificationType_TrackCapsChanged;
 }
 
 void iap_notify_tracks_count(struct IAPContext* ctx, uint32_t count) {
@@ -74,6 +76,24 @@ void iap_notify_hold_switch_state(struct IAPContext* ctx, uint8_t state) {
 IAPBool iap_periodic_tick(struct IAPContext* ctx) {
     if(ctx->waiting_for_audio_attrs_ack) {
         return iap_true;
+    }
+
+    /* Artwork availability belongs to the new track, even when a new album
+     * reuses its queue index. Query from the USB thread, never the playback
+     * callback (which may hold playback/playlist locks). */
+    if(ctx->track_caps_pending) {
+        if(!(ctx->enabled_notifications_3 & (1 << IAPIPodStateType_TrackCaps)) &&
+           !(ctx->enabled_notifications_4 & (1 << IAPStatusChangeNotificationType_TrackCapsChanged))) {
+            ctx->track_caps_pending = iap_false;
+        } else {
+            struct IAPPlatformPlayStatus status = {0};
+            if(iap_platform_get_play_status(ctx, &status) &&
+               status.state != IAPIPodStatePlayStatus_PlaybackStopped &&
+               status.track_index == ctx->notification_data.track_playback_index) {
+                iap_notify_track_caps(ctx, status.track_caps);
+                ctx->track_caps_pending = iap_false;
+            }
+        }
     }
 
     ctx->flushing_notifications = iap_true;
@@ -137,6 +157,14 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
         goto freq_events;
     }
 
+    /* Invalidate cached queue-relative identities before sending a possibly
+     * unchanged track index from a replacement album/artist. */
+    send_notify_3(IAPIPodStatePlaybackEngineContentsPayload,
+                  IAPIPodStateType_PlaybackEngineContents,
+                  payload->count = swap_32(ctx->notification_data.tracks_count));
+    send_notify_4(IAPPlayStatusChangeNotificationPlaybackEngineContentsChangedPayload,
+                  IAPStatusChangeNotificationType_PlaybackEngineContentsChanged,
+                  payload->count = swap_32(ctx->notification_data.tracks_count));
     send_notify_3(IAPIPodStateTrackTimePositionMSecPayload,
                   IAPIPodStateType_TrackTimePositionMSec,
                   payload->position_ms = swap_32(ctx->notification_data.track_time_position_ms));
@@ -149,9 +177,6 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
     send_notify_3(IAPIPodStateTrackTimePositionSecPayload,
                   IAPIPodStateType_TrackTimePositionSec,
                   payload->position_s = swap_16(ctx->notification_data.track_time_position_ms / 1000));
-    send_notify_3(IAPIPodStatePlaybackEngineContentsPayload,
-                  IAPIPodStateType_PlaybackEngineContents,
-                  payload->count = swap_32(ctx->notification_data.tracks_count));
     send_notify_3(IAPIPodStatePlayStatusPayload,
                   IAPIPodStateType_PlayStatus,
                   payload->status = ctx->notification_data.play_status);
@@ -177,6 +202,9 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
     send_notify_4(IAPPlayStatusChangeNotificationTrackIndexPayload,
                   IAPStatusChangeNotificationType_TrackIndex,
                   payload->index = swap_32(ctx->notification_data.track_playback_index));
+    send_notify_4(IAPPlayStatusChangeNotificationTrackCapsChangedPayload,
+                  IAPStatusChangeNotificationType_TrackCapsChanged,
+                  payload->caps = swap_32(ctx->notification_data.track_caps));
     send_notify_4(IAPPlayStatusChangeNotificationTrackTimeOffsetMSecPayload,
                   IAPStatusChangeNotificationType_TrackTimeOffsetMSec,
                   payload->offset_ms = swap_32(ctx->notification_data.track_time_position_ms));
@@ -186,9 +214,6 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
     send_notify_4(IAPPlayStatusChangeNotificationTrackTimeOffsetSecPayload,
                   IAPStatusChangeNotificationType_TrackTimeOffsetSec,
                   payload->offset_s = swap_32(ctx->notification_data.track_time_position_ms / 1000));
-    send_notify_4(IAPPlayStatusChangeNotificationPlaybackEngineContentsChangedPayload,
-                  IAPStatusChangeNotificationType_PlaybackEngineContentsChanged,
-                  payload->count = swap_32(ctx->notification_data.tracks_count));
 freq_events:
     send_notify_3(IAPIPodStateVolumePayload,
                   IAPIPodStateType_Volume,
