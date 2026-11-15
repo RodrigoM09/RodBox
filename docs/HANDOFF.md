@@ -1,5 +1,15 @@
 # RodBox project handoff — 2026-11-15
 
+## Start here: PB55 accepted; separate media-integrity blocker
+
+**PB55 hardware acceptance — 2026-11-15:** the user confirms the Lexus metadata/artwork refresh issue is fixed and natural song completion was tested successfully. A separate artist-collection early-ending report reproduces as damaged source content, not a confirmed firmware regression. PB55 remains the current firmware; no PB56 was built or installed for this finding.
+
+A targeted 28-file collection check found 27 strict decoder failures, seven zeroed headers and large zero-filled spans. All 28 mounted-source files match the device by SHA-256 and reproduce the same failures. The read-only filesystem check passed. These facts establish unusable source content, not when/how it was damaged. Firmware cannot reconstruct missing audio; do not restore from the identical bad source or change the working audio pipeline to suppress errors. Obtain a different healthy original, verify it, then ask before replacing music. Raw paths, filenames, hashes and audio remain private.
+
+Current sources remain active-profile projects/rodbox-pb54 on community. Current private investigation artifacts are projects/rodbox-pb56-artifacts; PB56-STATUS.md explicitly records that no PB56 exists. PB55 package/backups remain projects/rodbox-pb55-artifacts. All 42 installed firmware files and 2,243 music inventory/size/mtime entries were unchanged during this investigation. No firmware/music writes, repair or formatting.
+
+## Historical handoff through PB55 publication (superseded)
+
 ## Start here: PB55 installed; captured Lexus UID mismatch fixed
 
 PB55 (`rodbox-pb55-lexus-uid-261115`) is built, installed, read-back verified and safely ejected. All **37 USB scripts** pass, including a captured Lexus subscription replay under ASan/UBSan with production decoding, UID/caps notifications, canonical path keys and asynchronous HID completion. Independent code review passed. **Physical PB55 Lexus acceptance remains pending; song completion was not retested on PB54.**

@@ -19,7 +19,7 @@
     "pb52": "metadata/artwork refresh unresolved per follow-up user report",
     "pb53": "audio/timer work; metadata/artwork refresh unresolved per follow-up user report",
     "pb54": "skip-refresh issue persists; natural song completion not retested",
-    "pb55": "pending Lexus test"
+    "pb55": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found"
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
@@ -67,7 +67,7 @@
     "pb54_installation": "installed/read-back verified/safely ejected",
     "pb54_hardware_acceptance": "skip-refresh issue persists; natural song completion not retested",
     "pb55_installation": "installed/read-back verified/safely ejected",
-    "pb55_hardware_acceptance": "pending Lexus test"
+    "pb55_hardware_acceptance": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found"
   },
   "latest_checkpoint": "pb55",
   "pb40_publication": {
@@ -362,7 +362,26 @@
     "formatting_performed": false,
     "repairs_performed": false,
     "safely_ejected": true,
-    "hardware_acceptance": "pending PB55 Lexus test",
+    "hardware_acceptance": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found",
     "PB54_natural_completion_physically_retested": false
+  },
+  "pb55_post_acceptance_media_investigation": {
+    "date": "2026-11-15",
+    "strict_decode_files": 28,
+    "strict_decode_failures": 27,
+    "strict_decode_successes": 1,
+    "zeroed_headers": 7,
+    "source_device_hash_matches": 28,
+    "same_failures_in_source_copy": true,
+    "filesystem_readonly_check": "passed",
+    "firmware_files_unchanged": 42,
+    "music_inventory_size_mtime_unchanged": 2243,
+    "music_files_written": false,
+    "firmware_files_written": false,
+    "full_library_checksum_repeated": false,
+    "original_content_loss_mechanism": "unknown",
+    "new_firmware_built": false,
+    "new_firmware_installed": false,
+    "blocked_on": "different verified-good source media; no speculative firmware fix"
   }
 }
