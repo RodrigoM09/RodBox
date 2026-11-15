@@ -219,6 +219,7 @@ void iap_platform_refresh_track_state(struct IAPContext* ctx) {
                            (1u << IAPIPodStateType_TrackCaps) |
                            (1u << IAPIPodStateType_PlaybackEngineContents);
     const uint32_t mask4 = (1u << IAPStatusChangeNotificationType_TrackIndex) |
+                           (1u << IAPStatusChangeNotificationType_TrackUniqueID) |
                            (1u << IAPStatusChangeNotificationType_TrackCapsChanged) |
                            (1u << IAPStatusChangeNotificationType_PlaybackEngineContentsChanged);
     if(!(ctx->enabled_notifications_3 & mask3) &&
@@ -256,6 +257,9 @@ void iap_platform_refresh_track_state(struct IAPContext* ctx) {
            (index == plt->observed_track_index && path_changed)) {
             iap_notify_tracks_count(ctx, (uint32_t)count);
         }
+        /* The Lexus requests UID/caps, not index events. Match the stable
+         * library/metadata key rather than deriving an ID from queue slots. */
+        iap_notify_track_unique_id(ctx, iap_library_key(id3.path));
         iap_notify_track_playback_index(ctx, index);
         plt->observed_track_index = index;
         plt->observed_track_count = (uint32_t)count;

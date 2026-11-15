@@ -1,3 +1,4 @@
+#include <string.h>
 #include "context.h"
 #include "endian.h"
 #include "iap.h"
@@ -17,6 +18,13 @@ void iap_notify_track_playback_index(struct IAPContext* ctx, uint32_t index) {
     ctx->track_caps_pending = iap_true;
     ctx->notifications_3 |= 1 << IAPIPodStateType_TrackPlaybackIndex;
     ctx->notifications_4 |= 1 << IAPStatusChangeNotificationType_TrackIndex;
+}
+
+void iap_notify_track_unique_id(struct IAPContext* ctx, uint64_t id) {
+    for(unsigned i = 0; i < 8; i++) {
+        ctx->notification_data.track_unique_id[i] = (uint8_t)(id >> (56 - 8 * i));
+    }
+    ctx->notifications_4 |= 1u << IAPStatusChangeNotificationType_TrackUniqueID;
 }
 
 void iap_notify_track_caps(struct IAPContext* ctx, uint32_t caps) {
@@ -170,6 +178,9 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
                   payload->count = swap_32(ctx->notification_data.tracks_count));
     /* PCM can reassert elapsed time before each asynchronous HID completion.
      * Send track identity and artwork in both lingoes before that clock. */
+    send_notify_4(IAPPlayStatusChangeNotificationTrackUniqueIDPayload,
+                  IAPStatusChangeNotificationType_TrackUniqueID,
+                  memcpy(payload->id, ctx->notification_data.track_unique_id, sizeof(payload->id)));
     send_notify_3(IAPIPodStateTrackPlaybackIndexPayload,
                   IAPIPodStateType_TrackPlaybackIndex,
                   payload->index = swap_32(ctx->notification_data.track_playback_index));

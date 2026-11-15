@@ -192,6 +192,12 @@ static uint32_t play_stage_change_notification_set_mask_to_type_mask(uint32_t ma
     if(mask & IAPStatusChangeNotificationBits_TrackTimeOffsetSec) {
         ret |= 1 << IAPStatusChangeNotificationType_TrackTimeOffsetSec;
     }
+    if(mask & IAPStatusChangeNotificationBits_TrackUniqueID) {
+        ret |= 1u << IAPStatusChangeNotificationType_TrackUniqueID;
+    }
+    if(mask & IAPStatusChangeNotificationBits_TrackCapsChanged) {
+        ret |= 1u << IAPStatusChangeNotificationType_TrackCapsChanged;
+    }
     if(mask & IAPStatusChangeNotificationBits_PlaybackEngineContentsChanged) {
         ret |= 1 << IAPStatusChangeNotificationType_PlaybackEngineContentsChanged;
     }

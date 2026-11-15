@@ -1,0 +1,9 @@
+{
+  "source": "PB54 Lexus startup log; repeated identically in two sessions",
+  "display_remote_payload_hex": "00 00 01 8d",
+  "extended_interface_payload_hex": "00 00 09 01",
+  "expected_extended_event_types": [0, 2, 3, 10, 13],
+  "track_index_requested": false,
+  "track_unique_id_requested": true,
+  "track_caps_requested": true
+}

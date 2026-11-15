@@ -1,5 +1,19 @@
 # RodBox project handoff — 2026-11-15
 
+## Start here: PB55 installed; captured Lexus UID mismatch fixed
+
+PB55 (`rodbox-pb55-lexus-uid-261115`) is built, installed, read-back verified and safely ejected. All **37 USB scripts** pass, including a captured Lexus subscription replay under ASan/UBSan with production decoding, UID/caps notifications, canonical path keys and asynchronous HID completion. Independent code review passed. **Physical PB55 Lexus acceptance remains pending; song completion was not retested on PB54.**
+
+The retained PB54 startup trace now proves the Lexus requests DisplayRemote `0x0000018d` and ExtendedInterface `0x00000901`: UID/capability events, not index events. The old request mapper dropped both requested bits and there was no UID sender. PB55 decodes them, sends the existing stable metadata UID as type `0x0A` plus eight big-endian bytes, and includes UID-only subscriptions in buffered reconciliation. No subscription is forced or music/key algorithm changed.
+
+All 42 firmware files read-back verified; only core/info replaced. 1,370 protected files backed up and verified; database and 765 cache-image structures passed; pre/post filesystem checks passed. 2,243 music entries retained inventory/size/mtime. No music writes, full-content rescan, repairs or formatting. All 40 codecs and working audio/controller/PCM/descriptors/playback sources are unchanged. Private PB54 recovery backup: `PB54-before-PB55-20261115-103146`. Core SHA-256: `fbd1b155e6b3a8d9cb91877214b72608b96ef1912cce2ae2146bb6d52fac7920`.
+
+Canonical checkout remains active-profile `projects/rodbox-pb54` on `community` (the directory name does not select the firmware). Current private artifacts/backups are `projects/rodbox-pb55-artifacts`; read PB55-STATUS.md there. Old Documents copies remain noncanonical/unreliable. See [PB55](PB55-LEXUS-UID.md), `checkpoints/pb55.json`, and the sanitized fixture `tests/usb/fixtures/lexus_notification_subscriptions.json`. Raw log/authentication/track data remains private.
+
+Next physical test: local iPod skip, another album/artist, Lexus controls, and separately let a track finish. Check title/artist/artwork and uninterrupted audio without reconnecting. Preserve resulting startup/refresh traces. Prior claims of unknown Lexus subscription were true at PB54 publication but are now superseded by the captured masks. Do not revert to speculative callback/queue-order fixes or claim natural-completion acceptance from host replay.
+
+## Historical handoff through PB54 (superseded)
+
 ## Start here: PB54 installed; Lexus acceptance pending
 
 PB54 (`rodbox-pb54-track-sync-261115`) is built, installed, read-back verified and safely ejected. All **36 USB scripts** pass, including production-source buffered-snapshot and current-track reconciliation tests under ASan/UBSan. Independent follow-up review passed after rejecting a fallback-I/O accessor before installation. USB-side identity reconciliation covers missed playback callbacks and full-path changes at reused queue indices/counts, with buffered-only metadata access and reconnect invalidation. The working PCM/controller/descriptors/playback implementation and all 40 codecs remain unchanged. **Actual Lexus metadata/artwork and continued audio acceptance remain pending.**

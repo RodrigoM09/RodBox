@@ -39,6 +39,10 @@ static bool audio_peek_buffered_track(struct mp3entry*out,int offset){assert(off
 #define strlcpy test_strlcpy
 static size_t strlcpy(char*d,const char*s,size_t n){size_t k=strlen(s);if(n){size_t c=k<n-1?k:n-1;memcpy(d,s,c);d[c]=0;}return k;}
 static uint8_t buffer[256];
+#ifndef TEST_REAL_IAP_LIBRARY_KEY
+/* This older test does not subscribe to UID; the captured-mask replay uses the real key. */
+static uint64_t iap_library_key(const char*path){(void)path;return 1;}
+#endif
 struct IAPSpan _iap_get_buffer_for_send_payload(struct IAPContext*c){(void)c;return(struct IAPSpan){buffer,sizeof buffer};}
 int32_t _iap_next_trans_id(struct IAPContext*c){return ++c->trans_id;}
 void*iap_span_alloc(struct IAPSpan*s,size_t n){if(s->size<n)return NULL;void*p=s->ptr;s->ptr+=n;s->size-=n;return p;}
