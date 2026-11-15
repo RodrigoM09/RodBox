@@ -1,6 +1,6 @@
 # Source checkpoint history
 
-All publication commits are new sanitized exports, not fabricated original commits. Every PB version has its own commit/tag. Raw private backups remain offline.
+All publication commits are new sanitized exports, not fabricated original commits. Published PB checkpoints have their own commit/tag; PB53 was an interim local build recorded retrospectively with an exact source delta, not a fabricated historical tag. Raw private backups remain offline.
 
 | Checkpoint | What changed | Evidence quality |
 | --- | --- | --- |
@@ -129,3 +129,13 @@ User confirms Lexus USB audio playback now works. Cross-album/artist metadata an
 ## PB52
 
 Announce completed replacement queues before playback and send queue-contents notifications before reused track indices. Refresh per-track artwork capabilities on the USB tick, including ExtendedInterface capability-change events. Convert selected display-relative indices to the same rotated queue positions used by metadata and artwork. PB51's working USB audio driver, PCM path, descriptors and codecs are unchanged. Three new production-source ASan/UBSan regressions failed before and pass after; all 33 USB scripts and the native build pass. Installed with a verified PB51 backup; all 42 firmware files, 1,372 protected files and pre/post filesystem checks passed. Music inventory/size/mtime unchanged for 2,243 files; no full music checksum repeated. Safely ejected. Lexus acceptance remains pending. See PB52-TRACK-REFRESH.md.
+
+## PB53 — interim local build
+
+Prioritize finite track/artwork events before continuously reasserted elapsed time. The production asynchronous HID regression failed before the change and passed after; 34 USB scripts and the native build passed. It was installed with protected-data/music checks and safe ejection. Subsequent user testing still found stale Lexus metadata on natural/iPod skips. PB53 was not separately published; its original changed C snapshot and preserved regression are reproducible from PB52 using `checkpoints/pb53-source.patch`, with a retrospective record in `checkpoints/pb53.json`.
+
+## PB54
+
+PB54 (`rodbox-pb54-track-sync-261115`) is built, installed, read-back verified and safely ejected. All **36 USB scripts** pass, including production-source buffered-snapshot and current-track reconciliation tests under ASan/UBSan. Independent follow-up review passed after rejecting a fallback-I/O accessor before installation. USB-side identity reconciliation covers missed playback callbacks and full-path changes at reused queue indices/counts, with buffered-only metadata access and reconnect invalidation. The working PCM/controller/descriptors/playback implementation and all 40 codecs remain unchanged. **Actual Lexus metadata/artwork and continued audio acceptance remain pending.**
+
+Installation verified all 42 firmware files; only core/info changed. 1,370 protected files were backed up and verified, database structures and 765 cache-image structures passed, and pre/post read-only filesystem checks passed. Inventory/size/mtime stayed unchanged for 2,243 music files; no music writes, repairs, formatting or repeated full-content scan. Private recovery backup: `PB53-before-PB54-20261115-095707`. Image SHA-256: `3a2a18cd95b50a6d4ce5fa68fdc32b7367288da505338e5eecd0f6cf1b2066d7`. The initial candidate was rejected before installation for possible playlist/tagcache lookup I/O; the final candidate uses the already-existing buffered-only accessor, checks stop during copy, and resets identity at reconnect. The exact Lexus subscription mask and missing-callback cause remain unproven. See PB54-TRACK-SYNC.md.

@@ -1,4 +1,16 @@
-# RodBox project handoff — 2026-11-14
+# RodBox project handoff — 2026-11-15
+
+## Start here: PB54 installed; Lexus acceptance pending
+
+PB54 (`rodbox-pb54-track-sync-261115`) is built, installed, read-back verified and safely ejected. All **36 USB scripts** pass, including production-source buffered-snapshot and current-track reconciliation tests under ASan/UBSan. Independent follow-up review passed after rejecting a fallback-I/O accessor before installation. USB-side identity reconciliation covers missed playback callbacks and full-path changes at reused queue indices/counts, with buffered-only metadata access and reconnect invalidation. The working PCM/controller/descriptors/playback implementation and all 40 codecs remain unchanged. **Actual Lexus metadata/artwork and continued audio acceptance remain pending.**
+
+Installation verified all 42 firmware files; only core/info changed. 1,370 protected files were backed up and verified, database structures and 765 cache-image structures passed, and pre/post read-only filesystem checks passed. Inventory/size/mtime stayed unchanged for 2,243 music files; no music writes, repairs, formatting or repeated full-content scan. Private recovery backup: `PB53-before-PB54-20261115-095707`. Image SHA-256: `3a2a18cd95b50a6d4ce5fa68fdc32b7367288da505338e5eecd0f6cf1b2066d7`.
+
+Canonical local checkout: active-profile `projects/rodbox-pb54`; private artifacts/backups: sibling `projects/rodbox-pb54-artifacts`. Documents checkouts and even newly written evidence became dataless/unreadable; originals were preserved. Do not use Git without asserting the exact repository top level. Native source remains `/private/tmp/rodbox-pb42-source/firmware-source`; scratch is temporary, not the artifact contract. The compiler was recovered outside Documents from the SHA-verified official Arm 13.2.Rel1 archive. Read [PB54 details](PB54-TRACK-SYNC.md) and `checkpoints/pb54.json` first.
+
+The user reports Lexus-button skips refresh metadata, but natural advances and iPod-button skips do not, although audio/timer follow. PB52 and PB53 did not resolve this in-car symptom. Subscription setup rotated out of retained logs, and the exact callback-loss mechanism is unproven. PB54 is a tested fallback candidate, not confirmed Lexus acceptance. Next: test natural advance, local skip, other album/artist, artwork-to-no-art and uninterrupted audio without reconnecting; preserve fresh startup/subscription traffic if still faulty. No further speculative queue-order changes without that evidence.
+
+## Historical handoff through PB52 (superseded)
 
 ## Start here: PB52 installed; Lexus acceptance next
 

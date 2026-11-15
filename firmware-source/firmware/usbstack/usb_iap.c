@@ -467,6 +467,7 @@ static int usb_iap_init_connection(void) {
         .artwork_single_report = iap_false,
         .enable_packet_dump    = iap_false,
     };
+    platform.observed_track_valid = false;
     check_act(iap_init_ctx(ctx, opts, &platform), goto cleanup_audio);
     _iap_release_ctx();
 

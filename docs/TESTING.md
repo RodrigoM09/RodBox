@@ -1,6 +1,6 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB35 Lexus findings](PB35-LEXUS-PROTOCOL.md).
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB54](PB54-TRACK-SYNC.md); PB35 findings are historical.
 
 ## Focused tests
 
@@ -176,3 +176,9 @@ User reports Lexus USB audio works; within-album skips update track text, while 
 ## PB52
 
 All 33 USB scripts pass, including three new production-source regressions for replacement-queue invalidation, wire notification order/artwork capabilities and rotated metadata/artwork/selection identity. Each new regression failed against its relevant PB51 implementation before the fix. ASan/UBSan and independent patch review pass. Native build, embedded version, ip6g checksum, four changed-source comparisons and 42 artifact hashes pass. PB51 controller/audio-path source and all 40 codecs are unchanged. The unchanged full native source tree was not rehashed; the build started from the exact known PB51 core baseline. Installed and safely ejected after verifying all 42 firmware files, 1,372 protected files, database structure, 86 artist images, 765 art-cache headers and pre/post filesystem checks. Music inventory/size/mtime remained unchanged for 2,243 files, not a full-byte music checksum. Retained PB51 logs confirm ISO completions and sustained audio but no longer include the relevant album-selection requests. Lexus PB52 acceptance remains pending; see PB52-TRACK-REFRESH.md for the in-car sequence.
+
+## PB53 / PB54
+
+PB53 added the asynchronous notification starvation regression but did not resolve the reported Lexus behavior. PB54 passes all **36 USB scripts**. Run `python3 tests/usb/test_iap_track_state_sync.py` and `python3 tests/usb/test_iap_buffered_snapshot.py` from a complete checkout with clang available and an approved scratch TMPDIR. The first compiles actual reconciliation/notification code with controlled playback state, fails on preserved PB53 and passes on PB54; the second compiles the native buffered accessor without fallback dependencies. New coverage includes unbuffered pending skips, pause/stop-during-copy, subscription/ACK gating, equal index/count replacements and connection-reset ordering. The separate production HID completion regression remains intact. These controlled seams are not a Lexus or full-device emulator.
+
+Installation verified all 42 firmware files; only core/info changed. 1,370 protected files were backed up and verified, database structures and 765 cache-image structures passed, and pre/post read-only filesystem checks passed. Inventory/size/mtime stayed unchanged for 2,243 music files; no music writes, repairs, formatting or repeated full-content scan. Private recovery backup: `PB53-before-PB54-20261115-095707`. Image SHA-256: `3a2a18cd95b50a6d4ce5fa68fdc32b7367288da505338e5eecd0f6cf1b2066d7`. Independent corrected-code review passed without independently rerunning tests. Native source hashes verify selected changed/preserved modules, not a new full-tree audit. Actual Lexus subscription mask, atomic queue/metadata snapshot and physical acceptance remain unverified.

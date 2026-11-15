@@ -23,6 +23,8 @@ IAPBool _iap_send_packet(struct IAPContext*c,uint8_t l,uint16_t cmd,int32_t tid,
  assert(sent<64&&end-buffer<=8);sizes[sent]=end-buffer;memcpy(packets[sent],buffer,end-buffer);lingoes[sent++]=l;return iap_true;
 }
 void* iap_span_alloc(struct IAPSpan*s,size_t n){if(s->size<n)return NULL;void*p=s->ptr;s->ptr+=n;s->size-=n;return p;}
+/* This regression isolates event ordering; the snapshot fallback has its own test. */
+void iap_platform_refresh_track_state(struct IAPContext*c){(void)c;}
 IAPBool iap_platform_get_play_status(struct IAPContext*c,struct IAPPlatformPlayStatus*p){(void)c;queries++;*p=status;return status_ok;}
 static void drain(struct IAPContext*c){for(int n=0;n<40;n++)assert(iap_periodic_tick(c));}
 static unsigned find(unsigned start,unsigned l,unsigned type){for(unsigned n=start;n<sent;n++)if(lingoes[n]==l&&packets[n][0]==type)return n;return 999;}

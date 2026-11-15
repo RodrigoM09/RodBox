@@ -78,6 +78,9 @@ IAPBool iap_periodic_tick(struct IAPContext* ctx) {
         return iap_true;
     }
 
+    /* Timer callbacks alone do not establish which track is now playing. */
+    iap_platform_refresh_track_state(ctx);
+
     /* Artwork availability belongs to the new track, even when a new album
      * reuses its queue index. Query from the USB thread, never the playback
      * callback (which may hold playback/playlist locks). */
@@ -165,15 +168,23 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
     send_notify_4(IAPPlayStatusChangeNotificationPlaybackEngineContentsChangedPayload,
                   IAPStatusChangeNotificationType_PlaybackEngineContentsChanged,
                   payload->count = swap_32(ctx->notification_data.tracks_count));
-    send_notify_3(IAPIPodStateTrackTimePositionMSecPayload,
-                  IAPIPodStateType_TrackTimePositionMSec,
-                  payload->position_ms = swap_32(ctx->notification_data.track_time_position_ms));
+    /* PCM can reassert elapsed time before each asynchronous HID completion.
+     * Send track identity and artwork in both lingoes before that clock. */
     send_notify_3(IAPIPodStateTrackPlaybackIndexPayload,
                   IAPIPodStateType_TrackPlaybackIndex,
                   payload->index = swap_32(ctx->notification_data.track_playback_index));
     send_notify_3(IAPIPodStateTrackCapsPayload,
                   IAPIPodStateType_TrackCaps,
                   payload->caps = swap_32(ctx->notification_data.track_caps));
+    send_notify_4(IAPPlayStatusChangeNotificationTrackIndexPayload,
+                  IAPStatusChangeNotificationType_TrackIndex,
+                  payload->index = swap_32(ctx->notification_data.track_playback_index));
+    send_notify_4(IAPPlayStatusChangeNotificationTrackCapsChangedPayload,
+                  IAPStatusChangeNotificationType_TrackCapsChanged,
+                  payload->caps = swap_32(ctx->notification_data.track_caps));
+    send_notify_3(IAPIPodStateTrackTimePositionMSecPayload,
+                  IAPIPodStateType_TrackTimePositionMSec,
+                  payload->position_ms = swap_32(ctx->notification_data.track_time_position_ms));
     send_notify_3(IAPIPodStateTrackTimePositionSecPayload,
                   IAPIPodStateType_TrackTimePositionSec,
                   payload->position_s = swap_16(ctx->notification_data.track_time_position_ms / 1000));
@@ -199,12 +210,6 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
                   payload->minute = ctx->notification_data.time_setting.minute);
     send_notify_4(IAPPlayStatusChangeNotificationPlaybackStoppedPayload,
                   IAPStatusChangeNotificationType_PlaybackStopped, );
-    send_notify_4(IAPPlayStatusChangeNotificationTrackIndexPayload,
-                  IAPStatusChangeNotificationType_TrackIndex,
-                  payload->index = swap_32(ctx->notification_data.track_playback_index));
-    send_notify_4(IAPPlayStatusChangeNotificationTrackCapsChangedPayload,
-                  IAPStatusChangeNotificationType_TrackCapsChanged,
-                  payload->caps = swap_32(ctx->notification_data.track_caps));
     send_notify_4(IAPPlayStatusChangeNotificationTrackTimeOffsetMSecPayload,
                   IAPStatusChangeNotificationType_TrackTimeOffsetMSec,
                   payload->offset_ms = swap_32(ctx->notification_data.track_time_position_ms));

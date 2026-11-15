@@ -213,6 +213,57 @@ static bool has_art(struct Platform* plt, uint32_t index) {
     return cache == USB_LOG_IAP_ART_CACHE_OK || slot;
 }
 
+void iap_platform_refresh_track_state(struct IAPContext* ctx) {
+    struct Platform* plt = ctx->platform;
+    const uint32_t mask3 = (1u << IAPIPodStateType_TrackPlaybackIndex) |
+                           (1u << IAPIPodStateType_TrackCaps) |
+                           (1u << IAPIPodStateType_PlaybackEngineContents);
+    const uint32_t mask4 = (1u << IAPStatusChangeNotificationType_TrackIndex) |
+                           (1u << IAPStatusChangeNotificationType_TrackCapsChanged) |
+                           (1u << IAPStatusChangeNotificationType_PlaybackEngineContentsChanged);
+    if(!(ctx->enabled_notifications_3 & mask3) &&
+       !(ctx->enabled_notifications_4 & mask4)) {
+        plt->observed_track_valid = false;
+        return;
+    }
+    if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+        plt->observed_track_valid = false;
+        return;
+    }
+
+    /* Read buffered metadata only: never fall back to playlist/tagcache I/O.
+     * Recheck playback and the queue around the copy; retry transitions. */
+    const int display = playlist_get_display_index();
+    const int count = playlist_amount();
+    if(display <= 0 || display > count) {
+        return;
+    }
+    struct mp3entry id3;
+    const bool copied = audio_peek_buffered_track(&id3, 0);
+    if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+        plt->observed_track_valid = false;
+        return;
+    }
+    if(!copied || !id3.path[0] ||
+       display != playlist_get_display_index() || count != playlist_amount()) {
+        return;
+    }
+    const uint32_t index = (uint32_t)display - 1;
+    const bool path_changed = strcmp(plt->observed_track_path, id3.path) != 0;
+    if(!plt->observed_track_valid || index != plt->observed_track_index ||
+       (uint32_t)count != plt->observed_track_count || path_changed) {
+        if(!plt->observed_track_valid || (uint32_t)count != plt->observed_track_count ||
+           (index == plt->observed_track_index && path_changed)) {
+            iap_notify_tracks_count(ctx, (uint32_t)count);
+        }
+        iap_notify_track_playback_index(ctx, index);
+        plt->observed_track_index = index;
+        plt->observed_track_count = (uint32_t)count;
+        strlcpy(plt->observed_track_path, id3.path, sizeof(plt->observed_track_path));
+        plt->observed_track_valid = true;
+    }
+}
+
 IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatformPlayStatus* status) {
     struct Platform* plt = iap_ctx->platform;
 

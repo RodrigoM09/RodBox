@@ -108,6 +108,8 @@ IAPBool iap_platform_get_ipod_model_num(struct IAPContext* iap_ctx, struct IAPSp
 /* audio controls */
 uint32_t iap_platform_get_time_ms(struct IAPContext* iap_ctx);
 IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatformPlayStatus* status);
+/* Reconcile current identity on the USB thread without loading artwork. */
+void    iap_platform_refresh_track_state(struct IAPContext* iap_ctx);
 void    iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl control, struct IAPPlatformPendingControl pending);
 IAPBool iap_platform_get_volume(struct IAPContext* iap_ctx, struct IAPPlatformVolumeStatus* status);
 IAPBool iap_platform_get_power_status(struct IAPContext* iap_ctx, struct IAPPlatformPowerStatus* status);
