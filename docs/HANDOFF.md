@@ -1,5 +1,9 @@
 # RodBox project handoff — 2026-11-15
 
+## Latest approved cleanup
+
+Following explicit user approval, only the 27 verified-damaged audio files were deleted from the device. The one validated track and two cover images were hash-verified unchanged; all 2,216 remaining inventory entries retained sizes/timestamps. All 42 PB55 firmware files are unchanged. Byte-matched damaged source copies were preserved for recovery, not represented as healthy replacements. Pre/post filesystem checks passed and the device was safely ejected. The library database was not edited; run Update Now on the device to remove stale entries. No PB56 was built or installed. Current private evidence is Prince-corrupt-deletion-verification.json in projects/rodbox-pb56-artifacts. Do not retry the already-completed deletion or restore the known-bad originals.
+
 ## Start here: PB55 accepted; separate media-integrity blocker
 
 **PB55 hardware acceptance — 2026-11-15:** the user confirms the Lexus metadata/artwork refresh issue is fixed and natural song completion was tested successfully. A separate artist-collection early-ending report reproduces as damaged source content, not a confirmed firmware regression. PB55 remains the current firmware; no PB56 was built or installed for this finding.

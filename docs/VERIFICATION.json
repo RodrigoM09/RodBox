@@ -383,5 +383,19 @@
     "new_firmware_built": false,
     "new_firmware_installed": false,
     "blocked_on": "different verified-good source media; no speculative firmware fix"
+  },
+  "approved_corrupt_file_deletion": {
+    "explicit_user_approval": true,
+    "deleted_verified_corrupt_files": 27,
+    "byte_matched_damaged_recovery_copies_preserved": 27,
+    "valid_track_preserved": true,
+    "cover_images_preserved": 2,
+    "remaining_inventory_size_mtime_unchanged": 2216,
+    "firmware_files_unchanged": 42,
+    "database_modified": false,
+    "manual_database_refresh": "Update Now",
+    "filesystem_before_after": "passed",
+    "safely_ejected": true,
+    "new_firmware_built_or_installed": false
   }
 }

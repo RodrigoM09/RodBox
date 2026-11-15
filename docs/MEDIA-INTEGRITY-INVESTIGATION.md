@@ -15,3 +15,7 @@ PB55 remains installed. All 42 firmware files match the verified package; 2,243 
 ## Next step
 
 Obtain a different known-good original/rip/backup, validate full decoding and expected content before asking for a guarded replacement. Preserve current files and evidence. Do not blindly recopy the known bad originals, transcode away missing data, or conceal decoder failures. Private paths, track names, detailed hashes, logs and copyrighted audio are excluded from this repository.
+
+## Subsequently approved deletion
+
+Following explicit user approval, only the 27 verified-damaged audio files were deleted from the device. The one validated track and two cover images were hash-verified unchanged; all 2,216 remaining inventory entries retained sizes/timestamps. All 42 PB55 firmware files are unchanged. Byte-matched damaged source copies were preserved for recovery, not represented as healthy replacements. Pre/post filesystem checks passed and the device was safely ejected. The library database was not edited; run Update Now on the device to remove stale entries. No PB56 was built or installed.
