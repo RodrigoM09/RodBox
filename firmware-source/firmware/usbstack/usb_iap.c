@@ -44,7 +44,9 @@
 
 struct usb_class_driver_ep_allocation usb_iap_ep_allocs[2] = {
     /* uac input */
-    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_IN, .optional = false, .mps = 1024},
+    /* Match the descriptor and staging buffers at both bus speeds. The
+     * controller must not expect a 1024-byte packet for a 192-byte stream. */
+    {.type = USB_ENDPOINT_XFER_ISOC, .dir = DIR_IN, .optional = false, .mps = AS_PACKET_SIZE},
     /* hid input */
     {.type = USB_ENDPOINT_XFER_INT, .dir = DIR_IN, .optional = false, .mps = 64},
 };
@@ -169,7 +171,9 @@ static struct usb_as_iso_audio_endpoint ipod_audio_stream_1_endpoint = {
     .bLength          = USB_DT_ENDPOINT_AUDIO_SIZE,
     .bDescriptorType  = USB_DT_ENDPOINT,
     .bEndpointAddress = -1, /* dynamic */
-    .bmAttributes     = USB_ENDPOINT_XFER_ISOC,
+    /* PCM is generated per 1-ms USB service interval, not from an
+     * independent free-running capture clock. Advertise that clock model. */
+    .bmAttributes     = USB_ENDPOINT_XFER_ISOC | USB_ENDPOINT_SYNC_SYNC,
     .wMaxPacketSize   = AS_PACKET_SIZE,
     .bInterval        = -1, /* dynamic */
     .bRefresh         = 0,
@@ -463,6 +467,7 @@ static int usb_iap_init_connection(void) {
         .artwork_single_report = iap_false,
         .enable_packet_dump    = iap_false,
     };
+    platform.observed_track_valid = false;
     check_act(iap_init_ctx(ctx, opts, &platform), goto cleanup_audio);
     _iap_release_ctx();
 
@@ -473,6 +478,7 @@ static int usb_iap_init_connection(void) {
         ERROR("failed to claim albumart slot");
     }
     platform.control_pending = false;
+    platform.pending_button = false;
 
     /* register timer */
     timeout_register(&tick_tmo, tick_callback, HZ / 10, 0);
@@ -502,6 +508,7 @@ static int usb_iap_set_interface(int intf, int alt) {
         return -1;
     }
     stream.alt = alt;
+    usb_log(USB_LOG_ALT, intf, alt, 0, 0);
     return 0;
 }
 

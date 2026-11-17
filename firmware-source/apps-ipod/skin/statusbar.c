@@ -281,7 +281,9 @@ static void gui_statusbar_icon_battery(struct screen * display, int percent,
 
     /* Certain charge controlled targets */
     /* show graphical animation when charging instead of numbers */
-    if ((global_settings.battery_display) &&
+    /* The fixed legacy status bar has one battery cell. Combined presentation
+     * belongs to the skin; retain its icon here rather than treating 2 as 1. */
+    if ((global_settings.battery_display == BATTERY_DISPLAY_PERCENT) &&
         (charge_state != CHARGING) &&
         (percent > -1) &&
         (percent <= 100)) {

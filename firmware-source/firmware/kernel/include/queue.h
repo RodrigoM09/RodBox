@@ -162,6 +162,10 @@ extern bool queue_peek_ex(struct event_queue *q,
                           unsigned int flags,
                           const long (*filters)[2]);
 
+#ifdef HAVE_EXTENDED_MESSAGING_AND_NAME
+/* Remove one event matching both its ID and data; release its sender. */
+extern bool queue_remove_event(struct event_queue *q, long id, intptr_t data);
+#endif
 extern void queue_clear(struct event_queue* q);
 extern void queue_remove_from_head(struct event_queue *q, long id);
 extern int queue_count(const struct event_queue *q);

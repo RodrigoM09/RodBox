@@ -2,7 +2,7 @@
 No audio engine or filesystem is simulated; tests exercise playlist mutation.
 """
 from pathlib import Path
-import subprocess,re,sys
+import subprocess,re,sys,os
 out=Path(__file__).resolve().parent
 s=(Path(sys.argv[1]) if len(sys.argv)>1 else out.parents[1]/'firmware-source/apps-ipod/playlist/playlist.c').read_text()
 start=s.index('static int add_track_to_playlist_unlocked(')
@@ -82,5 +82,5 @@ int main(void) {
 }
 '''
 c=out/'guard_harness.c'; c.write_text(pre+enums+defines+'\n'+fn+tests)
-subprocess.run(['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(c),'-o',str(out/'guard_harness')],check=True)
+subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(c),'-o',str(out/'guard_harness')],check=True)
 subprocess.run([str(out/'guard_harness')],check=True)

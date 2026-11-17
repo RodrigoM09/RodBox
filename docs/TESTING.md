@@ -1,5 +1,7 @@
 # Verification and its limits
 
+The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB55](PB55-LEXUS-UID.md); PB35 findings are historical.
+
 ## Focused tests
 
 From the repository root:
@@ -10,9 +12,24 @@ python3 tests/usb/test_write_length.py firmware-source/firmware/usbstack/usb_sto
 python3 tests/usb/test_endpoints.py firmware-source/firmware/drivers/usb-designware.c
 python3 tests/playlist/test_guard.py firmware-source/apps-ipod/playlist/playlist.c
 python3 tests/playlist/test_compare_benchmark.py firmware-source/apps-ipod/playlist/playlist.c
+python3 tests/analysis/test_probe.py
+python3 tests/analysis/test_index.py
+python3 tests/analysis/test_power.py
+python3 tests/analysis/test_plug_wake.py
+python3 tests/analysis/test_usb_battery.py
+python3 tests/storage/test_usb_idle.py
+python3 tests/storage/test_sector_cache.py
 ```
 
 Host C harnesses require clang and use AddressSanitizer/UndefinedBehaviorSanitizer. External hardware services are mocked. They exercise the extracted active function bodies; they are not a USB bus, decoder or storage-device emulator. Never send deliberately malformed write traffic to a filesystem containing your music.
+
+PB19's [sector-cache regression](SECTOR-CACHE.md) uses a byte-exact mock disk
+with the real shared ATA cache/read/write region. It covers stale reads,
+neighboring-sector rollback, ambiguous failed writes, 40,000 mixed operations
+across single/multidrive configurations and native 4K access. It passes with
+ASan/UBSan; the original code and each missing-invalidation mutation fail.
+The native ipod6g build and preceding 220 ATA policy/reset executions pass.
+PB19 remains uninstalled; these are host checks, not hardware acceptance.
 
 Recorded checks: 17 USB write-length/state/residue cases; 11 endpoint/IRQ/blocking-return cases; 21 playlist guard/queue/replay/capacity cases; 50,000 old/new insertion comparisons. Companion fixtures cover interrupted/failed copies, containment, source changes, existing-file preservation and rejection of incomplete scans.
 
@@ -24,4 +41,154 @@ Back up firmware/settings/progress first. Add one isolated change; build and run
 
 Safely eject, fully restart, then check music playback, queue order, shuffle from an audiobook, headset controls and audiobook resume. Reconnect and repeat normal USB/remount/filesystem checks under the newly running firmware. Installation-time transfer checks run under the old firmware until restart; do not label them post-reboot acceptance.
 
-PB7–PB9 completed that sequence. PB10 completed host/build/install checks but post-restart physical and USB acceptance remained pending at publication. No calibrated analog-output test, noise-floor measurement, long battery comparison or comprehensive digital-dock validation was completed.
+PB7–PB10 completed that sequence. PB10's post-restart checks included 24 KiB boundary transfers and a 4 MiB transfer verified after remount, followed by read-only filesystem verification. PB11's analysis corrections pass 58 synthetic probe checks, legacy index upgrade/resume/cache tests and the native build. Its on-device analysis and playback acceptance are pending. See [NATIVE-ANALYSIS.md](NATIVE-ANALYSIS.md). No calibrated analog-output test, noise-floor measurement, long battery comparison or comprehensive digital-dock validation was completed.
+
+PB11's first scan was blocked by the qualified-charger gate. PB12 corrects that
+gate and adds battery/power visibility and the Scrim analysis icon. Seven actual
+scan-control cases and the native build pass; both Scrim files pass the current
+skin parser. Installed firmware/theme hashes pass after remount and the
+filesystem is verified. Device analysis, visual and post-restart USB checks
+remain pending; see [POWER-AND-BATTERY.md](POWER-AND-BATTERY.md).
+
+PB13 adds three battery-display modes with the existing integer layout and
+preserved graphic/numeric config tokens. Its native build and both Scrim parser
+checks pass; font metrics fit the percentage and clock in separate viewports.
+Installed mode/layout, persistence and post-restart USB checks remain pending;
+see [BATTERY-DISPLAY.md](BATTERY-DISPLAY.md).
+
+PB14 is installed with verified before/after backups after analysis completed.
+Only the core, matching information, Now Playing skin and menu order changed;
+the completed sound index and audiobook progress were preserved. Fifteen actual-helper
+input-transition cases pass ASan/UBSan and the native build passes. Physical
+charger/computer wake, normal timeout, reconnection and USB checks are pending;
+see [PLUG-IN-WAKE.md](PLUG-IN-WAKE.md).
+
+PB15's native build and 24 actual-renderer framebuffer cases pass. The USB
+header fix removes stale theme pixels while retaining the detailed footer and
+three battery modes. Physical visual and post-restart USB checks remain
+pending; see [USB-HEADER.md](USB-HEADER.md).
+
+PB16's native build and 33 actual-function scenarios in four host configurations
+pass. The storage harness mocks hardware/scheduling and explicitly excludes
+the existing error macros' signed-shift convention from UBSan. Runtime USB
+storage, playback and resume acceptance remain pending. The identified sleep
+weakness is not a proven explanation of the original corruption; see
+[USB-STORAGE-AWAKE.md](USB-STORAGE-AWAKE.md).
+
+## Cumulative durability tests
+
+From the repository root run `python3 run_audit_tests.py`. Clang/cc and Python 3 are required. The playlist guard is generated before its comparison benchmark; generated files and verification logs are ignored. Tests use synthetic inputs and mocked hardware, never an attached player. PB28 passed all 47 suites on 2026-10-30, retaining PB27's database-alignment regression and adding the unmount-reader cleanup regression. The focused publication rerun also passed. The complete PB27 library restore and full post-repair checksum pass finished successfully; subsequent cache-related orphan clusters prompted PB28. Its first restart/reconnect passed, but repeated cache/USB and long-term acceptance remain open. See [PB28 details](PB28-ARTWORK-CLEANUP.md).
+
+## Replaced-file readers during USB handover
+
+Run `python3 tests/storage/test_unmount_removed_reader.py`. With `--source-root /path/to/older/firmware-source`, the same harness reproduces the PB27 failure. It uses production callback/close code with mocked storage/bookkeeping, not a physical FAT image or complete scheduler.
+
+For device acceptance, begin with a verified clean filesystem and a backup. Exercise artwork generation/replacement and browsing, allow normal shutdown or USB handover, then verify artwork and the filesystem after reconnect. Distinguish original-image hash checks, cached-image structural checks and a full music checksum comparison; they establish different things. PB28 has one clean recorded restart/reconnect, not a completed stress campaign.
+
+## PB29 navigation acceptance
+
+PB29's native build and installation/remount firmware, artwork and filesystem checks passed. The user subsequently confirmed normal startup and both Menu paths: Music-launched Now Playing returns to the original song list, while main-menu Now Playing returns to the main menu. Later checks found diagnostic-report cross-links and duplicate directory names, investigated separately in PB30. The preceding 47-suite run belongs to PB28 and was not repeated for PB29.
+
+## PB30 directory end marker and device acceptance
+
+The following eight focused suites passed for PB30:
+
+```sh
+python3 tests/storage/test_fat_directory_end.py
+python3 tests/storage/test_fat_failure_paths.py
+python3 tests/storage/test_unmount_removed_reader.py
+python3 tests/storage/test_unmount_writer.py
+python3 tests/analysis/test_unreadable.py
+python3 tests/analysis/test_libfile_finish.py
+python3 tests/analysis/test_libfile_writes.py
+python3 tests/playback/test_tagcache_handoff.py
+```
+
+The new directory test accepts `--source /path/to/older/fat.c`; old PB29 fails its stale-record visibility assertion. It uses real insertion/name-writing functions with mocked storage, and is discovered automatically by the cumulative runner. PB30's full cumulative suite was not rerun. The focused directory test also passed from the final publication checkout.
+
+After approved recovery and PB30 installation, the user tested normal startup, playback, artwork, shutdown and restart. The read-only reconnect scan returned filesystem exit code 0: no cross-links, orphaned clusters or duplicate cache names; both diagnostic reports regenerated once. This is one successful cycle. Artwork/firmware hashes were checked at installation; the final reconnect checked the version, cache names and filesystem, without another full music checksum pass. See [PB30 details](PB30-DIRECTORY-END.md).
+
+## PB31
+
+Three focused analysis suites and the native build passed. Installation hashes and filesystem checks passed; on-device analysis acceptance is pending. See [details and limits](PB31-ANALYSIS.md).
+
+## PB32
+
+Three focused suites and native build passed. User charger-transition acceptance and firmware/database/artwork/filesystem reconnect checks passed. Full music checksums were not repeated. See [details and limits](PB32-BATTERY.md).
+
+## PB33–PB35 focused USB checks
+
+Run `python3 tests/usb/test_iap_control_reports.py`,
+`python3 tests/usb/test_iap_complete_frame.py`,
+`python3 tests/usb/test_iap_playback_rates.py`, and
+`python3 tests/usb/test_iap_track_info_layout.py`.
+All passed with ASan/UBSan. The layout test validates declarations/fixtures,
+not a working metadata handler. No audio-endpoint hardware recovery is claimed.
+
+## PB40 publication verification
+
+Ten focused suites cover ISO recovery/service intervals, first-token dispatch, endpoint ownership, batch failure and stop/restart, playback/rate parsing, serialized sample-rate transactions, track notifications, metadata wire format, filtered metadata and artwork times. Tests use mocked hardware and cannot establish Lexus audio compatibility. PB40 installation verified 42 firmware files, database/artwork structure and filesystem cleanliness; music inventory/size/mtime stayed unchanged. No full music checksum was repeated.
+
+## PB42
+
+Eleven focused suites passed. The first-packet harness exercises production startup code over all 16,384 frame positions, verifies DMA length/buffer ownership, generic-target behavior and bulk exclusion, and reproduces the PB40 failure. Existing failure-flood, stop/restart, rate-transaction and metadata tests remain passing. Native ipod6g/64MB core and codecs build passed. These tests are not proof of in-car sound or live track updates.
+
+## PB43
+
+All 24 USB test scripts passed. Recovery tests cover eight-retry exhaustion, unchanged buffer ownership, partial-progress and established-stream rejection, deferred disable acknowledgement and stale completions. First-transfer tests cover all 16,384 frame positions and clearing the disable command. Native image checksum and all 12,042 tracked build-source files verified. Hardware audio acceptance remains pending.
+
+## PB44
+
+All 25 USB scripts passed. Production recovery harness models a FIFO-loaded packet with zero DMA bytes remaining but one unsent packet, plus retry bounds and transmitted-packet rejection. Log harness tests EOF reconciliation, non-USB exclusion, short writes, sync/truncate errors and successful retry. Native image and tracked build-source identity verified. These checks do not prove hardware acceptance.
+
+## PB45
+
+All 26 USB scripts passed. Production harnesses cover late matching SET_CUR recovery, stale/invalid-rate and disabled-stream exclusions, restart failure, busy-control dispatch and retry, one-time posting, independent state changes and timeout. Existing failure-flood guards remain passing. Native firmware checksum and tracked source match verified; no device writes or installation.
+
+## PB46
+
+All 27 USB scripts passed. The packet-size regression compiles actual allocation/descriptor initializers, fails against PB45 and passes against PB46. Existing retry, rate recovery, control queue and log tests remain passing. Native firmware checksum and tracked-source match verified. No installation or device writes.
+
+## PB47
+
+All 27 USB scripts passed. Expanded production recovery tests cover 16,384 frame-counter positions, every early slot in the startup service interval, boundary expiry, wraparound and unchanged established/full-speed policy. The regression fails on PB46. Native image checksum and tracked-source identity passed; no device writes or installation.
+
+## PB48
+
+All 28 USB scripts passed. The real descriptor initializer regression fails on PB47 and passes on PB48; a production IRQ logger harness checks bounded output, token/completion indications, excluded endpoints/events and no register mutation. Native checksum and tracked-source identity verified. No device writes or installation.
+
+## PB49
+
+All 29 USB scripts passed. The real endpoint reset regression fails against PB48 and passes against PB49, including idle/busy and endpoint exclusions. Logger tests replay 0xc2 disable events and verify independently bounded token evidence after other logs saturate. Native image and source identity verified. No device writes or installation.
+
+## PB50
+
+All 30 USB scripts passed, including production snapshot payload/bounds/no-register-write tests under ASan/UBSan and reset-budget checks. Native image checksum, 42 artifact hashes and 12,042 tracked source files verified. PB50 is built only; Lexus acceptance remains pending. Post-repair PB49 filesystem passed; protected files verified and music inventory/size/mtime unchanged, without a full music checksum scan.
+
+## PB51
+
+All 30 USB scripts passed. The production startup regression fails on PB50 and passes on PB51 for 10,000 missed service windows, same-buffer ownership, bounded logs/counters, fault and cancellation exclusions. ASan/UBSan, native build, image checksum, 42 artifact hashes and changed-source comparison passed against the previously verified PB50 baseline. Hardware testing remains pending.
+
+## PB51 user acceptance — 2026-11-14
+
+User reports Lexus USB audio works; within-album skips update track text, while cross-album/artist selections and artwork remain faulty. This is user-reported acceptance, not a new log-verified result. No post-test device inspection performed during documentation handoff.
+
+## PB52
+
+All 33 USB scripts pass, including three new production-source regressions for replacement-queue invalidation, wire notification order/artwork capabilities and rotated metadata/artwork/selection identity. Each new regression failed against its relevant PB51 implementation before the fix. ASan/UBSan and independent patch review pass. Native build, embedded version, ip6g checksum, four changed-source comparisons and 42 artifact hashes pass. PB51 controller/audio-path source and all 40 codecs are unchanged. The unchanged full native source tree was not rehashed; the build started from the exact known PB51 core baseline. Installed and safely ejected after verifying all 42 firmware files, 1,372 protected files, database structure, 86 artist images, 765 art-cache headers and pre/post filesystem checks. Music inventory/size/mtime remained unchanged for 2,243 files, not a full-byte music checksum. Retained PB51 logs confirm ISO completions and sustained audio but no longer include the relevant album-selection requests. Lexus PB52 acceptance remains pending; see PB52-TRACK-REFRESH.md for the in-car sequence.
+
+## PB53 / PB54
+
+PB53 added the asynchronous notification starvation regression but did not resolve the reported Lexus behavior. PB54 passes all **36 USB scripts**. Run `python3 tests/usb/test_iap_track_state_sync.py` and `python3 tests/usb/test_iap_buffered_snapshot.py` from a complete checkout with clang available and an approved scratch TMPDIR. The first compiles actual reconciliation/notification code with controlled playback state, fails on preserved PB53 and passes on PB54; the second compiles the native buffered accessor without fallback dependencies. New coverage includes unbuffered pending skips, pause/stop-during-copy, subscription/ACK gating, equal index/count replacements and connection-reset ordering. The separate production HID completion regression remains intact. These controlled seams are not a Lexus or full-device emulator.
+
+Installation verified all 42 firmware files; only core/info changed. 1,370 protected files were backed up and verified, database structures and 765 cache-image structures passed, and pre/post read-only filesystem checks passed. Inventory/size/mtime stayed unchanged for 2,243 music files; no music writes, repairs, formatting or repeated full-content scan. Private recovery backup: `PB53-before-PB54-20261115-095707`. Image SHA-256: `3a2a18cd95b50a6d4ce5fa68fdc32b7367288da505338e5eecd0f6cf1b2066d7`. Independent corrected-code review passed without independently rerunning tests. Native source hashes verify selected changed/preserved modules, not a new full-tree audit. Actual Lexus subscription mask, atomic queue/metadata snapshot and physical acceptance remain unverified.
+
+## PB55 — captured subscription replay
+
+All **37 USB scripts** passed. `python3 tests/usb/test_iap_lexus_uid_subscription.py` reads the sanitized actual Lexus mask fixture, executes the production four-byte command branch/mapper, buffered poll, canonical key and notification/HID completion code with controlled playback/transport seams. It fails on PB54 at the dropped-bit assertion; a mapping-only correction still fails missing UID delivery; PB55 passes with ASan/UBSan. It checks exact nine-byte UID and five-byte caps payloads, metadata-key consistency/aliases, no unrequested index events, callback-free/local transitions, same-slot artist changes, no-art, stable state, pure UID subscriptions, backpressure and unsubscribe. This is not a physical car test; independent review did not rerun tests.
+
+All 42 firmware files read-back verified; only core/info replaced. 1,370 protected files backed up and verified; database and 765 cache-image structures passed; pre/post filesystem checks passed. 2,243 music entries retained inventory/size/mtime. No music writes, full-content rescan, repairs or formatting. All 40 codecs and working audio/controller/PCM/descriptors/playback sources are unchanged. Private PB54 recovery backup: `PB54-before-PB55-20261115-103146`. Core SHA-256: `fbd1b155e6b3a8d9cb91877214b72608b96ef1912cce2ae2146bb6d52fac7920`. Natural completion remains a separate physical acceptance item, not a failed/retested PB54 claim.
+
+## PB55 user acceptance / read-only content investigation
+
+**PB55 hardware acceptance — 2026-11-15:** the user confirms the Lexus metadata/artwork refresh issue is fixed and natural song completion was tested successfully. A separate artist-collection early-ending report reproduces as damaged source content, not a confirmed firmware regression. PB55 remains the current firmware; no PB56 was built or installed for this finding. This is user-reported hardware acceptance, distinct from host checks. Targeted strict FFmpeg audio decoding on 28 real device files yielded 27 failures and one clean declared-length decode. The same source files are all byte-identical and reproduce the same results. Seven headers were zero-filled; selected files contain large zero-filled spans. No actual audio bytes, filenames, personal paths or per-track hashes are published. The private 28-row report and source comparisons were counted/deduplicated in code. Firmware files (42) and music inventory/size/mtime entries (2,243) remain unchanged. No new source tests or firmware build were needed because no implementation was changed. Read-only FAT verification passed; the original content-loss mechanism remains unknown.

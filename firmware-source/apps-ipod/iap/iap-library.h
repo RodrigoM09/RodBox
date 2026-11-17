@@ -20,6 +20,11 @@
 
 /* False for a category not offered, or one that cannot be read now. */
 bool iap_library_count(int type, uint32_t *count);
+/* Metadata in the current filtered Track listing; never starts playback. */
+void iap_library_fallback_name(unsigned type, const char *path,
+                               char *text, size_t size);
+bool iap_library_track_field(uint32_t index, unsigned type, char *text,
+                             size_t size, uint64_t *number);
 bool iap_library_name(int type, uint32_t index, char *buf, size_t size);
 /* An index of 0xFFFFFFFF steps back up a level. 'sort' is the order the
  * songs under the selection are to come in. */
@@ -41,6 +46,9 @@ bool iap_library_queue_lent(void);
 enum { IAP_LIBRARY_SERIAL = 1, IAP_LIBRARY_USB = 2 };
 void iap_library_claim(int transport);
 void iap_library_close(int transport);
+/* Storage-only handoff: cancel artwork, finish active work, and discard queued
+ * jobs without releasing either transport's claim or its shared buffers. */
+void iap_library_usb_handoff(void);
 
 /* The library as iAP2 sends it: every track, while the database is in RAM.
  * A track's key is path_key() of its file, so it survives a rebuild and

@@ -1,0 +1,22 @@
+{
+  "checkpoint": "pb26",
+  "version": "rodbox-pb26-dbbootstrap-261028",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Reclaim playback-owned memory for the initial database merge while preserving playback headroom",
+  "status": "installed; database bootstrap confirmed; bulk acceptance incomplete",
+  "core_sha256": "d1f8eb6d25fd8ceed7b55b2031c0f5210e00f13a848c8cf45c66d9227531c7da",
+  "core_bytes": 1995448,
+  "validation": {
+    "native_build": "passed; core and 40 matching codecs prepared",
+    "host_suites_at_build": 45,
+    "hardware": "Installed with 42 matching core/info/codec files; Music database built and persisted, both test albums played through Music, all 38 album files remained unchanged, and filesystem checks passed. Bulk restore is incomplete and paused at user request after successful completed-batch checks and safe eject.",
+    "publication_host_suites": 45,
+    "publication_host_result": "all passed again on 2026-10-29"
+  },
+  "bootloader_changed": false,
+  "limits": [
+    "Host tests mock hardware and do not prove electrical, DMA, flash or power-loss reliability.",
+    "No single corruption root cause or permanent fix has been established.",
+    "Media, private settings, device identifiers, local inventories, raw logs and firmware binaries are excluded."
+  ]
+}

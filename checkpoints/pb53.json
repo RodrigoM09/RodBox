@@ -1,0 +1,18 @@
+{
+  "checkpoint": "pb53",
+  "version": "rodbox-pb53-notify-priority-261114",
+  "record_kind": "retrospective interim local stage, no separately published tag",
+  "base_checkpoint": "pb52",
+  "exact_changed_source_and_regression_patch": "pb53-source.patch",
+  "patch_reconstruction_byte_verified": true,
+  "core_sha256": "223409de674dae89b33685fcfd80148cd53863542d56c27903f828063dc20508",
+  "native_build": "previously passed",
+  "usb_test_scripts_passed_at_build": 34,
+  "installed_before_pb54": true,
+  "observed_before_pb54": {
+    "core_hash_matched": true,
+    "firmware_manifest_verified": 42
+  },
+  "hardware_acceptance": "audio/timer follow; metadata/artwork refresh still unresolved per user",
+  "no_original_publication_date_fabricated": true
+}

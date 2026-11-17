@@ -24,6 +24,8 @@
 #ifndef __CONSTANTS_MMC_H__
 #define __CONSTANTS_MMC_H__
 
+#include <stdint.h>
+
 
 #ifndef MIN
 #define MIN(a, b) (((a)<(b))?(a):(b))
@@ -33,11 +35,13 @@
 #define MAX(a, b) (((a)>(b))?(a):(b))
 #endif
 
-#define BIT(x) (1 << (x))
+#define BIT(x) (1u << (x))
 #define BITRANGE(x, y) ((0xfffffffful >> (31 + (x) - (y))) << (x))
 
-#define ERR_RC(val) (BIT(31) | (val))
-#define IS_ERR(val) (val & BIT(31))
+/* Pack errors as unsigned bits, then preserve the signed API representation.
+ * Shifting a negative error code (or signed 1 into bit 31) is undefined. */
+#define ERR_RC(val) ((int32_t)(UINT32_C(0x80000000) | (uint32_t)(val)))
+#define IS_ERR(val) (((uint32_t)(val) & UINT32_C(0x80000000)) != 0)
 #define RET_ERR(val)                                           \
 {                                                              \
     return ERR_RC(val);                                        \
@@ -51,7 +55,7 @@
 {                                                              \
     int PASS_RC_rc = (expr);                                   \
     if (IS_ERR(PASS_RC_rc))                                    \
-        return ERR_RC((PASS_RC_rc << (bits)) | (val));         \
+        return ERR_RC(((uint32_t)PASS_RC_rc << (bits)) | (val)); \
 }
 #define PASS_RC_MTX(expr, bits, val, mutex)                    \
 {                                                              \
@@ -59,7 +63,7 @@
     if (IS_ERR(PASS_RC_MTX_rc))                                \
     {                                                          \
         mutex_unlock(mutex);                                   \
-        return ERR_RC((PASS_RC_MTX_rc << (bits)) | (val));     \
+        return ERR_RC(((uint32_t)PASS_RC_MTX_rc << (bits)) | (val)); \
     }                                                          \
 }
 

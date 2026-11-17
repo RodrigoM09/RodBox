@@ -41,19 +41,24 @@ enum IAPTrakcInfoTypeBits {
 
 struct IAPGetUIDTrackInfoPayload {
     uint8_t  uid[8];
-    uint32_t mask[]; /* IAPTrakcInfoTypeBits */
+    uint8_t mask[]; /* byte-indexed IAPTrakcInfoTypeBits, least-significant byte first */
 } __attribute__((packed));
 
+/* Index and count are big-endian. The mask is a sequence of bytes,
+ * least-significant byte first, NOT an array of big-endian words.
+ * Short legacy requests contain only the mask bytes they need.
+ * See docs/PB35-LEXUS-PROTOCOL.md for independently checked layouts. */
 struct IAPGetDBTrackInfoPayload {
-    uint8_t  database_index;
-    uint8_t  track_count;
-    uint32_t mask[]; /* IAPTrakcInfoTypeBits */
+    uint32_t database_index;
+    uint32_t track_count;
+    uint8_t mask[];
 } __attribute__((packed));
 
+/* One response per track and requested information type. Text occupies the remaining payload;
+ * numeric field widths depend on information_type.
+ * There is no track-count or mask field in a response. */
 struct IAPRetDBTrackInfoPayload {
-    uint8_t  playing_index;
-    uint8_t  track_count;
-    uint32_t mask[]; /* IAPTrakcInfoTypeBits */
+    uint32_t database_index;
+    uint8_t information_type;
+    uint8_t data[];
 } __attribute__((packed));
-
-/* TODO: define IAPRet{UID,DB,PB}TrackInfoPayload, but who really needs this? */

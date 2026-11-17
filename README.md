@@ -8,7 +8,7 @@ RodBox is built on the work of the Rockbox community, Anthony Fletcher's PodBox,
 
 - PodBox's `apps-ipod` application layer: Music browsing, artwork rows/cache, native per-book audiobook progress and chapters, viewers and reorganized settings.
 - Native Scrim with local volume-display, menu-title and icon adjustments.
-- A Music / Audiobooks / Update Now / Now Playing / Settings / System menu. **Update Now updates the music database, not the firmware.**
+- A Music / Audiobooks / Now Playing / Update Now / Analyze Music Now / Settings / System menu when the supplied menu order is applied. **Update Now updates the music database, not the firmware.** Analyze Music Now opens the on-device acoustic analyser; see [analysis and its limits](docs/NATIVE-ANALYSIS.md).
 - Trace-informed headset-button decoding, bounded volume events and single/double/triple-click actions adapted around that decoder.
 - Storage-mode transition safeguards that wake using the old mode before switching.
 - A Shuffle Songs correction that starts a new music queue when coming from an audiobook, while preserving ordinary queue/replace behavior.
@@ -19,9 +19,11 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-Latest source checkpoint: **PB10**, `homepod-pb10-plmove-261024`. PB7–PB9 passed user playback/resume/control checks and post-reboot normal USB transfer/remount/filesystem verification. PB10 passed the native build, 21 guard tests, 50,000 differential cases and installation-time persistence/filesystem checks; its own post-restart hardware/USB acceptance remains pending at publication.
+Latest experimental checkpoint: **PB55**. PB55 (`rodbox-pb55-lexus-uid-261115`) is built, installed, read-back verified and safely ejected. All **37 USB scripts** pass, including a captured Lexus subscription replay under ASan/UBSan with production decoding, UID/caps notifications, canonical path keys and asynchronous HID completion. Independent code review passed. **PB55 Lexus metadata/artwork and natural song completion are now user-confirmed successful.** The retained PB54 startup trace now proves the Lexus requests DisplayRemote `0x0000018d` and ExtendedInterface `0x00000901`: UID/capability events, not index events. The old request mapper dropped both requested bits and there was no UID sender. PB55 decodes them, sends the existing stable metadata UID as type `0x0A` plus eight big-endian bytes, and includes UID-only subscriptions in buffered reconciliation. No subscription is forced or music/key algorithm changed. See [PB55](docs/PB55-LEXUS-UID.md), [handoff](docs/HANDOFF.md) and [continuation](docs/AI-CONTINUATION-PROMPT.md).
 
-The small playlist optimization's Mac benchmark is not an iPod speed or battery measurement. Digital audio and accessory code inherited from PodBox is present in source but was not comprehensively exercised, and optional DAC/car modes were left off. Explicit iFlash-brand recognition remains staged pending actual ATA identification; existing generic flash detection may already cover the adapter. Legacy Rockbox games/plugins are not available through PodBox's replacement app layer.
+**PB55 hardware acceptance — 2026-11-15:** the user confirms the Lexus metadata/artwork refresh issue is fixed and natural song completion was tested successfully. A separate artist-collection early-ending report reproduces as damaged source content, not a confirmed firmware regression. PB55 remains the current firmware; no PB56 was built or installed for this finding. See [media-integrity investigation](docs/MEDIA-INTEGRITY-INVESTIGATION.md).
+
+`main` remains the locked stable reference; `community` carries these experimental source checkpoints. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Branches
 
@@ -48,12 +50,12 @@ If you find a bug or a worthwhile improvement, please let the maintainer know th
 | [BUGS-AND-LESSONS.md](docs/BUGS-AND-LESSONS.md) | Bugs, failed assumptions, rollback and evidence limits. |
 | [PRIVACY.md](PRIVACY.md) | What is excluded and how the public Git history was checked. |
 
-Each PB version has its own commit and `checkpoint/pbN` tag. PB5 is retained as a rolled-back historical experiment; a separate rollback commit restores PB4 before PB6. PB1–PB3 are labeled artifact-based reconstructions, not original independently preserved full snapshots. Original source dates and firmware versions are historical facts; the publication commits are newly created exports with neutral author metadata, not fabricated original commits.
+Published PB checkpoints have their own commit and `checkpoint/pbN` tag. PB53 was an interim local build, not separately tagged; its exact changed-source snapshot and preserved regression are recorded in `checkpoints/pb53.json` and `checkpoints/pb53-source.patch` rather than fabricating a historical publication. PB5 is retained as a rolled-back historical experiment; a separate rollback commit restores PB4 before PB6. PB1–PB3 are labeled artifact-based reconstructions, not original independently preserved full snapshots. Original source dates and firmware versions are historical facts; the publication commits are newly created exports with neutral author metadata, not fabricated original commits.
 
 No raw device backups, music, audiobooks, downloaded covers/portraits, personal library databases, playback progress or original build binaries are distributed. Git checkpoints are **source backups**, not complete device images. Some historical stages have evidence only rather than complete reconstructable source; their records say so.
 
 ## Build and verification
 
-Read [BUILD.md](docs/BUILD.md), [TESTING.md](docs/TESTING.md) and [RECOVERY.md](docs/RECOVERY.md) before using a build. Back up your own settings and progress; do not mix a new core with incompatible old codecs/themes. This project did not change the bootloader, format storage, flash SysCFG or replace the partition layout.
+Read [BUILD.md](docs/BUILD.md), [TESTING.md](docs/TESTING.md) and [RECOVERY.md](docs/RECOVERY.md) before using a build. Back up your own settings and progress; do not mix a new core with incompatible old codecs/themes. The firmware updates do not replace the bootloader or flash SysCFG. Separate, explicitly approved storage recovery and replacement-card formatting/layout work occurred during private testing; those procedures and personal installation scripts are not shipped as part of a firmware update.
 
 The firmware is predominantly GPL-licensed with separately licensed components. Scrim and bundled fonts have their own terms. See [LICENSE](LICENSE), [CREDITS.md](CREDITS.md), `firmware-source/docs/COPYING`, `firmware-source/docs/LICENSES` and the notices in individual files. AI assistance does not replace upstream ownership or licensing obligations.

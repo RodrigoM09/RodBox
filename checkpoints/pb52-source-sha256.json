@@ -1,0 +1,18 @@
+{
+  "firmware-source/apps-ipod/playlist/playlist.c": {
+    "bytes": 137261,
+    "sha256": "72c7d35ab5fd35ba7d246b37336e00810710f308c31251515a345847411314c2"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/notification.c": {
+    "bytes": 13572,
+    "sha256": "d0f85ba6d1bc9e011c5d33d466ce54f33d04a9302f1c9799ff8cfe3399c93e75"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/context.h": {
+    "bytes": 4218,
+    "sha256": "126e0cbabfcb013e11d3982eb50a55d84169934e8fa6c59af26018b8775cd9e7"
+  },
+  "firmware-source/firmware/usbstack/iap/platform.c": {
+    "bytes": 31788,
+    "sha256": "b182b5725926267ee6e9d2b78f83f7257a988da0540ed885184537904f996e3f"
+  }
+}

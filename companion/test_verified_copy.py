@@ -50,6 +50,22 @@ class CopyTests(unittest.TestCase):
         with self.assertRaises(ValueError):c.contained(self.dst,'/absolute')
         (self.dst/'link').symlink_to(self.src,target_is_directory=True)
         with self.assertRaises(ValueError):c.contained(self.dst,'link/track')
+    def test_short_write_preserves_existing(self):
+        (self.dst/'album').mkdir();p=self.dst/'album/track';p.write_bytes(b'old')
+        original_open=pathlib.Path.open
+        class ShortWriter:
+            def __init__(self,fd):self.fd=fd
+            def __enter__(self):return self
+            def __exit__(self,*args):return self.fd.__exit__(*args)
+            def __getattr__(self,name):return getattr(self.fd,name)
+            def write(self,data):return self.fd.write(data[:len(data)//2])
+        def opened(path,*args,**kwargs):
+            fd=original_open(path,*args,**kwargs)
+            return ShortWriter(fd) if args and args[0]=='xb' else fd
+        with mock.patch.object(pathlib.Path,'open',opened):
+            with self.assertRaisesRegex(OSError,'Short write'):
+                self.run_copy(expected_old_sha256=hashlib.sha256(b'old').hexdigest())
+        self.assertEqual(p.read_bytes(),b'old');self.assert_no_temp()
     def test_failed_write_preserves_existing(self):
         (self.dst/'album').mkdir();p=self.dst/'album/track';p.write_bytes(b'old')
         with mock.patch.object(c.os,'fsync',side_effect=OSError('full disk')):

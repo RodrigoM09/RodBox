@@ -25856,3 +25856,48 @@
     *: "Speak Aloud"
   </voice>
 </phrase>
+
+<phrase>
+  id: LANG_BATTERY_ICON_ONLY
+  desc: Battery Display presentation mode
+  user: core
+  <source>
+    *: "Icon only"
+  </source>
+  <dest>
+    *: "Icon only"
+  </dest>
+  <voice>
+    *: "Icon only"
+  </voice>
+</phrase>
+
+<phrase>
+  id: LANG_BATTERY_PERCENT_ONLY
+  desc: Battery Display presentation mode
+  user: core
+  <source>
+    *: "Percentage only"
+  </source>
+  <dest>
+    *: "Percentage only"
+  </dest>
+  <voice>
+    *: "Percentage only"
+  </voice>
+</phrase>
+
+<phrase>
+  id: LANG_BATTERY_ICON_PERCENT
+  desc: Battery Display presentation mode
+  user: core
+  <source>
+    *: "Icon + percentage"
+  </source>
+  <dest>
+    *: "Icon + percentage"
+  </dest>
+  <voice>
+    *: "Icon + percentage"
+  </voice>
+</phrase>

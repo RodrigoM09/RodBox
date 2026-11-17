@@ -1,0 +1,10 @@
+{
+  "firmware-source/apps-ipod/iap/iap-library.c": "ef2bbfd5830d8af922bde82af03ad45a75e21e21e860df593b4008566f14c52a",
+  "firmware-source/apps-ipod/iap/iap-library.h": "412d539813b9efb3da76f10c6ad089061cc8122ede2cf9b628725b109d699cb1",
+  "firmware-source/firmware/drivers/usb-designware.c": "76ed7d50c18b3d6bf2ce22998f0383e47dda4280a552cf45c633fcd34ea012d5",
+  "firmware-source/firmware/usbstack/iap/libiap/context.h": "f409ee4d7d151f10b46536e7dc3dfee1f4b8fb3e6e9daeb61d3c01d12746c286",
+  "firmware-source/firmware/usbstack/iap/libiap/iap.c": "3680e04a7df4d50ec15436d6057dd8964035ca8270af2c281be0ba3152ef055d",
+  "firmware-source/firmware/usbstack/iap/libiap/platform.h": "8c166e65ef9cdc18040e223bc0ba31e868638ae682bce683d12a2b51260c35cc",
+  "firmware-source/firmware/usbstack/iap/libiap/span.c": "daf7f330337f8321a52f175d3ff5e48e06d4c70b4fc07773e10994982c7f253f",
+  "firmware-source/firmware/usbstack/iap/platform.c": "fab361bbc6884165fbfbf552fbc76524e67d8e3f7adea1ac6ea6ea7758b2aec5"
+}

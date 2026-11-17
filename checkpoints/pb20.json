@@ -1,0 +1,20 @@
+{
+  "checkpoint": "pb20",
+  "version": "rodbox-pb20-durability2-261026",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Harden storage and USB failures, FAT geometry/updates, library/artwork publication and worker handoff",
+  "status": "installed; sustained storage reliability unresolved",
+  "core_sha256": "709db24990135babb16b6d5e836ad0090f8cc02ef1453cd9558ac4d9cbb33f92",
+  "core_bytes": 1994848,
+  "validation": {
+    "native_build": "passed; model header, payload checksum and matching codecs verified",
+    "host_suites": 41,
+    "hardware": "Boot/playback passed; sustained data integrity failed"
+  },
+  "limits": [
+    "Host tests mock hardware and do not prove flash, DMA, USB or power-loss reliability.",
+    "Earlier candidate hardware checks found persistent or changing song data despite some clean filesystems and successful playback.",
+    "PB23 write-through handling is not yet accepted as the corruption root-cause fix.",
+    "No media, private device configuration, volume identifiers, inventories or build binaries are published."
+  ]
+}

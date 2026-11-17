@@ -138,9 +138,18 @@ static void rename_temp_file(const char *tempfile,
     */
     if (file_exists(tempfile))
     {
+        bool backed_up = false;
         if (oldfile != NULL && file_exists(file))
-            rename(file, oldfile);
-        rename(tempfile, file);
+        {
+            if (rename(file, oldfile) < 0)
+                return;
+            backed_up = true;
+        }
+        /* A failed promotion must not leave the current config/resume path
+         * absent after we moved it aside. Keep the completed temporary file
+         * for a later boot and restore the previous one when possible. */
+        if (rename(tempfile, file) < 0 && backed_up)
+            rename(oldfile, file);
     }
 }
 #endif /* ndef ROCKBOX_NO_TEMP_SETTINGS_FILE */

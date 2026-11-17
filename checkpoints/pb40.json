@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb40",
+  "version": "rodbox-pb40-restart-261103",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Audio restart and sample-rate transaction cleanup",
+  "native_build": "passed (recorded at build time)",
+  "installed": true,
+  "filesystem_check_passed": true,
+  "hardware_status": "Installed and verified; Lexus hardware acceptance still pending.",
+  "core_bytes": 2001528,
+  "core_sha256": "cc1ebf6420a968cee02461ec577e8f9bafd89bc7838a63b2c0011fd882d57ea2",
+  "source_reconstruction_hashes_verified": 16,
+  "music_files_written": false
+}

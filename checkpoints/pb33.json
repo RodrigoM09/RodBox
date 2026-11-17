@@ -1,0 +1,14 @@
+{
+  "checkpoint": "pb33",
+  "version": "rodbox-pb33-iapreports-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "core_bytes": 1996052,
+  "core_sha256": "d8712a0dc832475d9e36246e04c90037e28bf9ae685d894f36b189d138c21c9a",
+  "change": "Accept every advertised iAP control-report size using a bounded 768-byte buffer",
+  "native_build": "passed",
+  "installed": true,
+  "limits": [
+    "Lexus audio and metadata remain unresolved; no hardware acceptance claim",
+    "No bootloader changes or music writes"
+  ]
+}

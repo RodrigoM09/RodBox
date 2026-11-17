@@ -1,0 +1,25 @@
+{
+  "checkpoint": "pb28",
+  "version": "rodbox-pb28-artcleanup-261030",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Free deferred unlink chains when read-only handles close at volume/USB unmount; stop handover on cleanup failure",
+  "status": "installed; normal startup/artwork and first reconnect passed; repeated stress acceptance open",
+  "core_bytes": 1995552,
+  "core_sha256": "e41402a5e8a6faeaf0dd49226db289d3b440417d7bda24b29cf9b39e3a60e562",
+  "validation": {
+    "native_build": "passed; Arm GNU Toolchain 13.2.Rel1",
+    "host_suites_at_build": 47,
+    "focused_publication_regression": "passed",
+    "preceding_candidate_regression": "PB27 production reader-unmount callback fails allocated-chain assertion",
+    "codecs": "all 40 byte-identical to PB27",
+    "hardware": "42 firmware hashes and 56 artist-image hashes match; 594 cached-image structures valid; filesystem clean after restart/reconnect"
+  },
+  "existing_damage_repair": "13 orphan clusters separately repaired with authorization/backups, without formatting; no music-file edits",
+  "bootloader_changed": false,
+  "limits": [
+    "No raw-sector proof ties the exact prior orphan clusters to this defect.",
+    "One clean reconnect does not prove permanent corruption resolution.",
+    "Music inventory/size/timestamps were preserved during installation; the preceding full checksum pass was not repeated.",
+    "No binaries, media, personal configs, device identifiers or private scripts/logs published."
+  ]
+}

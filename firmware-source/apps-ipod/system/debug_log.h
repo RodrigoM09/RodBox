@@ -29,6 +29,7 @@ enum debug_log_id {
     DEBUG_LOG_METADATA,
     DEBUG_LOG_SKIN,
     DEBUG_LOG_TASKS,
+    DEBUG_LOG_USB_AUDIO,
     DEBUG_LOG_COUNT,
 };
 
@@ -54,6 +55,7 @@ void debug_log_header(enum debug_log_id id, const char *what);
 /* The file for appending, rotated first if it has reached the cap; -1 if it
  * cannot be opened. Holds the log's lock until debug_log_close(). */
 int debug_log_open(enum debug_log_id id);
+int debug_log_sync(enum debug_log_id id, int fd);
 void debug_log_close(enum debug_log_id id, int fd);
 
 /* The marker for lines a ring dropped before they reached the file. */

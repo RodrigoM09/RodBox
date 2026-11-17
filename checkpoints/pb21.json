@@ -1,0 +1,20 @@
+{
+  "checkpoint": "pb21",
+  "version": "rodbox-pb21-usbverify-261027",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Serialize USB receive/storage DMA and compare each written payload on iPod Classic",
+  "status": "installed; sustained storage reliability unresolved",
+  "core_sha256": "50a6f6a5ac083d1e4aee10b92a7b3b9e84022d8541915e14a4c5493bed5a7448",
+  "core_bytes": 1994968,
+  "validation": {
+    "native_build": "passed; model header, payload checksum and matching codecs verified",
+    "focused_usb_suites": 11,
+    "hardware": "Small tests passed; existing song data later mismatched"
+  },
+  "limits": [
+    "Host tests mock hardware and do not prove flash, DMA, USB or power-loss reliability.",
+    "Earlier candidate hardware checks found persistent or changing song data despite some clean filesystems and successful playback.",
+    "PB23 write-through handling is not yet accepted as the corruption root-cause fix.",
+    "No media, private device configuration, volume identifiers, inventories or build binaries are published."
+  ]
+}

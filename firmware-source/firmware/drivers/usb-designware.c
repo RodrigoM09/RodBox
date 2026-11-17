@@ -537,8 +537,22 @@ static void usb_dw_nptx_unqueue(int epnum)
 }
 #endif /* USB_DW_SHARED_FIFO */
 
+static bool iso_recovering[USB_NUM_ENDPOINTS];
+static bool iso_synced[USB_NUM_ENDPOINTS];
+static unsigned char iso_prime_retries[USB_NUM_ENDPOINTS];
+static bool iso_prime_complete[USB_NUM_ENDPOINTS];
+static bool iso_waiting_token[USB_NUM_ENDPOINTS];
+static uint16_t iso_target_frame[USB_NUM_ENDPOINTS];
+
 static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
 {
+    if (epdir == USB_DW_EPDIR_IN) {
+        iso_recovering[epnum] = false;
+        iso_synced[epnum] = false;
+        iso_prime_retries[epnum] = 0;
+        iso_prime_complete[epnum] = false;
+        iso_waiting_token[epnum] = false;
+    }
     struct usb_dw_ep* dw_ep = usb_dw_get_ep(epnum, epdir);
     dw_ep->busy = false;
     dw_ep->status = -1;
@@ -601,7 +615,7 @@ static void usb_dw_flush_endpoint(int epnum, enum usb_dw_epdir epdir)
     {
         epmis_msk &= ~(1 << epnum);
         if (!epmis_msk)
-            DWC_DIEPMSK &= ~ITTXFE;
+            DWC_DIEPMSK |= ITTXFE; /* retain ISO first-token observation */
     }
 #endif
 
@@ -652,6 +666,11 @@ static void usb_dw_configure_ep(const struct usb_drv_ep_alloc_ctx* ctx, int epnu
 
 static void usb_dw_reset_endpoints(void)
 {
+    memset(iso_recovering, 0, sizeof(iso_recovering));
+    memset(iso_synced, 0, sizeof(iso_synced));
+    memset(iso_prime_retries, 0, sizeof(iso_prime_retries));
+    memset(iso_prime_complete, 0, sizeof(iso_prime_complete));
+    memset(iso_waiting_token, 0, sizeof(iso_waiting_token));
     /* Initial state for all endpoints, setting OUT EPs as not busy
      * will discard all pending data (if any) on the flush stage.
      */
@@ -697,7 +716,11 @@ static void usb_dw_reset_endpoints(void)
  * few starts, and errors, each up to ISO_LOG_MAX. */
 #define ISO_LOG_MAX 8
 static uint8_t iso_starts_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
+static uint8_t iso_complete_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
 static uint8_t iso_errors_logged[USB_NUM_ENDPOINTS][USB_DW_NUM_DIRS];
+static uint8_t iso_irq_logged[USB_NUM_ENDPOINTS];
+static uint8_t iso_token_irq_logged[USB_NUM_ENDPOINTS];
+static uint8_t iso_probe_logged[USB_NUM_ENDPOINTS];
 
 static int usb_dw_log_ep(int epnum, enum usb_dw_epdir epdir)
 {
@@ -753,23 +776,39 @@ static void usb_dw_epstart(int epnum, enum usb_dw_epdir epdir,
     DWC_EPTSIZ(epnum, epdir) = eptsiz;
     if (((DWC_EPCTL(epnum, epdir) >> 18) & 0x3) == EPTYP_ISOCHRONOUS)
     {
-        /*
-         * Handle frame scheduling for isochronous endpoints.
-         *
-         * TODO: this needs to take into account the endpoint's bInterval,
-         * and currently will not work for USB 2.0 endpoints that require
-         * one packet per microframe. For slower USB 2.0 endpoints data is
-         * only transferred on *even* frames; SETD1PIDOF is not used.
-         * This also breaks for USB 1.0 endpoints with bInterval > 1 for
-         * the same reason.
-         */
-        if (usb_drv_port_speed() || (usb_drv_get_frame_number() & 1))
-            DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD0PIDEF;
-        else
-            DWC_EPCTL(epnum, epdir) |= EPENA | nak | SETD1PIDOF;
+        /* Generic cores synchronize on a token; Classic keeps an unsent
+         * first packet pending without releasing its PCM buffer. */
+        if (epdir == USB_DW_EPDIR_IN && !iso_synced[epnum])
+        {
+#if CONFIG_CPU == S5L8702
+            /* The Classic's observed 2.60a core never raises the disabled-
+             * endpoint token event in our DMA setup. Prime a real packet
+             * in the next microframe instead of leaving EPENA clear forever.
+             * Only untouched first packets may retry after confirmed disable. */
+            iso_waiting_token[epnum] = false;
+            iso_synced[epnum] = true;
+            iso_target_frame[epnum] = (((DWC_DSTS >> 8) & 0x3fff) + 1) & 0x3fff;
+            usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 3,
+                    iso_target_frame[epnum], DWC_GSNPSID);
+#else
+            iso_waiting_token[epnum] = true;
+            DWC_DIEPINT(epnum) = NAKINTRPT | ITTXFE;
+            usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 0,
+                    DWC_GSNPSID, DWC_DIEPCTL(epnum));
+            DWC_DIEPCTL(epnum) =
+                (DWC_DIEPCTL(epnum) & ~(EPENA | EPDIS | SETD0PIDEF | SETD1PIDOF)) |
+                CNAK;
+            return;
+#endif
+        }
+        uint32_t phase = epdir == USB_DW_EPDIR_IN ?
+            ((iso_target_frame[epnum] & 1) ? SETD1PIDOF : SETD0PIDEF) :
+            ((usb_drv_get_frame_number() & 1) ? SETD0PIDEF : SETD1PIDOF);
+        DWC_EPCTL(epnum, epdir) =
+            (DWC_EPCTL(epnum, epdir) & ~(EPDIS | SETD0PIDEF | SETD1PIDOF)) |
+            EPENA | nak | phase;
 
-        /* The raw interrupt status carries the incomplete-isochronous bits,
-         * which are not enabled as interrupts. */
+        /* Keep a bounded record of initial stream scheduling. */
         if (iso_starts_logged[epnum][epdir] < ISO_LOG_MAX)
         {
             iso_starts_logged[epnum][epdir]++;
@@ -811,7 +850,14 @@ static int usb_dw_transfer(int epnum, enum usb_dw_epdir epdir,
         return -1;
     }
     if (dw_ep->busy)
+    {
         logf("%s: %s%d busy", __func__, dw_dir_str[epdir], epnum);
+        /* A non-control endpoint owns its request until completion or reset.
+         * Replacing it here can retarget DMA and lose the original length.
+         * EP0 retains its existing control-transfer replacement semantics. */
+        if (epnum != 0)
+            return -1;
+    }
 
     dw_ep->req_addr = buf;
     dw_ep->req_size = size;
@@ -916,6 +962,20 @@ static void usb_dw_handle_xfer_complete(int epnum, enum usb_dw_epdir epdir)
     }
 
     dw_ep->status = 0;
+    if (epdir == USB_DW_EPDIR_IN && iso_synced[epnum] &&
+        ((DWC_DIEPCTL(epnum) >> 18) & 3) == EPTYP_ISOCHRONOUS)
+    {
+        if (iso_complete_logged[epnum][epdir] < ISO_LOG_MAX)
+        {
+            iso_complete_logged[epnum][epdir]++;
+            usb_log(USB_LOG_ISO_STATE, epnum | USB_DIR_IN, 2,
+                    dw_ep->req_size, (DWC_DSTS >> 8) & 0x3fff);
+        }
+        iso_prime_complete[epnum] = true;
+        /* The successful bus slot supplies the actual polling phase. */
+        iso_target_frame[epnum] = (((DWC_DSTS >> 8) & 0x3fff) +
+                                  (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
+    }
 
   complete:
     if (dw_ep->status != 0 && epnum != 0 &&
@@ -1003,10 +1063,164 @@ static void usb_dw_handle_token_mismatch(void)
 }
 #endif /* USB_DW_SHARED_FIFO */
 
+/* Capture the endpoint before recovery's SNAK/EPDIS changes its state.
+ * Bounded snapshots do not enable interrupts or alter transfer handling. */
+static void usb_dw_log_iso_recovery(int ep)
+{
+    if (iso_probe_logged[ep] >= ISO_LOG_MAX)
+        return;
+    iso_probe_logged[ep]++;
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 8,
+            DWC_DIEPCTL(ep), DWC_DIEPINT(ep));
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 9,
+            DWC_DIEPMSK, DWC_DAINTMSK);
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 10,
+            (DWC_DSTS >> 8) & 0x3fff, DWC_GINTSTS);
+}
+
+/* A missed periodic IN transfer does not produce XFRC. Disable only its
+ * endpoint; handle the request after hardware confirms EPDISD. Classic may
+ * re-prime an untouched first packet while the stream remains active; otherwise
+ * the batch layer stops until an explicit stream restart.
+ * Never touch EP0/storage. */
+static void usb_dw_incomplete_iso_in(void)
+{
+    DWC_GINTSTS = IISOIXFR;
+    for (int ep = 1; ep < USB_NUM_ENDPOINTS; ep++)
+    {
+        struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
+        uint32_t ctl = DWC_DIEPCTL(ep);
+        unsigned deadline = iso_target_frame[ep];
+#if CONFIG_CPU == S5L8702
+        /* Before the first completion the host's polling phase is unknown.
+         * iAP advertises bInterval=4 at HS (eight microframes). A global
+         * incomplete interrupt in an earlier slot is not a missed service
+         * interval: keep the same FIFO packet available for the full window.
+         * After the first completion retain the known-phase failure policy. */
+        if (!iso_prime_complete[ep] && usb_drv_port_speed())
+            deadline = (deadline + 7) & 0x3fff;
+#endif
+        if (d->active && d->busy && !iso_recovering[ep] &&
+            (DWC_DAINTMSK & (1u << ep)) && (ctl & EPENA) &&
+            !(DWC_DIEPINT(ep) & XFRC) &&
+            /* A global incomplete event can precede this endpoint's next
+             * 1-ms service interval. Do not cancel a future packet. */
+            (!iso_synced[ep] ||
+             ((((DWC_DSTS >> 8) & 0x3fff) - deadline) & 0x3fff) < 0x2000) &&
+            ((ctl >> 18) & 3) == EPTYP_ISOCHRONOUS)
+        {
+            usb_dw_log_iso_recovery(ep);
+            iso_recovering[ep] = true;
+            DWC_DIEPCTL(ep) = ctl | SNAK | EPDIS;
+        }
+    }
+}
+
+/* Like DWC2's ISO-IN NAK synchronization: the token gives the host's
+ * service phase. Re-arm the SAME pending buffer, never pull new PCM here. */
+static bool usb_dw_iso_token(int ep)
+{
+    struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
+    if (ep == 0 || !d->active || !d->busy || !iso_waiting_token[ep] ||
+        (DWC_DIEPCTL(ep) & EPENA) ||
+        ((DWC_DIEPCTL(ep) >> 18) & 3) != EPTYP_ISOCHRONOUS)
+        return false;
+    iso_waiting_token[ep] = false;
+    iso_synced[ep] = true;
+    /* Unlike usb_drv_get_frame_number(), preserve HS microframe bits. */
+    iso_target_frame[ep] = (((DWC_DSTS >> 8) & 0x3fff) +
+                            (usb_drv_port_speed() ? 8 : 1)) & 0x3fff;
+    usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 1,
+            iso_target_frame[ep], DWC_DIEPCTL(ep));
+    usb_dw_epstart(ep, USB_DW_EPDIR_IN, d->req_addr, d->req_size);
+    return true;
+}
+
+/* Bounded evidence of host token/completion/error indications. Exclude
+ * software-disable-only and FIFO-empty-only events so they cannot exhaust
+ * the diagnostic budget before the host polls. No register writes here. */
+static void usb_dw_log_iso_irq(int ep, uint32_t epints)
+{
+    if (!ep || !usb_dw_get_ep(ep, USB_DW_EPDIR_IN)->active ||
+        ((DWC_DIEPCTL(ep) >> 18) & 3) != EPTYP_ISOCHRONOUS)
+        return;
+
+    /* INEPNE is caused by our SNAK/disable sequence, not host traffic.
+     * Give token indications their own budget: other errors/completions
+     * must not hide a later host request. Log raw flags for interpretation. */
+    bool token = (epints & (NAKINTRPT | ITTXFE)) != 0;
+    uint8_t *budget = token ? &iso_token_irq_logged[ep] : &iso_irq_logged[ep];
+    if ((epints & ~(EPDISD | TXFE | INEPNE)) && *budget < ISO_LOG_MAX)
+    {
+        (*budget)++;
+        usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, token ? 7 : 6,
+                epints, (DWC_DSTS >> 8) & 0x3fff);
+    }
+}
+
 static void usb_dw_iepint(int ep)
 {
     uint32_t epints = DWC_DIEPINT(ep);
+    usb_dw_log_iso_irq(ep, epints);
     DWC_DIEPINT(ep) = epints;
+    if ((epints & (NAKINTRPT | ITTXFE)) && usb_dw_iso_token(ep))
+        return; /* any XFRC in this snapshot predates the newly armed DMA */
+
+    if ((epints & EPDISD) && iso_recovering[ep])
+    {
+        struct usb_dw_ep *d = usb_dw_get_ep(ep, USB_DW_EPDIR_IN);
+        iso_recovering[ep] = false;
+#if CONFIG_CPU == S5L8702
+        /* Read before flushing: XFRSIZ tracks DMA-to-FIFO progress, not
+         * packets delivered on the bus (see usb_dw_bytes_in_txfifo). */
+        uint32_t remaining = DWC_EPTSIZ(ep, USB_DW_EPDIR_IN);
+        if (iso_prime_retries[ep] < ISO_LOG_MAX || iso_prime_complete[ep])
+            usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 5, remaining, d->req_size);
+#endif
+        usb_dw_flush_fifo(TXFFLSH, GET_DTXFNUM(ep));
+#if CONFIG_CPU == S5L8702
+        /* A host may select the stream before it starts polling. Keep the
+         * SAME unsent first packet pending until delivery or stream stop;
+         * eight missed slots are not a permanent transport failure.
+         * Only one recovery per service window, after confirmed disable.
+         * Never replay delivered/partially delivered packets, advance PCM,
+         * or retry hardware errors. Diagnostic counters saturate. */
+        if (d->active && d->busy && !iso_prime_complete[ep] &&
+            !(epints & (TOC | AHBERR)) &&
+            d->req_size > 0 &&
+            d->req_size <= usb_dw_maxpktsize(ep, USB_DW_EPDIR_IN) &&
+            ((remaining >> 19) & 0x3ff) == 1)
+        {
+            unsigned next = (((DWC_DSTS >> 8) & 0x3fff) + 1) & 0x3fff;
+            if ((next & 1) == (iso_target_frame[ep] & 1))
+                next = (next + 1) & 0x3fff;
+            iso_target_frame[ep] = next;
+            if (iso_prime_retries[ep] < ISO_LOG_MAX)
+            {
+                iso_prime_retries[ep]++;
+                usb_log(USB_LOG_ISO_STATE, ep | USB_DIR_IN, 4,
+                        iso_target_frame[ep], iso_prime_retries[ep]);
+            }
+            usb_dw_epstart(ep, USB_DW_EPDIR_IN, d->req_addr, d->req_size);
+            return; /* discard stale XFRC from the cancelled attempt */
+        }
+#endif
+        iso_synced[ep] = false;
+        iso_waiting_token[ep] = false;
+        if (d->busy)
+        {
+            d->busy = false;
+            d->status = -1;
+            semaphore_release(&d->complete);
+            if (iso_errors_logged[ep][USB_DW_EPDIR_IN] < ISO_LOG_MAX)
+            {
+                iso_errors_logged[ep][USB_DW_EPDIR_IN]++;
+                usb_log(USB_LOG_ISO_ERROR, ep | USB_DIR_IN, 0, -1, 0);
+            }
+            complete_transfer(ep, USB_DIR_IN, -1, 0);
+        }
+        return; /* XFRC in this snapshot belongs to the cancelled request. */
+    }
 
     if (epints & TOC)
     {
@@ -1021,7 +1235,7 @@ static void usb_dw_iepint(int ep)
             DWC_DIEPCTL(ep) |= EPENA;
             epmis_msk &= ~(1 << ep);
             if (!epmis_msk)
-                DWC_DIEPMSK &= ~ITTXFE;
+                DWC_DIEPMSK |= ITTXFE; /* retain ISO first-token observation */
         }
     }
 
@@ -1129,6 +1343,9 @@ static void usb_dw_irq(void)
     }
 #endif /* USB_DW_ARCH_SLAVE */
 #endif /* USB_DW_SHARED_FIFO */
+
+    if (gintsts & IISOIXFR)
+        usb_dw_incomplete_iso_in();
 
     if (gintsts & (OEPINT | IEPINT))
     {
@@ -1339,13 +1556,13 @@ static void usb_dw_init(void)
 
     /* Set up interrupts */
     DWC_DOEPMSK = STUP|XFRC;
-    DWC_DIEPMSK = TOC|XFRC;
+    DWC_DIEPMSK = TOC|XFRC|EPDISD|NAKINTRPT|ITTXFE;
 
     /* Unmask all available endpoints */
     DWC_DAINTMSK = 0xffffffff;
     usb_endpoints = DWC_DAINTMSK;
 
-    uint32_t gintmsk = USBRST|ENUMDNE|IEPINT|OEPINT;
+    uint32_t gintmsk = USBRST|ENUMDNE|IEPINT|OEPINT|IISOIXFR;
 #ifdef USB_DW_ARCH_SLAVE
     gintmsk |= RXFLVL;
 #endif
@@ -1413,6 +1630,22 @@ void usb_drv_reset_endpoint(int endpoint, bool send)
     usb_dw_target_disable_irq();
     if (usb_dw_get_ep(epnum, epdir)->busy)
         usb_dw_flush_endpoint(epnum, epdir);
+    /* Failure completes the request and clears busy before a host-directed
+     * restart. Reset software priming state even in that idle case, without
+     * flushing hardware or producing a second completion. */
+    if (epdir == USB_DW_EPDIR_IN && usb_dw_get_ep(epnum, epdir)->active &&
+        ((DWC_DIEPCTL(epnum) >> 18) & 3) == EPTYP_ISOCHRONOUS)
+    {
+        iso_recovering[epnum] = false;
+        iso_synced[epnum] = false;
+        iso_waiting_token[epnum] = false;
+        iso_prime_retries[epnum] = 0;
+        iso_prime_complete[epnum] = false;
+        iso_target_frame[epnum] = 0;
+        iso_irq_logged[epnum] = 0;
+        iso_token_irq_logged[epnum] = 0;
+        iso_probe_logged[epnum] = 0;
+    }
     usb_dw_target_enable_irq();
 }
 
@@ -2364,7 +2597,13 @@ void usb_drv_ep_init(const struct usb_drv_ep_alloc_ctx* ctx, int ep)
     usb_dw_target_enable_irq();
 
     iso_starts_logged[epnum][epdir] = 0;
+    iso_complete_logged[epnum][epdir] = 0;
     iso_errors_logged[epnum][epdir] = 0;
+    if (epdir == USB_DW_EPDIR_IN) {
+        iso_irq_logged[epnum] = 0;
+        iso_token_irq_logged[epnum] = 0;
+        iso_probe_logged[epnum] = 0;
+    }
     usb_log(USB_LOG_EP_INIT, ep, type, mps, DWC_EPCTL(epnum, epdir));
 
     dw_ep->active = true;

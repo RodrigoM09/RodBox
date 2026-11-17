@@ -1,0 +1,15 @@
+{
+  "checkpoint": "pb34",
+  "version": "rodbox-pb34-lexus-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "core_bytes": 1996176,
+  "core_sha256": "3fefb48d267bc4a9ceeb4fb72ba2c0e053a4f091520c8a606a6d91cb979a2c13",
+  "change": "Accept complete checksum-valid HID frames despite a stale continuation flag; advertise only implemented protocol version",
+  "native_build": "passed",
+  "installed": true,
+  "limits": [
+    "Lexus audio and metadata remain unresolved; no hardware acceptance claim",
+    "No bootloader changes or music writes"
+  ],
+  "authentication": "Successful in preserved Lexus trace"
+}

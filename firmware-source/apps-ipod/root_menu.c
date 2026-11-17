@@ -53,6 +53,7 @@
 #include "screens/covers/album_covers.h"
 #include "screens/system/db_search.h"
 #include "screens/system/file_search.h"
+#include "screens/system/sound_scan.h"
 #include "dircache.h"                 /* whether the file search has a source */
 #include "screens/browse/album_charts.h"
 #include "screens/browse/book_shelf.h"
@@ -84,6 +85,15 @@ static int last_screen = GO_TO_ROOT; /* unfortunatly needed so we can resume
 
 /* Set while the screen being loaded was reached by BACK */
 static bool came_back;
+
+int root_menu_wps_back(void)
+{
+    /* Music retains its browse depth and selected song across playback.
+     * A main-menu Now Playing entry has GO_TO_ROOT as its origin. Keep
+     * other routes at the root: some are one-shot actions, not resumable
+     * screens (notably the album-cover track-list entry point). */
+    return last_screen == GO_TO_DBBROWSER ? GO_TO_PREVIOUS : GO_TO_ROOT;
+}
 
 static int previous_music = GO_TO_WPS; /* Toggles behavior of the return-to
                                         * playback-button. Upstream this also
@@ -1063,11 +1073,24 @@ static int database_update_now(void)
 MENUITEM_FUNCTION(database_update_menu, 0, "Update Now",
                   database_update_now, NULL, Icon_Audio);
 
+/* Update, rather than rebuild: keep measurements of unchanged tracks and let
+ * the existing scan screen handle confirmation, power and interrupted runs.
+ * This is the player's acoustic analyser, not desktop neural inference. */
+static int analyze_music_now(void)
+{
+    sound_scan_screen(false);
+    return 0;
+}
+
+MENUITEM_FUNCTION(analyze_music_menu, 0, "Analyze Music Now",
+                  analyze_music_now, NULL, Icon_Audio);
+
 static struct menu_table menu_table[] = {
     { "pictureflow", &album_covers_item },
     { "artistportraits", &artist_portraits_item },
     { "database", &db_browser },
     { "database_update", &database_update_menu },
+    { "music_analyze", &analyze_music_menu },
     { "files", &file_browser },
     { "wps", &wps_item },
     { "reading", &continue_reading },
@@ -1299,11 +1322,13 @@ static void audiobooks_row(bool on, bool unhide)
     if (on)
     {
         unsigned at = count;
+        bool after_music = false;
         /* Newly segregated books belong immediately after Music. */
         for (unsigned j = 0; j < count; j++)
             if (root_menu__[j] == &db_browser)
             {
                 at = j + 1;
+                after_music = true;
                 break;
             }
 
@@ -1320,7 +1345,7 @@ static void audiobooks_row(bool on, bool unhide)
             memmove(&root_menu_off[off], &root_menu_off[off + 1],
                     (root_menu_off_count - off) * sizeof(root_menu_off[0]));
         }
-        else if (at == count)
+        else if (!after_music)
         {
             /* After the last tagnavi row, else before Settings, else last. */
             for (i = count; i-- > 0; )

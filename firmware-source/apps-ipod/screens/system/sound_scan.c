@@ -30,6 +30,7 @@
  ****************************************************************************/
 
 #include <stdbool.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include "config.h"
@@ -107,6 +108,8 @@ static char          ss_now[64];
 
 static bool          ss_stop;      /* The user asked */
 static bool          ss_unplugged;
+static bool          ss_write_failed;
+static bool          ss_worker_failed;
 static int           ss_event;     /* System event ss_abort() took, or 0 */
 
 
@@ -285,7 +288,9 @@ static bool ss_abort(void)
 {
     int button;
 
-    if (!charger_inserted())
+    /* A full battery need not be charging. The scan needs an external input,
+     * not the Classic charger's separately qualified charging flag. */
+    if (!power_input_present())
     {
         ss_unplugged = true;
         return true;
@@ -378,28 +383,30 @@ static bool ss_measure(const char *path, uint32_t mtime, uint32_t genre_key,
     /* No record: the file was never tried, and the next run measures it. */
     if (rc == TRACK_DECODE_NO_THREAD)
     {
-        ss_skipped++;
-        return true;
+        ss_worker_failed = true;
+        return false;
     }
 
     beat_probe_result(&s);
     sound_index_fill(&rec, key, mtime, size, genre_key, year, &s, rc);
 
-    /* A file that will not decode still gets a record, so the next run does
-     * not spend the same seconds discovering the same thing. */
-    if (rc == TRACK_DECODE_FAILED || rc == TRACK_DECODE_NO_CODEC ||
-        rc == TRACK_DECODE_NO_FILE)
-    {
-        ss_failed++;
-    }
-
     if (analysed < SS_MIN_LENGTH_MS / 2)
         rec.flags |= SOUND_F_SHORT;
 
+    if (!sound_index_add(&rec))
+    {
+        ss_write_failed = true;
+        return false;
+    }
+
+    /* Count only measurements that the working index accepted. */
+    if (rc == TRACK_DECODE_FAILED || rc == TRACK_DECODE_NO_CODEC ||
+        rc == TRACK_DECODE_NO_FILE)
+        ss_failed++;
     ss_audio_ms += analysed;
     ss_done++;
 
-    return sound_index_add(&rec);
+    return true;
 }
 
 
@@ -417,9 +424,9 @@ static bool ss_measure(const char *path, uint32_t mtime, uint32_t genre_key,
  * False if the user stopped instead of plugging in. */
 static bool ss_wait_for_charger(void)
 {
-    if (!charger_inserted() && global_settings.talk_menu)
+    if (!power_input_present() && global_settings.talk_menu)
         talk_text("Connect the charger to continue", false);
-    while (!charger_inserted())
+    while (!power_input_present())
     {
         int button;
 
@@ -607,6 +614,7 @@ static void ss_run(bool fresh)
     ss_work = 0;
     ss_audio_ms = 0;
     ss_stop = ss_unplugged = false;
+    ss_write_failed = ss_worker_failed = false;
     ss_event = 0;
     strlcpy(ss_now, "", sizeof (ss_now));
 
@@ -618,16 +626,18 @@ static void ss_run(bool fresh)
     if (ss_handle <= 0)
     {
         usb_set_mode(global_settings.usb_mode);
-        splash(HZ * 3, "Not enough memory");
+        ss_result("Not enough memory for analysis");
         return;
     }
 
-    rc = sound_index_begin(index_size + 1, fresh);
+    rc = sound_index_begin(index_size < INT_MAX ? index_size + 1 : index_size,
+                           fresh);
     if (rc != SOUND_OK)
     {
         core_free(ss_handle);
         usb_set_mode(global_settings.usb_mode);
-        splash(HZ * 3, "Could not open the index");
+        ss_result(rc == SOUND_ERR_MEM ? "Not enough memory for the index"
+                                       : "Could not open the index");
         return;
     }
 
@@ -650,7 +660,7 @@ static void ss_run(bool fresh)
         sound_index_close();
         core_free(ss_handle);
         usb_set_mode(global_settings.usb_mode);
-        splash(HZ * 3, "Database busy");
+        ss_result("Database busy. Try again after its update finishes");
         return;
     }
 
@@ -702,7 +712,7 @@ static void ss_run(bool fresh)
             }
         }
 
-        if (ss_stop)
+        if (ss_stop || ss_write_failed || ss_worker_failed)
             break;
 
         /* Once a track, not on a timer: at seconds a track there is nothing
@@ -735,11 +745,28 @@ static void ss_run(bool fresh)
 
     /* Losing the charger is no longer an ending -- the run waits for it and
      * carries on -- so there are two: the user stopped, or it finished. */
-    if (ss_stop)
+    if (ss_worker_failed)
+    {
+        bool saved = sound_index_close();
+        ss_result(saved ? "Could not start analysis worker. Restart and resume"
+                        : "Could not start analysis worker or save the index");
+        return;
+    }
+
+    if (ss_write_failed)
     {
         sound_index_close();
+        ss_result("Could not write the index");
+        return;
+    }
+
+    if (ss_stop)
+    {
+        bool saved = sound_index_close();
         if (ss_event)
             default_event_handler(ss_event);
+        else if (!saved)
+            ss_result("Could not save the unfinished index");
         else
             splashf(HZ * 4, "Stopped. %d of %d done",
                     ss_done + ss_skipped, ss_total);

@@ -51,6 +51,7 @@
 #include "app_util.h"
 #include "shutdown.h"
 #include "output_pause.h"
+#include "bg_task.h"
 
 #ifdef BOOTFILE
 /* True once this cable session's "before" BOOTFILE mtime has been recorded. */
@@ -122,6 +123,10 @@ static bool clean_shutdown(enum shutdown_type sd_type,
             splashf(0, "%s %s", str(LANG_WARNING_BATTERY_EMPTY),
                                 str(LANG_SHUTTINGDOWN));
         }
+
+        /* No artwork/index writer may race the final flush or spindown.
+         * This is after the cancellable database check above. */
+        bg_task_shutdown(batt_safe);
 
         if (batt_safe) /* do not save on critical battery */
         {

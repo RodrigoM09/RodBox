@@ -62,6 +62,11 @@ static int bg_steps_count;
 static long bg_stack[BG_STACK_SIZE / sizeof(long)];
 static const char bg_thread_name[] = "bgtask";
 static struct event_queue bg_queue;
+/* Only the worker holds this across task I/O. Accepted shutdown first asks
+ * the running pass to stop, then waits here for its cleanup to finish. */
+static struct mutex bg_work_mutex;
+static volatile bool bg_quiescing;
+static bool bg_started;
 
 /* ---------------------------------------------------------------------------
  * The marks
@@ -225,7 +230,7 @@ bool bg_task_should_stop(const struct bg_task *task)
         { SYS_REBOOT, SYS_REBOOT },
     };
 
-    if (bg_task_preempted(task))
+    if (bg_quiescing || bg_task_preempted(task))
         return true;
 
     /* Trap: the queue alone is too late for a host. Nothing arrives on it
@@ -363,6 +368,11 @@ static void bg_task_tick(struct bg_task *task)
     enum bg_result result;
     long started;
 
+    /* The gate must precede purge/forget, which write before stale() gets
+     * its own chance to notice a USB handover or an accepted shutdown. */
+    if (bg_quiescing || usb_host_wants_storage())
+        return;
+
     /* A rebuild throws the artifacts away first; an update keeps them and
      * lets the pass fill in what is missing. Either way the task is stale
      * afterwards, which is what actually starts the work below. */
@@ -471,10 +481,15 @@ static void bg_thread(void)
                 break;
 
             case SYS_TIMEOUT:
-                for (i = 0; i < bg_tasks_count; i++)
-                    bg_task_tick(bg_tasks[i]);
-                for (i = 0; i < bg_steps_count; i++)
-                    bg_steps[i]->tick();
+                mutex_lock(&bg_work_mutex);
+                if (!bg_quiescing)
+                {
+                    for (i = 0; i < bg_tasks_count && !bg_quiescing; i++)
+                        bg_task_tick(bg_tasks[i]);
+                    for (i = 0; i < bg_steps_count && !bg_quiescing; i++)
+                        bg_steps[i]->tick();
+                }
+                mutex_unlock(&bg_work_mutex);
                 break;
 
             default:
@@ -483,7 +498,10 @@ static void bg_thread(void)
                 if (!(ev.id & SYS_EVENT))
                 {
                     struct bg_task *task = (struct bg_task *)ev.data;
-                    task->handle_event(&ev);
+                    mutex_lock(&bg_work_mutex);
+                    if (!bg_quiescing)
+                        task->handle_event(&ev);
+                    mutex_unlock(&bg_work_mutex);
                 }
                 break;
         }
@@ -492,10 +510,22 @@ static void bg_thread(void)
 
 void bg_task_start(void)
 {
+    mutex_init(&bg_work_mutex);
+    bg_started = true;
     queue_init(&bg_queue, true);
     create_thread(bg_thread, bg_stack, sizeof(bg_stack), 0,
                   bg_thread_name IF_PRIO(, PRIORITY_BACKGROUND)
                   IF_COP(, CPU));
+}
+
+void bg_task_shutdown(bool wait_for_io)
+{
+    bg_quiescing = true;
+    if (bg_started && wait_for_io)
+    {
+        mutex_lock(&bg_work_mutex);
+        mutex_unlock(&bg_work_mutex);
+    }
 }
 
 void bg_task_post(struct bg_task *task, long id)

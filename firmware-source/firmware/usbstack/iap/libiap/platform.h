@@ -108,6 +108,8 @@ IAPBool iap_platform_get_ipod_model_num(struct IAPContext* iap_ctx, struct IAPSp
 /* audio controls */
 uint32_t iap_platform_get_time_ms(struct IAPContext* iap_ctx);
 IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatformPlayStatus* status);
+/* Reconcile current identity on the USB thread without loading artwork. */
+void    iap_platform_refresh_track_state(struct IAPContext* iap_ctx);
 void    iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl control, struct IAPPlatformPendingControl pending);
 IAPBool iap_platform_get_volume(struct IAPContext* iap_ctx, struct IAPPlatformVolumeStatus* status);
 IAPBool iap_platform_get_power_status(struct IAPContext* iap_ctx, struct IAPPlatformPowerStatus* status);
@@ -122,6 +124,9 @@ IAPBool iap_platform_get_lineout_usage(struct IAPContext* iap_ctx, IAPBool* used
 /* the disk's size and free space, in bytes */
 IAPBool iap_platform_get_storage_space(struct IAPContext* iap_ctx, uint64_t* total, uint64_t* avail);
 IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformTrackInfo* info);
+IAPBool iap_platform_track_field(struct IAPContext*, IAPBool database,
+        uint32_t index, unsigned type, struct IAPSpan*);
+IAPBool iap_platform_track_count(struct IAPContext*, IAPBool database, uint32_t*);
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index);
 IAPBool iap_platform_open_artwork(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformArtwork* artwork);
 IAPBool iap_platform_get_artwork_ptr(struct IAPContext* iap_ctx, struct IAPPlatformArtwork* artwork, struct IAPSpan* span);

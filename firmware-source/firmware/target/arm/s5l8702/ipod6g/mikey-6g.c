@@ -213,6 +213,7 @@ static void mikey_decode_vol(unsigned char evt, unsigned char dn,
  * bookkeeping so the register-to-button logic is a pure function of
  * (state, reg4, reg5). */
 #define MIKEY_LOCAL_CENTER_OFF_POLLS 3
+#define MIKEY_LOCAL_CENTER_CLASSIFY_POLLS 6
 static void mikey_local_decode_vol(unsigned char evt, unsigned char dn,
                              bool *held, int *click, bool *press_seen)
 {
@@ -252,7 +253,7 @@ struct mikey_local_decode {
     bool center_down;    /* debounced "press already reported" */
     int center_off;      /* consecutive released polls */
     int center_pulse;    /* click pulse countdown */
-    int center_pending;  /* wait briefly to classify shared mic-line signals */
+    int center_pending;  /* bit queue of rises waiting for classification */
     int volume_quiet;    /* suppress center transients around volume events */
     int center_volume_quiet; /* reject trailing phantom volume reports */
 };
@@ -352,7 +353,11 @@ static int mikey_local_decode_poll(struct mikey_local_decode *d,
         if (raw && d->armed)
         {
             if (!d->center_down && d->center_off >= MIKEY_LOCAL_CENTER_OFF_POLLS)
-                d->center_pending = 6; /* 120ms classification window */
+                /* Keep each accepted rise's six-poll classification delay.
+                 * A quick second tap must not restart the first tap's timer.
+                 * The three released polls between accepted rises also keep
+                 * their three-poll output pulses separate. */
+                d->center_pending |= 1 << (MIKEY_LOCAL_CENTER_CLASSIFY_POLLS - 1);
             d->center_down = true;
             d->center_off = 0;
         }
@@ -363,8 +368,9 @@ static int mikey_local_decode_poll(struct mikey_local_decode *d,
             if (d->center_off >= MIKEY_LOCAL_CENTER_OFF_POLLS)
                 d->center_down = false;
         }
-        if (d->center_pending > 0 && --d->center_pending == 0)
+        if (d->center_pending & 1)
             d->center_pulse = MIKEY_CENTER_PULSE_POLLS;
+        d->center_pending >>= 1;
     }
 
     bool center = false;

@@ -1,0 +1,22 @@
+{
+  "firmware-source/firmware/usbstack/iap/audio.c": {
+    "bytes": 21033,
+    "sha256": "a59a36eb28e325f354e2686a7f1c4062dc19b3bd8ff23537c3f85b459cb2746e"
+  },
+  "firmware-source/firmware/usbstack/iap/platform.c": {
+    "bytes": 31601,
+    "sha256": "75d2b8bcf711d650e7edb59ac679c32e2d97cc0ed2686b2e7da661b7f7c12453"
+  },
+  "firmware-source/firmware/usbstack/iap/platform.h": {
+    "bytes": 2462,
+    "sha256": "57d4c28db798a8ead9a28bd77a695e96e830163b1e0d34c18f8ca6cfeaa54076"
+  },
+  "firmware-source/firmware/usbstack/usb_core.c": {
+    "bytes": 58435,
+    "sha256": "5c33a5a037ebc98d56313e5978809f715408ffe9b88ba2dd3ba6578e2b76772c"
+  },
+  "firmware-source/firmware/usbstack/usb_iap.c": {
+    "bytes": 29662,
+    "sha256": "d2bb31dc25d8319bc43dd590efefe707bf3931b08c869cc8ff444cf5eb935ebf"
+  }
+}

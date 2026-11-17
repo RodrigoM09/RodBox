@@ -1,0 +1,22 @@
+{
+  "checkpoint": "pb23",
+  "version": "rodbox-pb23-writethrough-261027",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Flush verified USB writes before readback or success; propagate flush errors",
+  "status": "installed and remount verified; device acceptance pending",
+  "core_sha256": "f9c4e8c8f7591e26a8dff2fbc8407f56f48860ac1582ea1052cd3f02d969d8e9",
+  "core_bytes": 1995080,
+  "validation": {
+    "native_build": "passed; model header, payload checksum and matching codecs verified",
+    "focused_storage_usb_suites": 21,
+    "publication_host_suites": 43,
+    "hardware": "Installed core/codecs match after remount; sustained transfer acceptance pending",
+    "publication_host_result": "all passed in clean checkout"
+  },
+  "limits": [
+    "Host tests mock hardware and do not prove flash, DMA, USB or power-loss reliability.",
+    "Earlier candidate hardware checks found persistent or changing song data despite some clean filesystems and successful playback.",
+    "PB23 write-through handling is not yet accepted as the corruption root-cause fix.",
+    "No media, private device configuration, volume identifiers, inventories or build binaries are published."
+  ]
+}

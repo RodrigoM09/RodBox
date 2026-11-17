@@ -74,6 +74,9 @@ bool usb_core_bus_resetting(void);
 void usb_core_enable_driver(int driver,bool enabled);
 bool usb_core_driver_enabled(int driver);
 #ifdef HAVE_USBSTACK
+/* USB thread: cancel endpoint hardware before calling, rearm afterwards. */
+void usb_core_clear_endpoint_completion(int ep);
+
 void usb_core_handle_transfer_completion(
         struct usb_transfer_completion_event_data* event);
 #endif

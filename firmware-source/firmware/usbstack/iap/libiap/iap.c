@@ -192,6 +192,12 @@ static uint32_t play_stage_change_notification_set_mask_to_type_mask(uint32_t ma
     if(mask & IAPStatusChangeNotificationBits_TrackTimeOffsetSec) {
         ret |= 1 << IAPStatusChangeNotificationType_TrackTimeOffsetSec;
     }
+    if(mask & IAPStatusChangeNotificationBits_TrackUniqueID) {
+        ret |= 1u << IAPStatusChangeNotificationType_TrackUniqueID;
+    }
+    if(mask & IAPStatusChangeNotificationBits_TrackCapsChanged) {
+        ret |= 1u << IAPStatusChangeNotificationType_TrackCapsChanged;
+    }
     if(mask & IAPStatusChangeNotificationBits_PlaybackEngineContentsChanged) {
         ret |= 1 << IAPStatusChangeNotificationType_PlaybackEngineContentsChanged;
     }
@@ -293,6 +299,30 @@ static IAPBool send_db_record_cb(struct IAPContext* ctx) {
     return iap_true;
 }
 
+/* One response per requested field, advanced only after USB completion. */
+static IAPBool send_metadata_cb(struct IAPContext* ctx) {
+    while(ctx->metadata_type < 14 &&
+          !(ctx->metadata_mask & (1u << ctx->metadata_type)))
+        ctx->metadata_type++;
+    struct IAPSpan out = _iap_get_buffer_for_send_payload(ctx);
+    check_ret(iap_span_write_32(&out, ctx->metadata_index), iap_false);
+    check_ret(iap_span_write_8(&out, ctx->metadata_type), iap_false);
+    check_ret(iap_platform_track_field(ctx, ctx->metadata_database,
+              ctx->metadata_index, ctx->metadata_type, &out), iap_false);
+    check_ret(_iap_send_packet(ctx, IAPLingoID_ExtendedInterface,
+              ctx->metadata_reply, ctx->metadata_trans_id, out.ptr), iap_false);
+    unsigned next = ctx->metadata_type + 1;
+    while(next < 14 && !(ctx->metadata_mask & (1u << next))) next++;
+    if(next == 14) {
+        ctx->metadata_index++;
+        next = 0;
+    }
+    ctx->metadata_type = next;
+    if(ctx->metadata_index < ctx->metadata_end)
+        ctx->on_send_complete = send_metadata_cb;
+    return iap_true;
+}
+
 static int32_t ipod_ack(uint16_t command, enum IAPAckStatus status, struct IAPSpan* response_span, uint16_t ret) {
     alloc_response(IAPIPodAckPayload);
     response->status = status;
@@ -359,7 +389,9 @@ static int32_t handle_command(struct IAPContext* ctx, uint8_t lingo, uint16_t co
                 [IAPLingoID_Microphone]         = {1, 1},
                 [IAPLingoID_SimpleRemote]       = {1, 4},
                 [IAPLingoID_DisplayRemote]      = {1, 5},
-                [IAPLingoID_ExtendedInterface]  = {1, 14},
+                /* 1.13 adds GetDBTrackInfo/GetUIDTrackInfo, not implemented.
+                 * Do not invite a host to select those commands. */
+                [IAPLingoID_ExtendedInterface]  = {1, 12},
                 [IAPLingoID_AccessoryPower]     = {1, 1},
                 [IAPLingoID_USBHostMode]        = {1, 0},
                 [IAPLingoID_RFTuner]            = {1, 1},
@@ -767,7 +799,15 @@ static int32_t handle_command(struct IAPContext* ctx, uint8_t lingo, uint16_t co
         case IAPDisplayRemoteCommandID_GetTrackArtworkTimes: {
             read_request(IAPGetTrackArtworkTimesPayload);
             const uint16_t count = swap_16(request->artwork_count);
-            check_ret(count == 0 || count == 1, -IAPAckStatus_ECommandFailed, "not implemented");
+            uint32_t caps = 0;
+            struct IAPPlatformTrackInfo info = {.caps = &caps};
+            check_ret(swap_16(request->format_id) == IAP_ARTWORK_FORMAT_ID &&
+                      swap_16(request->artwork_index) == 0 && count <= 1,
+                      -IAPAckStatus_EBadParameter);
+            check_ret(iap_platform_get_indexed_track_info(ctx,
+                      swap_32(request->track_index), &info), -IAPAckStatus_EBadParameter);
+            check_ret(count == 0 || (caps & IAPIPodStateTrackCapBits_HasAlbumArts),
+                      -IAPAckStatus_EBadParameter);
 
             void* payload = iap_span_alloc(response_span, sizeof(uint32_t) * count);
             check_ret(payload != NULL, iap_false);
@@ -912,6 +952,43 @@ static int32_t handle_command(struct IAPContext* ctx, uint8_t lingo, uint16_t co
                 warn("invalid request type 0x%02" PRIX8, request->type);
                 return -IAPAckStatus_EBadParameter;
             }
+        } break;
+        case IAPExtendedInterfaceCommandID_GetDBTrackInfo:
+        case IAPExtendedInterfaceCommandID_GetPBTrackInfo: {
+            check_ret(request_span->size >= 9 && request_span->size <= 12,
+                      -IAPAckStatus_EBadParameter);
+            check_ret(ctx->on_send_complete == NULL, -IAPAckStatus_ECommandFailed);
+            uint32_t index, count, mask = 0, total;
+            check_ret(iap_span_read_32(request_span, &index) &&
+                      iap_span_read_32(request_span, &count), -IAPAckStatus_EBadParameter);
+            for(unsigned n = 0; request_span->size; n++) {
+                uint8_t byte;
+                check_ret(iap_span_read_8(request_span, &byte), -IAPAckStatus_EBadParameter);
+                mask |= (uint32_t)byte << (8 * n);
+            }
+            check_ret(mask && !(mask & ~0x20ffu), -IAPAckStatus_EBadParameter);
+            IAPBool database = command == IAPExtendedInterfaceCommandID_GetDBTrackInfo;
+            check_ret(iap_platform_track_count(ctx, database, &total), -IAPAckStatus_ECommandFailed);
+            check_ret(index < total && count != 0, -IAPAckStatus_EBadParameter);
+            if(count == UINT32_MAX) count = total - index;
+            check_ret(count <= total - index, -IAPAckStatus_EBadParameter);
+            ctx->metadata_index = index;
+            ctx->metadata_end = index + count;
+            ctx->metadata_mask = mask;
+            ctx->metadata_type = 0;
+            ctx->metadata_database = database;
+            ctx->metadata_trans_id = ctx->handling_trans_id;
+            ctx->metadata_reply = database ? IAPExtendedInterfaceCommandID_RetDBTrackInfo :
+                                            IAPExtendedInterfaceCommandID_RetPBTrackInfo;
+            check_ret(send_metadata_cb(ctx), -IAPAckStatus_ECommandFailed);
+            response_span->ptr = NULL;
+            return 0;
+        } break;
+        case IAPExtendedInterfaceCommandID_GetTrackArtworkTimes: {
+            const int32_t ret = handle_command(ctx, IAPLingoID_DisplayRemote,
+                IAPDisplayRemoteCommandID_GetTrackArtworkTimes, request_span, response_span);
+            check_ret(ret == IAPDisplayRemoteCommandID_RetTrackArtworkTimes, ret);
+            return IAPExtendedInterfaceCommandID_RetTrackArtworkTimes;
         } break;
         case IAPExtendedInterfaceCommandID_GetArtworkFormats: {
             /* same as DisplayRemote::GetArtworkFormats */
@@ -1134,6 +1211,8 @@ static int32_t handle_command(struct IAPContext* ctx, uint8_t lingo, uint16_t co
             response_span->ptr = NULL;
             if(request->id == IAPDigitalAudioCommandID_TrackNewAudioAttributes) {
                 check_ret(ctx->waiting_for_audio_attrs_ack, 0, "unexpected ack");
+                check_ret(ctx->handling_trans_id == ctx->audio_attrs_trans_id,
+                          0, "stale audio attributes ack");
                 ctx->waiting_for_audio_attrs_ack = iap_false;
                 iap_platform_on_audio_attrs_ack(ctx, request->status == IAPAckStatus_Success);
             }
@@ -1594,21 +1673,35 @@ static IAPBool push_active_event(struct IAPContext* ctx, struct IAPActiveEvent e
 }
 
 static IAPBool process_select_sampr(struct IAPContext* ctx, struct IAPActiveEvent* event) {
-    if(ctx->waiting_for_audio_attrs_ack) {
-        IAP_ERRORF("another sampr request pending");
-    }
-    ctx->waiting_for_audio_attrs_ack = iap_true;
+    check_ret(!ctx->waiting_for_audio_attrs_ack, iap_false);
 
     struct IAPSpan                            request_span = _iap_get_buffer_for_send_payload(ctx);
     struct IAPTrackNewAudioAttributesPayload* request      = iap_span_alloc(&request_span, sizeof(*request));
+    check_ret(request != NULL, iap_false);
     request->sample_rate                                   = swap_32(event->sampr);
     request->sound_check                                   = 0;
     request->volume_adjustment                             = 0;
-    check_ret(_iap_send_packet(ctx, IAPLingoID_DigitalAudio, IAPDigitalAudioCommandID_TrackNewAudioAttributes, _iap_next_trans_id(ctx), request_span.ptr), iap_false);
+    int32_t trans_id = _iap_next_trans_id(ctx);
+    if(!_iap_send_packet(ctx, IAPLingoID_DigitalAudio,
+                        IAPDigitalAudioCommandID_TrackNewAudioAttributes,
+                        trans_id, request_span.ptr)) {
+        iap_platform_on_audio_attrs_ack(ctx, iap_false);
+        return iap_false;
+    }
+    ctx->audio_attrs_trans_id = trans_id;
+    ctx->waiting_for_audio_attrs_ack = iap_true;
     return iap_true;
 }
 
 IAPBool iap_select_sampr(struct IAPContext* ctx, uint32_t sampr) {
+    /* Serialize acknowledged announcements; coalesce unsent rate changes. */
+    if(ctx->waiting_for_audio_attrs_ack) return iap_false;
+    for(size_t i = 0; i < array_size(ctx->active_events); i++) {
+        if(ctx->active_events[i].callback == process_select_sampr) {
+            ctx->active_events[i].sampr = sampr;
+            return iap_true;
+        }
+    }
     struct IAPActiveEvent event = {
         .callback = process_select_sampr,
         .sampr    = sampr,

@@ -1,0 +1,50 @@
+{
+  "firmware-source/apps-ipod/playlist/playlist.c": {
+    "bytes": 137261,
+    "sha256": "72c7d35ab5fd35ba7d246b37336e00810710f308c31251515a345847411314c2"
+  },
+  "firmware-source/apps-ipod/audio/playback.c": {
+    "bytes": 152207,
+    "sha256": "73c370b30ca62e91bddf0c88184bed67b5c4746c3e5fe5fb5b5be1f7fe26bff9"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/context.h": {
+    "bytes": 4218,
+    "sha256": "126e0cbabfcb013e11d3982eb50a55d84169934e8fa6c59af26018b8775cd9e7"
+  },
+  "firmware-source/firmware/usbstack/iap/platform.c": {
+    "bytes": 34085,
+    "sha256": "0d9bd5f145f86f1a30e595e54999e82b05966518337c034cfca7ec164103ca22"
+  },
+  "firmware-source/firmware/usbstack/iap/platform.h": {
+    "bytes": 2701,
+    "sha256": "74bb62ad9f4e1cf876fb2896edcded44a7d7d7f34a4fd898bd35993d0fe5a143"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/platform.h": {
+    "bytes": 6610,
+    "sha256": "621812a47ca4cb54d7f9a1fd5652c646347d6220fddfd39a3c3928fa724e5239"
+  },
+  "firmware-source/firmware/usbstack/iap/libiap/notification.c": {
+    "bytes": 13848,
+    "sha256": "c15dfb26a119e84c330c8241cf4b63895efa302d4cbaadf5d0cf9d237ae962ae"
+  },
+  "firmware-source/firmware/usbstack/usb_iap.c": {
+    "bytes": 30079,
+    "sha256": "568feb3865b0a8fee95c3ba34a4e76d05e3d3f78746ba179a7421ccf778d06ab"
+  },
+  "firmware-source/firmware/usbstack/iap/notification.c": {
+    "bytes": 2746,
+    "sha256": "f57aab6304f91313e741dcca2e258782bacf85163bbca8af77bc69ab863014da"
+  },
+  "firmware-source/firmware/usbstack/iap/audio.c": {
+    "bytes": 21033,
+    "sha256": "a59a36eb28e325f354e2686a7f1c4062dc19b3bd8ff23537c3f85b459cb2746e"
+  },
+  "firmware-source/firmware/usbstack/usb_core.c": {
+    "bytes": 58435,
+    "sha256": "5c33a5a037ebc98d56313e5978809f715408ffe9b88ba2dd3ba6578e2b76772c"
+  },
+  "firmware-source/firmware/drivers/usb-designware.c": {
+    "bytes": 85143,
+    "sha256": "16087c9d8921f51ae29f3e2484da616b572dd44a045dbb5681720f22aed8181b"
+  }
+}

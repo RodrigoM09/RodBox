@@ -1,0 +1,20 @@
+{
+  "checkpoint": "pb22",
+  "version": "rodbox-pb22-atasettle-261027",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "change": "Wait for PIO write completion and valid status after ATA command issue or device selection",
+  "status": "installed; sustained storage reliability unresolved",
+  "core_sha256": "071a30ce284d37a69cc19c38dc0d0bc3a9e3689be165d8a263c728aa3e19126e",
+  "core_bytes": 1995064,
+  "validation": {
+    "native_build": "passed; model header, payload checksum and matching codecs verified",
+    "focused_storage_usb_suites": 21,
+    "hardware": "Playback/idle checks passed; second large-transfer batch failed"
+  },
+  "limits": [
+    "Host tests mock hardware and do not prove flash, DMA, USB or power-loss reliability.",
+    "Earlier candidate hardware checks found persistent or changing song data despite some clean filesystems and successful playback.",
+    "PB23 write-through handling is not yet accepted as the corruption root-cause fix.",
+    "No media, private device configuration, volume identifiers, inventories or build binaries are published."
+  ]
+}

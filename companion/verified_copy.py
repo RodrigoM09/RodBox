@@ -56,7 +56,9 @@ def copy_verified(source_root,source_relative,dest_root,dest_relative,expected_s
                 fcntl.fcntl(f.fileno(),48,1);fcntl.fcntl(out.fileno(),48,1)
             while block:=f.read(1024*1024):
                 if cancel and cancel():raise InterruptedError('Copy cancelled')
-                assert out.write(block)==len(block)
+                # Writes must run even when Python assertions are disabled.
+                if out.write(block) != len(block):
+                    raise OSError('Short write while staging copy')
                 h.update(block);copied+=len(block)
             out.flush();os.fsync(out.fileno())
             if sys.platform=='darwin':

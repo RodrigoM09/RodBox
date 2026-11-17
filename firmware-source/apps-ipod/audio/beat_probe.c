@@ -62,7 +62,7 @@ static int16_t       stage[BP_STAGE_FRAMES * 2];
  * running sum over forty seconds does not: 1.7 million frames of 2^30. */
 static uint64_t      sum_mid_sq;
 static uint64_t      sum_side_sq;
-static uint32_t      peak_mid;
+static uint32_t      peak_pcm;
 static uint64_t      frames_in;
 
 /* Hop-window measurements. */
@@ -86,9 +86,8 @@ static unsigned long hold_since_ms;
 static bool          settled;
 
 static unsigned int  samplerate;
-static unsigned long first_ms;
-static unsigned long last_ms;
-static bool          have_first;
+static uint64_t      rate_frames;
+static unsigned long duration_ms;
 
 
 /** Accumulators **/
@@ -100,7 +99,7 @@ void beat_probe_start(void)
 
     sum_mid_sq = 0;
     sum_side_sq = 0;
-    peak_mid = 0;
+    peak_pcm = 0;
     frames_in = 0;
 
     windows_seen = 0;
@@ -120,9 +119,8 @@ void beat_probe_start(void)
     settled = false;
 
     samplerate = 0;
-    first_ms = 0;
-    last_ms = 0;
-    have_first = false;
+    rate_frames = 0;
+    duration_ms = 0;
 
     /* The rate is not known until the codec announces one, and both of
      * these are reset again the moment it does. */
@@ -219,6 +217,8 @@ static void bp_take_tempo(unsigned long track_ms)
          * tempo the tracker has since abandoned. */
         hold_period = 0;
         hold_since_ms = track_ms;
+        period_ms = confidence = period_lo = period_hi = 0;
+        settled = false;
         return;
     }
 
@@ -243,6 +243,7 @@ static void bp_take_tempo(unsigned long track_ms)
         hold_period = bt.period_ms;
         hold_since_ms = track_ms;
         period_lo = period_hi = bt.period_ms;
+        settled = false;
     }
     else
     {
@@ -308,6 +309,9 @@ void beat_probe_sink(const void *ch1, const void *ch2, int count,
 
     if (fmt->frequency != samplerate)
     {
+        if (samplerate)
+            duration_ms += (unsigned long)(rate_frames * 1000 / samplerate);
+        rate_frames = 0;
         samplerate = fmt->frequency;
         beat_hops_set_rate(samplerate);
         chroma_reset(samplerate);
@@ -315,13 +319,6 @@ void beat_probe_sink(const void *ch1, const void *ch2, int count,
 
     if (samplerate == 0)
         return;
-
-    if (!have_first)
-    {
-        first_ms = track_ms;
-        have_first = true;
-    }
-    last_ms = track_ms;
 
     /* The block's own place in the track, so hops land on the track's
      * timeline rather than on wherever the decode happened to start. */
@@ -338,7 +335,7 @@ void beat_probe_sink(const void *ch1, const void *ch2, int count,
         for (i = 0; i < n; i++)
         {
             int32_t l, r, mid, side;
-            uint32_t mid_abs;
+            uint32_t l_abs, r_abs;
 
             bp_frame(a, b, done + i, fmt->stereo_mode, fmt->shift, &l, &r);
 
@@ -351,12 +348,14 @@ void beat_probe_sink(const void *ch1, const void *ch2, int count,
             sum_mid_sq += (uint64_t)((int64_t)mid * mid);
             sum_side_sq += (uint64_t)((int64_t)side * side);
 
-            mid_abs = (uint32_t)(mid < 0 ? -mid : mid);
-            if (mid_abs > peak_mid)
-                peak_mid = mid_abs;
+            l_abs = (uint32_t)(l < 0 ? -l : l);
+            r_abs = (uint32_t)(r < 0 ? -r : r);
+            if (l_abs > peak_pcm) peak_pcm = l_abs;
+            if (r_abs > peak_pcm) peak_pcm = r_abs;
         }
 
         frames_in += n;
+        rate_frames += n;
         beat_hops_feed(stage, n);
         chroma_feed(stage, n);
         done += n;
@@ -382,17 +381,26 @@ static int bp_db10_amplitude(uint32_t amp)
 /* The same for a mean square, which is the amplitude's decibels doubled. */
 static int bp_db10_power(uint32_t mean_sq)
 {
-    uint32_t ratio_q16 = mean_sq / 16384;   /* mean_sq / 32768^2, in Q16 */
+    unsigned int shifts = 0;
 
-    if (ratio_q16 == 0)
+    if (mean_sq == 0)
         return -960;
 
-    return (int)((fp_decibels(ratio_q16, 16) * 10) / 65536 / 2);
+    /* Normalise before converting to Q16. Dividing first discarded every
+     * signal below about -48 dBFS, turning quiet music into "silence".
+     * A power doubling is 3.0103 dB; restore that scale after the log. */
+    while (mean_sq < (1UL << 29))
+    {
+        mean_sq <<= 1;
+        shifts++;
+    }
+    return (int)((fp_decibels(mean_sq / 16384, 16) * 10) / 65536 / 2)
+           - (int)((shifts * 30103u + 500u) / 1000u);
 }
 
 void beat_probe_result(struct track_sound *out)
 {
-    uint32_t mean_sq;
+    uint32_t mean_sq, mid_sq;
     int g;
 
     memset(out, 0, sizeof (*out));
@@ -400,7 +408,10 @@ void beat_probe_result(struct track_sound *out)
     chroma_get(&out->chroma);
 
     out->samplerate  = samplerate;
-    out->analysed_ms = last_ms > first_ms ? last_ms - first_ms : 0;
+    /* Codec timestamps mark block starts and may repeat. Count all samples,
+     * including the final block, rather than subtracting those timestamps. */
+    out->analysed_ms = duration_ms + (samplerate
+        ? (unsigned long)(rate_frames * 1000 / samplerate) : 0);
     out->windows     = windows_seen;
     out->settled     = settled;
 
@@ -411,23 +422,28 @@ void beat_probe_result(struct track_sound *out)
     if (frames_in == 0)
         return;
 
-    mean_sq = (uint32_t)(sum_mid_sq / frames_in);
+    mid_sq = (uint32_t)(sum_mid_sq / frames_in);
+    /* M^2 + S^2 = (L^2 + R^2)/2, apart from integer rounding. Mid alone
+     * cancels out-of-phase stereo, falsely calling audible music silent. */
+    mean_sq = (uint32_t)((sum_mid_sq + sum_side_sq) / frames_in);
     out->loudness_db10 = bp_db10_power(mean_sq);
 
     /* Crest as the gap between the two, so neither needs a square root and
      * the pair stay on one scale. */
-    out->crest_db10 = (unsigned int)
-                      (bp_db10_amplitude(peak_mid) - out->loudness_db10);
+    int crest = bp_db10_amplitude(peak_pcm) - out->loudness_db10;
+    out->crest_db10 = crest > 0 ? (unsigned int)crest : 0;
 
     /* Width against the mid rather than against full scale: what matters is
      * how much of this track is in the sides, not how loud it is. */
-    if (mean_sq > 0)
+    if (mid_sq > 0)
     {
         uint64_t side = sum_side_sq / frames_in;
-        uint64_t w = (side * 255) / mean_sq;
+        uint64_t w = (side * 255) / mid_sq;
 
         out->width = (unsigned int)(w > 255 ? 255 : w);
     }
+    else if (sum_side_sq > 0)
+        out->width = 255;
 
     if (level_n > 0)
     {

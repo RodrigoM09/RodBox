@@ -100,6 +100,11 @@ struct IAPContext {
     uint32_t                     db_record_end;
     int32_t                      db_record_trans_id;
     uint8_t                      db_record_type;
+    uint32_t metadata_index, metadata_end, metadata_mask;
+    int32_t metadata_trans_id;
+    uint16_t metadata_reply;
+    uint8_t metadata_type;
+    IAPBool metadata_database;
     uint8_t                      trans_id_support; /* TransIDSupport */
     uint8_t                      auth_major;       /* accessory's auth protocol */
     /* notification.c */
@@ -117,6 +122,8 @@ struct IAPContext {
     IAPBool  send_busy : 1;
     IAPBool  flushing_notifications : 1;
     IAPBool  waiting_for_audio_attrs_ack : 1;
+    IAPBool  track_caps_pending : 1; /* refreshed on USB tick, not audio thread */
+    int32_t audio_attrs_trans_id;
 
     uint8_t phase; /* IAPPhase */
 };

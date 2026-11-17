@@ -1,0 +1,21 @@
+{
+  "checkpoint": "pb15",
+  "version": "rodbox-pb15-usbheader-261024",
+  "target": "ipod6g",
+  "change": "Clear the stale theme header before drawing one built-in USB battery indicator",
+  "status": "installed with verified before/after recovery checkpoints; physical acceptance pending",
+  "validation": {
+    "native_build": "passed",
+    "actual_renderer_framebuffer_cases": 24,
+    "sanitizers": "AddressSanitizer and UndefinedBehaviorSanitizer",
+    "physical_visual_and_usb": "pending",
+    "before_after_backups": "all logical files verified; raw Mac metadata preserved separately",
+    "installed_changes": "core and matching build information only",
+    "analysis_settings_and_book_progress": "unchanged"
+  },
+  "limits": [
+    "USB header uses a solid fill and built-in battery graphics",
+    "The old theme clock is cleared on the USB screen",
+    "Host framebuffer tests are not physical LCD or USB-bus tests"
+  ]
+}

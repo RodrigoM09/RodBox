@@ -26,6 +26,7 @@
 #include "time.h"
 
 #include "buffer.h"
+#include "fs_defines.h"
 
 /* usb_iap.c */
 struct IAPContext* _iap_acquire_ctx(bool lock);
@@ -35,9 +36,16 @@ struct Platform {
     struct IAPAllocResult            malloc_results[4]; /* allow up to 4 mallocs */
     struct IAPPlatformPendingControl pending_control;
     bool                             control_pending;
+    bool                             pending_wants_play;
+    bool                             pending_button;
     long                             pending_tick;
 
     int aa_slot;
+    /* USB-thread snapshot; independent of playback callback delivery. */
+    bool observed_track_valid;
+    uint32_t observed_track_index;
+    uint32_t observed_track_count;
+    char observed_track_path[MAX_PATH];
 };
 
 void iap_platform_seek_tick(struct IAPContext* ctx);

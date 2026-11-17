@@ -42,10 +42,27 @@ If other upstream themes remain in the distributed source, preserve their own RE
 
 The headphone preset is a conservative listening adjustment, not a calibrated correction of every headphone or ear. The preserved local implementation does not identify an exact downloadable measurement dataset sufficiently to claim one was imported; do not invent such provenance.
 
-## Staged or researched, not installed
+## Focused adaptations and remaining research
 
-- [Schattenruf/rockpod `abbdc20`](https://github.com/Schattenruf/rockpod/commit/abbdc2052804d1a5c5789f7ce04c4b2f2df9e6aa): explicit iFlash model-detection idea was staged and host-tested; hardware ATA identification gate remains unmet and this patch is not installed.
+PB11's focused acoustic-analysis corrections and revision-aware refresh were
+implemented for RodBox with AI assistance. The underlying PCM analysis,
+beat/chroma pipeline, resumable sound index and soundscan tool are inherited
+from Anthony Fletcher's PodBox; the decoders and fixed-point library are
+Rockbox work. The new synthetic tests exercise those actual sources. No neural
+model or third-party model code is included in PB11.
+
+- [Schattenruf/rockpod `abbdc20`](https://github.com/Schattenruf/rockpod/commit/abbdc2052804d1a5c5789f7ce04c4b2f2df9e6aa): explicit iFlash ATA-model detection informed the local PB24 adaptation, now retained in installed PB26. Standard SSD hints and explicit mode overrides remain supported. PB24 power handling also references the iFlash report in nuxcodes/rockpod#37; neither attribution establishes a physical corruption root cause.
 - Broader playlist batching/resume/unshuffle patches were reviewed, not included wholesale.
 - UglyEgg/rockbox-music, bahusoid/rockbox, Nokikuji/NokiPod, tsirysndr/equalizer, stevenla/rockbox-ipod, Wuverul/SongDock, Pates2004/rockbox-accessible, dest92/Better-Rockpod, morgenman/RockBoxPersonalMods, deandromi/Rockbox-Rockpod-HFSPlus and brnomt/rockbox were research leads. They must not be described as installed firmware contributions without a specific later imported patch.
 
 PodBox's inherited accessory and speech credits include Paul Sauro's Rockbox changes, mojyack/libiap, oandrew/ipod-gadget and ipod, iAP2 protocol research, NV Access's NVSpeechPlayer, Carnegie Mellon's CMU Pronouncing Dictionary and the credited NRL letter-to-sound rules. The full upstream README and `firmware-source/docs/podbox/iap-sources.md`, `firmware-source/docs/podbox/iap2-sources.md` and `firmware-source/docs/LICENSES` remain authoritative for that inherited material. Presence of source does not establish that every optional feature was enabled or tested on the target player.
+
+PB24–PB26 follow-up work used Codex assistance for focused source review, regression harnesses, native builds and documentation. PB26’s Music database fix has an on-device check; host mocks and partial transfer success do not certify long-term storage reliability, battery behavior or headset controls. Upstream ownership and licenses remain unchanged.
+
+PB27’s merge-buffer alignment correction and production allocator/insertion regression were prepared with Codex assistance. Existing duplicate database rows were repaired separately during approved private recovery, with per-track semantic preservation checks; those private records and scripts are excluded. On-device startup/artist presentation and post-startup integrity checks passed. This does not certify a permanent storage-corruption fix.
+
+PB28's deferred-unlink cleanup correction and production-callback regression were prepared with Codex assistance. The underlying filesystem and artwork implementation remains credited to its original Rockbox/PodBox contributors. The regression uses mocked storage/bookkeeping; all 47 host suites passed and one physical restart/reconnect was clean. Personal media, artwork, device backups and repair scripts are excluded.
+
+PB29's regular-Music/Now Playing return-path adjustment was prepared with Codex assistance using the existing PodBox/Rockbox browser and root-dispatcher state. Source review, native build and installation/remount checks passed. Physical PB29 startup and both Menu paths were subsequently confirmed; no new upstream code or media was imported.
+
+PB30's FAT directory end-marker correction and production-function regression were prepared with Codex assistance. Rockbox's existing FAT implementation and its author/license notices are preserved. Eight focused suites and the native build passed, followed by one clean playback/artwork/shutdown/restart/reconnect cycle. No new external code or media was imported.

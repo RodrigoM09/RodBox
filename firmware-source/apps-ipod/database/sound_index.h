@@ -75,8 +75,13 @@ struct sound_record
     uint8_t  tonal_clarity;
     uint8_t  harmonic_change;
 
-    uint8_t  pad[6];
+    uint8_t  analysis_revision; /* Algorithm revision; 0 is upstream legacy. */
+    uint8_t  pad[5];
 };
+
+/* Same 64-byte layout. Update legacy measurements once, without discarding
+ * the readable finished index or rebuilding the music database. */
+#define SOUND_ANALYSIS_REVISION 1
 
 #define SOUND_F_SETTLED  0x01  /* The tempo met beat_probe_settled() */
 #define SOUND_F_NO_LOCK  0x02  /* No tempo; period_ms is 0 and means nothing */
@@ -191,8 +196,9 @@ void sound_index_seen(uint64_t key);
  * folders rather than the database, never prunes. */
 int sound_index_finish(bool prune);
 
-/* Stop, keeping the working file so the next run resumes from it. */
-void sound_index_close(void);
+/* Stop and flush the working file so the next run resumes from it. False
+ * on a write/flush/close error; that damaged working file is discarded. */
+bool sound_index_close(void);
 
 /* Whether a scan is part-finished, how many tracks this run has measured,
  * and whether it is an update -- one seeded from a finished index -- rather

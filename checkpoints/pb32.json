@@ -1,0 +1,26 @@
+{
+  "checkpoint": "pb32",
+  "version": "rodbox-pb32-battery-261031",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "status": "installed; startup and charger-transition test confirmed; reconnect checks passed",
+  "core_bytes": 1996040,
+  "core_sha256": "4cc87cd66824689df78c517bf66af9943b96f93fa2b274dc62cca4e6dc3fba8a",
+  "change": "Classic-only percentage continuity across charge/discharge voltage curves",
+  "validation": {
+    "focused_host_suites": 3,
+    "native_build": "passed",
+    "firmware_files_verified": 42,
+    "database_active_tracks": 1592,
+    "artist_images_verified": 86,
+    "cached_image_structures_checked": 765,
+    "filesystem": "passed; no cross-links or orphan clusters",
+    "music": "no writes; inventory sizes and timestamps unchanged; full checksums not repeated"
+  },
+  "limits": [
+    "Voltage estimate can plateau; this is not fuel-gauge calibration",
+    "Prior shutdown cause unresolved",
+    "PB31 analysis hardware acceptance pending"
+  ],
+  "bootloader_changed": false,
+  "formatting_performed": false
+}

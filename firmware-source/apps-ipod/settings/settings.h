@@ -508,6 +508,12 @@ struct system_status
     int debug_log_since;
 };
 
+enum battery_display_mode {
+    BATTERY_DISPLAY_ICON = 0,
+    BATTERY_DISPLAY_PERCENT = 1,
+    BATTERY_DISPLAY_BOTH = 2
+};
+
 struct user_settings
 {
     /* audio settings */
@@ -608,7 +614,7 @@ struct user_settings
     int max_files_in_dir; /* Max entries in directory (file browser) */
     int max_files_in_playlist; /* Max entries in playlist */
     int volume_type;   /* how volume is displayed: 0=graphic, 1=percent */
-    int battery_display; /* how battery is displayed: 0=graphic, 1=percent */
+    int battery_display; /* enum battery_display_mode; existing values retained */
     /* Which busy indicators a theme may show: %lh, %lb and %lw */
     bool show_disk_activity;
     bool show_background_tasks;

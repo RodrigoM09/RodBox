@@ -1,0 +1,15 @@
+{
+  "checkpoint": "pb35",
+  "version": "rodbox-pb35-lexusdiag-261102",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "core_bytes": 1996628,
+  "core_sha256": "f34c291f4e0868641845650f1762bf593616e38b7540c8384a04dfc8bb9ba486",
+  "change": "Wait for playback command state; validate sample-rate lists; capture full metadata requests",
+  "native_build": "passed",
+  "installed": true,
+  "limits": [
+    "Lexus audio and metadata remain unresolved; no hardware acceptance claim",
+    "No bootloader changes or music writes"
+  ],
+  "authentication": "Successful in preserved Lexus trace"
+}

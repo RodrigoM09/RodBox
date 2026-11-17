@@ -213,6 +213,61 @@ static bool has_art(struct Platform* plt, uint32_t index) {
     return cache == USB_LOG_IAP_ART_CACHE_OK || slot;
 }
 
+void iap_platform_refresh_track_state(struct IAPContext* ctx) {
+    struct Platform* plt = ctx->platform;
+    const uint32_t mask3 = (1u << IAPIPodStateType_TrackPlaybackIndex) |
+                           (1u << IAPIPodStateType_TrackCaps) |
+                           (1u << IAPIPodStateType_PlaybackEngineContents);
+    const uint32_t mask4 = (1u << IAPStatusChangeNotificationType_TrackIndex) |
+                           (1u << IAPStatusChangeNotificationType_TrackUniqueID) |
+                           (1u << IAPStatusChangeNotificationType_TrackCapsChanged) |
+                           (1u << IAPStatusChangeNotificationType_PlaybackEngineContentsChanged);
+    if(!(ctx->enabled_notifications_3 & mask3) &&
+       !(ctx->enabled_notifications_4 & mask4)) {
+        plt->observed_track_valid = false;
+        return;
+    }
+    if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+        plt->observed_track_valid = false;
+        return;
+    }
+
+    /* Read buffered metadata only: never fall back to playlist/tagcache I/O.
+     * Recheck playback and the queue around the copy; retry transitions. */
+    const int display = playlist_get_display_index();
+    const int count = playlist_amount();
+    if(display <= 0 || display > count) {
+        return;
+    }
+    struct mp3entry id3;
+    const bool copied = audio_peek_buffered_track(&id3, 0);
+    if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+        plt->observed_track_valid = false;
+        return;
+    }
+    if(!copied || !id3.path[0] ||
+       display != playlist_get_display_index() || count != playlist_amount()) {
+        return;
+    }
+    const uint32_t index = (uint32_t)display - 1;
+    const bool path_changed = strcmp(plt->observed_track_path, id3.path) != 0;
+    if(!plt->observed_track_valid || index != plt->observed_track_index ||
+       (uint32_t)count != plt->observed_track_count || path_changed) {
+        if(!plt->observed_track_valid || (uint32_t)count != plt->observed_track_count ||
+           (index == plt->observed_track_index && path_changed)) {
+            iap_notify_tracks_count(ctx, (uint32_t)count);
+        }
+        /* The Lexus requests UID/caps, not index events. Match the stable
+         * library/metadata key rather than deriving an ID from queue slots. */
+        iap_notify_track_unique_id(ctx, iap_library_key(id3.path));
+        iap_notify_track_playback_index(ctx, index);
+        plt->observed_track_index = index;
+        plt->observed_track_count = (uint32_t)count;
+        strlcpy(plt->observed_track_path, id3.path, sizeof(plt->observed_track_path));
+        plt->observed_track_valid = true;
+    }
+}
+
 IAPBool iap_platform_get_play_status(struct IAPContext* iap_ctx, struct IAPPlatformPlayStatus* status) {
     struct Platform* plt = iap_ctx->platform;
 
@@ -254,22 +309,38 @@ bool iap_platform_control_waits(struct IAPContext* ctx) {
         /* playback starting has usually answered it already, but not where
          * it was playing before and the stream never stopped */
         library_play_held = false;
-    } else if(!(audio_status() & AUDIO_STATUS_PLAY)) {
+    }
+    bool playing = (audio_status() & AUDIO_STATUS_PLAY) &&
+                   !(audio_status() & AUDIO_STATUS_PAUSE);
+    if(playing != plt->pending_wants_play) {
         /* the iAP sink's play answers it first; playback on the built-in
          * sink, or none at all, is answered from here */
         if(!TIME_AFTER(current_tick, plt->pending_tick + 5 * HZ)) {
+            if(plt->pending_button &&
+               button_queue_try_post(BUTTON_MULTIMEDIA_PLAYPAUSE, 0))
+                plt->pending_button = false;
             return true;
         }
         ok = false;
     }
     check_act(iap_control_response(ctx, plt->pending_control, ok), );
     plt->control_pending = false;
+    plt->pending_button = false;
     return false;
 }
 
 void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl control, struct IAPPlatformPendingControl pending) {
     struct Platform* plt = iap_ctx->platform;
 
+    /* One in-flight request owns the pending transaction. Do not overwrite
+     * it, or queue a second toggle before the first one has taken effect. */
+    if(plt->control_pending) {
+        check_act(iap_control_response(iap_ctx, pending, false), );
+        return;
+    }
+    plt->pending_button = false;
+    const bool was_playing = (audio_status() & AUDIO_STATUS_PLAY) &&
+                             !(audio_status() & AUDIO_STATUS_PAUSE);
     IAPBool ret = iap_true;
     /* play, pause, stop and skip end a scan where it has got to */
     if(control <= IAPPlatformControl_Prev) {
@@ -289,6 +360,7 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
             plt->pending_control = pending;
             plt->pending_tick    = current_tick;
             library_play_held    = true;
+            plt->pending_wants_play = true;
             return;
         }
         if(!(audio_status() & AUDIO_STATUS_PLAY) || (audio_status() & AUDIO_STATUS_PAUSE)) {
@@ -346,14 +418,26 @@ void iap_platform_control(struct IAPContext* iap_ctx, enum IAPPlatformControl co
     if(button == BUTTON_NONE) {
         goto exit;
     }
-    check_act(button_queue_try_post(button, 0), ret = false);
-    if(ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE && audio_status() == 0) {
-        /* we are transitioning to stopped to playing, which may take time.
-         * to maintain synchronization with accessories, do not send an ack until playback actually begins. */
+    ret = button_queue_try_post(button, 0);
+    if(!ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE) {
+        /* A nonempty physical-key queue is backpressure, not an assertion.
+         * Keep one transaction and retry on the normal bounded control tick. */
+        plt->control_pending = true;
+        plt->pending_control = pending;
+        plt->pending_tick = current_tick;
+        plt->pending_wants_play = !was_playing;
+        plt->pending_button = true;
+        library_play_held = false;
+        return;
+    }
+    if(ret && button == BUTTON_MULTIMEDIA_PLAYPAUSE) {
+        /* Posting a key is not proof that the UI consumed it. Wait for the
+         * requested state, including paused-to-playing and playing-to-paused. */
         plt->control_pending = true;
         plt->pending_control = pending;
         plt->pending_tick    = current_tick;
         library_play_held    = false;
+        plt->pending_wants_play = !was_playing;
         return;
     }
 exit:
@@ -484,7 +568,8 @@ IAPBool iap_platform_get_storage_space(struct IAPContext* iap_ctx, uint64_t* tot
 }
 
 /* taken from iap-core.c */
-static void get_trackinfo(const unsigned int track, struct mp3entry* id3) {
+static bool get_trackinfo(const unsigned int track, struct mp3entry* id3) {
+    if(track >= (unsigned)playlist_amount()) return false;
     int tracknum = track;
     tracknum += playlist_get_first_index(NULL);
     if(tracknum >= playlist_amount()) {
@@ -494,15 +579,19 @@ static void get_trackinfo(const unsigned int track, struct mp3entry* id3) {
     /* Stopped, the current track's tags are empty */
     if(playlist_next(0) != tracknum || !(audio_status() & AUDIO_STATUS_PLAY)) {
         struct playlist_track_info info;
-        playlist_get_track_info(NULL, tracknum, &info);
+        if(playlist_get_track_info(NULL, tracknum, &info) != 0) return false;
+        memset(id3, 0, sizeof(*id3));
         /* The database first: a dock listing a playlist asks for every
          * track, and the file is a parse each. */
         if(!tagcache_fill_tags(id3, info.filename)) {
-            get_metadata(id3, -1, info.filename);
+            if(!get_metadata(id3, -1, info.filename)) return false;
         }
     } else {
-        memcpy(id3, audio_current_track(), sizeof(*id3));
+        const struct mp3entry *current = audio_current_track();
+        if(!current) return false;
+        memcpy(id3, current, sizeof(*id3));
     }
+    return true;
 }
 
 IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t index, struct IAPPlatformTrackInfo* info) {
@@ -513,7 +602,7 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
      * parse below already strains */
     static struct mp3entry     id3;
     check_act(playlist_get_track_info(NULL, index, &track) == 0, return iap_false);
-    get_trackinfo(index, &id3);
+    check_act(get_trackinfo(index, &id3), return iap_false);
 
     if(info->total_ms != NULL) {
         *info->total_ms = id3.length;
@@ -546,17 +635,75 @@ IAPBool iap_platform_get_indexed_track_info(struct IAPContext* iap_ctx, uint32_t
         check_act(iap_span_append(info->album, s, strlen(s) + 1), return iap_false);
     }
     if(info->title != NULL) {
-        const char* s = id3.title ? id3.title : "";
+        char fallback[256];
+        const char* s = id3.title;
+        if(!s || !*s) {
+            iap_library_fallback_name(1, id3.path, fallback, sizeof(fallback));
+            s = fallback;
+        }
         check_act(iap_span_append(info->title, s, strlen(s) + 1), return iap_false);
     }
     return iap_true;
 }
 
+IAPBool iap_platform_track_count(struct IAPContext* ctx, IAPBool database,
+                                 uint32_t* count) {
+    if(database) return iap_platform_get_db_count(ctx, IAPDatabaseType_Track, count);
+    *count = playlist_amount();
+    return iap_true;
+}
+
+IAPBool iap_platform_track_field(struct IAPContext* ctx, IAPBool database,
+        uint32_t index, unsigned type, struct IAPSpan* out) {
+    uint64_t number = 0;
+    const char* text = "";
+    char name[256];
+    if(database && !iap_library_tracks_are_queue()) {
+        check_act(iap_library_track_field(index, type, name, sizeof(name), &number),
+                  return iap_false);
+        text = name;
+    } else {
+        static struct mp3entry id3; /* USB thread only; off the small stack */
+        check_act(index < (uint32_t)playlist_amount(), return iap_false);
+        check_act(get_trackinfo(index, &id3), return iap_false);
+        switch(type) {
+        case 0: number = has_art(ctx->platform, index) ?
+                         IAPIPodStateTrackCapBits_HasAlbumArts : 0; break;
+        case 1: text = id3.title; break;
+        case 2: text = id3.artist; break;
+        case 3: text = id3.album; break;
+        case 4: text = id3.genre_string; break;
+        case 5: text = id3.composer; break;
+        case 6: number = id3.length; break;
+        case 7: number = iap_library_key(id3.path); break;
+        case 13: number = id3.tracknum > 0 ? id3.tracknum : 0; break;
+        default: return iap_false;
+        }
+        if(type >= 1 && type <= 5 && (!text || !*text)) {
+            iap_library_fallback_name(type, id3.path, name, sizeof(name));
+            text = name;
+        }
+    }
+    if(type >= 1 && type <= 5) {
+        if(!text) text = "";
+        return iap_span_append(out, text, strlen(text) + 1);
+    }
+    if(type == 7) return iap_span_write_64(out, number);
+    if(type == 13) return number <= 65535 && iap_span_write_16(out, number);
+    if(type == 0 || type == 6)
+        return number <= UINT32_MAX && iap_span_write_32(out, number);
+    return iap_false;
+}
+
 IAPBool iap_platform_set_playing_track(struct IAPContext* iap_ctx, uint32_t index) {
     (void)iap_ctx;
-    /* audio_skip() locks up on an offset past the end rather than refusing it */
-    check_act(index < (uint32_t)playlist_amount(), return iap_false);
-    audio_skip((int)index - playlist_next(0));
+    /* iAP indices are display-relative, as metadata and artwork are.
+     * audio_skip() takes an offset in the underlying rotated playlist. */
+    const uint32_t count = playlist_amount();
+    check_act(index < count, return iap_false);
+    uint32_t track = index + playlist_get_first_index(NULL);
+    if(track >= count) track -= count;
+    audio_skip((int)track - playlist_next(0));
     return iap_true;
 }
 

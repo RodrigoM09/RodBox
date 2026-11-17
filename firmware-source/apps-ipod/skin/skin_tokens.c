@@ -1904,7 +1904,13 @@ const char *get_token_value(struct gui_wps *gwps,
         }
         case SKIN_TOKEN_BATTERY_CHARGING:
         {
+#if CONFIG_CHARGING >= CHARGING_MONITOR
+            /* The Classic qualifies charger capability separately. A real
+             * charge indication must follow its monitored charging signal. */
+            if (charging_state()) {
+#else
             if (charge_state == CHARGING || charge_state == TOPOFF) {
+#endif
                 return "c";
             } else {
                 return NULL;

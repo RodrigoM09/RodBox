@@ -1,0 +1,18 @@
+{
+  "checkpoint": "pb43",
+  "version": "rodbox-pb43-bounded-prime-261112",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "native_build": "passed",
+  "usb_test_scripts_passed": 24,
+  "installed": true,
+  "firmware_files_verified": 42,
+  "protected_files_verified": 1370,
+  "music_inventory_size_mtime_unchanged": 2243,
+  "filesystem_check_passed": true,
+  "usb_logging_enabled": true,
+  "safely_ejected": true,
+  "music_files_written": false,
+  "full_music_checksum_repeated": false,
+  "hardware_acceptance": "pending reboot and Lexus test",
+  "core_sha256": "d287e8f8c2690c5cedb2ef3a1f99f9f1fe7260b3470ed42163d821ea6de8f8d7"
+}

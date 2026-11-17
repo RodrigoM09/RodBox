@@ -290,6 +290,10 @@ static struct tagcache_command_entry command_queue[TAGCACHE_COMMAND_QUEUE_LENGTH
 static volatile int command_queue_widx = 0;
 static volatile int command_queue_ridx = 0;
 static struct mutex command_queue_mutex SHAREDBSS_ATTR;
+/* Spans a worker operation, including cleanup between its individual file
+ * locks. Accepted shutdown waits here before the final foreground flush. */
+static struct mutex tagcache_work_mutex SHAREDBSS_ATTR;
+static volatile bool tagcache_quiescing;
 
 /* Moves whenever entry numbers stop meaning what they did: remove_files()
  * and tagcache_reinstate_ramcache() bump it. */
@@ -822,31 +826,43 @@ static bool do_timed_yield(void)
     return false;
 }
 
-static void allocate_tempbuf(void)
+static void allocate_tempbuf(size_t minimum)
 {
-    /* Yeah, malloc would be really nice now :) */
-    size_t size;
+    const size_t align_mask = sizeof(uint32_t) - 1;
     tempbuf_size = 0;
-
-    /* Need to pass dummy ops to prevent the buffer being moved
-     * out from under us, since we yield during the tagcache commit.
-     *
-     * Don't grab ALL memory -- leave a reserve so audio_reset_buffer()
-     * can still allocate if playback starts during a commit. Without
-     * this, core_alloc_maximum() + buflib_ops_locked starves the audio
-     * buffer and causes an OOM panic. */
-    size = core_allocatable();
-    if (size > TAGCACHE_MIN_AUDIO_RESERVE)
+    /* The deduplication CRC table grows down from the buffer's end.
+     * Both ends must stay word-aligned, including reclaimed allocations. */
+    if (minimum > SIZE_MAX - align_mask)
+        return;
+    minimum = (minimum + align_mask) & ~align_mask;
+    size_t available = core_allocatable();
+    size_t size = available > TAGCACHE_MIN_AUDIO_RESERVE
+                ? (available - TAGCACHE_MIN_AUDIO_RESERVE) & ~align_mask : 0;
+    bool reclaim = size < minimum;
+    /* Audio may own the free pool already. A bounded allocation invokes its
+     * shrink callback; checking core_allocatable() alone cannot reclaim it.
+     * Reserve playback headroom in that request, then return the headroom
+     * before keeping the immovable merge buffer. */
+    if (reclaim)
     {
-        size -= TAGCACHE_MIN_AUDIO_RESERVE;
-        tempbuf_handle = core_alloc_ex(size, &buflib_ops_locked);
-        if (tempbuf_handle > 0)
-        {
-            tempbuf = core_get_data(tempbuf_handle);
-            tempbuf_size = size;
-        }
+        if (minimum > SIZE_MAX - TAGCACHE_MIN_AUDIO_RESERVE)
+            return;
+        size = minimum + TAGCACHE_MIN_AUDIO_RESERVE;
     }
-
+    if (!size)
+        return;
+    int handle = core_alloc_ex(size, &buflib_ops_locked);
+    if (handle <= 0)
+        return;
+    void *buffer = core_get_data(handle);
+    if (reclaim && !core_shrink(handle, buffer, minimum))
+    {
+        core_free(handle);
+        return;
+    }
+    tempbuf_handle = handle;
+    tempbuf = buffer;
+    tempbuf_size = reclaim ? minimum : size;
 }
 
 static void free_tempbuf(void)
@@ -4558,7 +4574,7 @@ static bool merge_temp(void)
         /* Free memory first. Freeing the dircache means rebuilding it after
          * the merge -- seconds on a disk, which the reload then waits out --
          * so it is taken only for a merge free memory will not hold. */
-        allocate_tempbuf();
+        allocate_tempbuf(commit_need(&tch));
         tempbuf_ours = true;
         if ((size_t)tempbuf_size < commit_need(&tch))
         {
@@ -4566,7 +4582,7 @@ static bool merge_temp(void)
             dircache_free_buffer();
             dircache_buffer_stolen = true;
 
-            allocate_tempbuf();
+            allocate_tempbuf(commit_need(&tch));
         }
     }
 
@@ -5633,7 +5649,7 @@ static bool check_event_queue(void)
     /* An enumerating host counts. Trap: the queue alone is too late for one --
      * nothing arrives on it until SET_CONFIGURATION, by which point a scan
      * holding the CPU has already cost the host SET_ADDRESS. */
-    if (usb_host_wants_storage())
+    if (tagcache_quiescing || usb_host_wants_storage())
         return true;
 
     /* Count field is filters minus one. */
@@ -5647,6 +5663,9 @@ static bool check_event_queue(void)
 static bool check_event_queue_no_usb(void)
 {
     struct queue_event ev;
+
+    if (tagcache_quiescing)
+        return true;
 
     if(!queue_peek(&tagcache_queue, &ev))
         return false;
@@ -6909,29 +6928,34 @@ static void tagcache_thread(void)
 {
     struct queue_event ev;
     bool check_done = false;
-    cpu_boost(true);
-    finish_interrupted_swap();
-
-    /* If the previous cache build/update was interrupted, commit
-     * the changes first in foreground. */
-    if (db_file_exists(TAGCACHE_FILE_TEMP))
+    mutex_lock(&tagcache_work_mutex);
+    if (!tagcache_quiescing)
     {
-        allocate_tempbuf();
-        if (commit() && current_tcmh.serial == 0)
-            queue_post(&tagcache_queue, Q_IMPORT_CHANGELOG, 0);
-        free_tempbuf();
+        cpu_boost(true);
+        finish_interrupted_swap();
+
+        /* If the previous cache build/update was interrupted, commit
+         * the changes first in foreground. */
+        if (db_file_exists(TAGCACHE_FILE_TEMP))
+        {
+            /* merge_temp() knows the required size and owns its allocation.
+             * Preallocating from only the free pool can starve bootstrap. */
+            if (commit() && current_tcmh.serial == 0)
+                queue_post(&tagcache_queue, Q_IMPORT_CHANGELOG, 0);
+        }
+
+        /* Allocate space for the tagcache if found on disk. */
+        if (!tc_stat.ramcache)
+            allocate_tagcache();
+
+        cpu_boost(false);
+        tc_stat.initialized = true;
+
+        /* The header check, on this thread rather than holding up boot. */
+        if (!tc_stat.ready)
+            tagcache_commit_finalize();
     }
-
-    /* Allocate space for the tagcache if found on disk. */
-    if (!tc_stat.ramcache)
-        allocate_tagcache();
-
-    cpu_boost(false);
-    tc_stat.initialized = true;
-
-    /* The header check, on this thread rather than holding up boot. */
-    if (!tc_stat.ready)
-        tagcache_commit_finalize();
+    mutex_unlock(&tagcache_work_mutex);
 
     /* The first wait returns at once, so the boot scan and the RAM load start
      * now rather than a second later. */
@@ -6943,7 +6967,10 @@ static void tagcache_thread(void)
          * without this the two cannot be told apart once inside it. */
         bool asked_to_scan = false;
 
-        run_command_queue(false);
+        mutex_lock(&tagcache_work_mutex);
+        if (!tagcache_quiescing)
+            run_command_queue(false);
+        mutex_unlock(&tagcache_work_mutex);
 
         queue_wait_w_tmo(&tagcache_queue, &ev, first_wait ? 0 : HZ);
         first_wait = false;
@@ -6951,8 +6978,13 @@ static void tagcache_thread(void)
         /* A database a host replaced is not this run's: a scan of it with
          * ready clear would build it again. Only USB is answered until the
          * UI restarts. */
-        if (usb_db_replaced && ev.id != SYS_USB_CONNECTED)
+        mutex_lock(&tagcache_work_mutex);
+        if ((tagcache_quiescing || usb_db_replaced)
+            && ev.id != SYS_USB_CONNECTED)
+        {
+            mutex_unlock(&tagcache_work_mutex);
             continue;
+        }
 
         switch (ev.id)
         {
@@ -7103,18 +7135,26 @@ static void tagcache_thread(void)
                  * disconnect before it compared first, so no host write is
                  * stamped over. A flush after the stamp moves it past
                  * itself. */
-                run_command_queue(true);
-                usb_stamp = db_dir_stamp();
-                usb_stamp_taken = true;
+                if (!tagcache_quiescing)
+                {
+                    run_command_queue(true);
+                    usb_stamp = db_dir_stamp();
+                    usb_stamp_taken = true;
+                }
+                /* Do not hold the shutdown barrier while parked on USB. */
+                mutex_unlock(&tagcache_work_mutex);
                 usb_acknowledge(SYS_USB_CONNECTED_ACK, ev.data);
                 usb_wait_for_disconnect(&tagcache_queue);
                 /* Here, before this thread can write again, and not only in
                  * the UI: its end-of-session test can run before the cable
                  * is seen to be out. */
-                usb_stamp_changed();
+                mutex_lock(&tagcache_work_mutex);
+                if (!tagcache_quiescing)
+                    usb_stamp_changed();
                 usb_stamp_taken = false;
                 break ;
         }
+        mutex_unlock(&tagcache_work_mutex);
     }
 }
 
@@ -7123,7 +7163,12 @@ bool tagcache_prepare_shutdown(void)
     if (tagcache_get_commit_step() > 0)
         return false;
 
+    /* A stop message alone is consumed: the next queued update or timeout
+     * could otherwise start another scan after this function returned. */
+    tagcache_quiescing = true;
     tagcache_stop_scan();
+    mutex_lock(&tagcache_work_mutex);
+    mutex_unlock(&tagcache_work_mutex);
     while (read_lock || write_lock)
         sleep(1);
 
@@ -7335,6 +7380,7 @@ void tagcache_init(void)
 
     strmemccpy(tc_stat.db_path, LIB_DB_DIR, sizeof(tc_stat.db_path));
     mutex_init(&command_queue_mutex);
+    mutex_init(&tagcache_work_mutex);
     sound_index_genre_of = genre_by_key;
     queue_init(&tagcache_queue, true);
     create_thread(tagcache_thread, tagcache_stack,
