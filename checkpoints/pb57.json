@@ -2,7 +2,7 @@
   "checkpoint": "pb57",
   "version": "rodbox-pb57-hold-stream-261120",
   "target": "ipod6g / S5L8702 / 64 MB",
-  "status": "experimental-built-tested-reviewed-not-installed",
+  "status": "experimental-installed-and-readback-verified",
   "base_commit": "9d832fabe1d1deb53465afb6cb6ae8c723b87557",
   "problem": "Lexus USB audio stopped after the hold switch was moved on and off; only a replug restored it.",
   "mechanism": "Inferred, not captured: one failed/short isochronous packet stops the non-native batch pump in IRQ context, and only a host SET_CUR/SET_INTERFACE restarted it, which a car that keeps polling never sends.",
@@ -23,7 +23,7 @@
   "build_warning_count": 5,
   "independent_review_passed": true,
   "review_nonblocking_followups": 8,
-  "installed": false,
+  "installed": true,
   "installation_attempt": {
     "date": "2026-11-20",
     "result": "stopped at read-only preflight before any write",
@@ -31,17 +31,45 @@
     "files_written": 0,
     "repairs_performed": false,
     "pb56_still_installed": true,
-    "next": "separately approved volume-only repair, clean re-check, then the guarded installer"
+    "next": "separately approved volume-only repair, clean re-check, then the guarded installer",
+    "superseded_by": "installation"
   },
-  "hardware_acceptance": "pending in-car hold-switch test",
+  "hardware_acceptance": "pending: in-car Hold on/off while playing, then preserve logs",
   "rollback": {
     "checkpoint": "pb56",
-    "installed": true,
+    "private_package_preserved": true,
     "last_user_accepted": "pb55"
   },
   "publication": {
     "branch": "community",
     "tag": "checkpoint/pb57",
     "source_only": true
+  },
+  "installation": {
+    "date": "2026-11-20",
+    "firmware_files_verified": 42,
+    "only_replaced": [
+      "rockbox-info.txt",
+      "rockbox.ipod"
+    ],
+    "protected_backup_files_verified": 1497,
+    "clean_pre_post_fat_checks": true,
+    "safely_ejected": true,
+    "music_files_written_during_install": false,
+    "music_inventory_size_mtime_matched": 2548,
+    "full_music_byte_check_repeated": false,
+    "database_tracks_validated": 1883,
+    "cached_images_structure_checked": 891,
+    "separate_approved_fat_volume_repair": {
+      "user_approved": true,
+      "tool": "diskutil repairVolume (volume only)",
+      "fixed": "one art-cache thumbnail with a broken cluster chain (now empty; Rockbox refuses it and can regenerate it) and FSInfo free count",
+      "protected_files_unchanged": 1496,
+      "firmware_files_unchanged": 42,
+      "music_inventory_size_mtime_unchanged": 2548,
+      "post_repair_check": "clean"
+    },
+    "partition_map_repair": false,
+    "formatting": false
   }
 }

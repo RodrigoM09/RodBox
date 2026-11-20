@@ -535,7 +535,7 @@
     "checkpoint": "pb57",
     "version": "rodbox-pb57-hold-stream-261120",
     "target": "ipod6g / S5L8702 / 64 MB",
-    "status": "experimental-built-tested-reviewed-not-installed",
+    "status": "experimental-installed-and-readback-verified",
     "base_commit": "9d832fabe1d1deb53465afb6cb6ae8c723b87557",
     "native_build": "passed",
     "cumulative_host_suites_passed": 82,
@@ -550,7 +550,7 @@
     "firmware_files": 42,
     "codecs_unchanged_vs_pb56": 40,
     "independent_review_passed": true,
-    "installed": false,
+    "installed": true,
     "installation_attempt": {
       "date": "2026-11-20",
       "result": "stopped at read-only preflight before any write",
@@ -558,8 +558,36 @@
       "files_written": 0,
       "repairs_performed": false,
       "pb56_still_installed": true,
-      "next": "separately approved volume-only repair, clean re-check, then the guarded installer"
+      "next": "separately approved volume-only repair, clean re-check, then the guarded installer",
+      "superseded_by": "installation"
     },
-    "hardware_acceptance": "pending in-car hold-switch test"
+    "hardware_acceptance": "pending: in-car Hold on/off while playing, then preserve logs",
+    "installation": {
+      "date": "2026-11-20",
+      "firmware_files_verified": 42,
+      "only_replaced": [
+        "rockbox-info.txt",
+        "rockbox.ipod"
+      ],
+      "protected_backup_files_verified": 1497,
+      "clean_pre_post_fat_checks": true,
+      "safely_ejected": true,
+      "music_files_written_during_install": false,
+      "music_inventory_size_mtime_matched": 2548,
+      "full_music_byte_check_repeated": false,
+      "database_tracks_validated": 1883,
+      "cached_images_structure_checked": 891,
+      "separate_approved_fat_volume_repair": {
+        "user_approved": true,
+        "tool": "diskutil repairVolume (volume only)",
+        "fixed": "one art-cache thumbnail with a broken cluster chain (now empty; Rockbox refuses it and can regenerate it) and FSInfo free count",
+        "protected_files_unchanged": 1496,
+        "firmware_files_unchanged": 42,
+        "music_inventory_size_mtime_unchanged": 2548,
+        "post_repair_check": "clean"
+      },
+      "partition_map_repair": false,
+      "formatting": false
+    }
   }
 }

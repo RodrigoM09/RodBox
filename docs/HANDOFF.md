@@ -1,12 +1,12 @@
 # RodBox project handoff
 
-## Current: PB57 stream-recovery checkpoint (not yet installed)
+## Current: PB57 stream-recovery checkpoint (installed; in-car test pending)
 
 - **Problem:** in the Lexus, moving Hold on and then off stopped music until the cable was replugged.
 - **Cause (inferred):** a single failed/short isochronous packet stops the non-native USB audio pump in IRQ context (a deliberate PB36 policy). Only a host `SET_CUR`/`SET_INTERFACE` restarted it, and a car that keeps polling never sends either. No retained log captured a hold toggle in the car; the only PB56 car session streamed cleanly.
 - **Fix:** `usb_drv_batch_faulted()` plus `iap_audio_recover_stream()` on the USB thread. While alternate 1 is still enabled, it makes the same explicit restart a host `SET_CUR` makes, with backoff of 3 immediate attempts, then 1/s, then 1/10 s. The USB log now records `hold switch on/off …` and `iap: stream stopped by a failed packet, restarted (attempt N)`. Controller/PCM/descriptors/codecs are unchanged.
 - **Verification:** RED on PB56/GREEN on PB57 production-code test; 82 suites; 41 USB scripts; native build; independent review passed (non-blocking follow-ups in `checkpoints/pb57.json`). Core SHA-256 `eaa44c10…aaa1f9`.
-- **Device:** the first install attempt stopped at the read-only FAT preflight before any write. Exit 206: one album-art cache thumbnail with a broken cluster chain, and the FSInfo free count off by one. PB56 remains installed. Repair is a separate approval: volume-only `repairVolume`, then a clean re-check, then the guarded installer. Do not rerun blindly; the blocked attempt is archived privately.
+- **Device:** the first install attempt stopped at the read-only FAT preflight before any write (exit 206: one album-art cache thumbnail with a broken chain, and the FSInfo count off by one). With the user's approval, only that volume was repaired with `diskutil repairVolume`. The thumbnail is now empty (refused by the loader; rebuilt by Update Art Cache). The check after the repair was clean, and protected files, firmware and music sizes/dates were unchanged. PB57 was then installed: 42 files read back, only the core and version file replaced, clean FAT checks before and after, 2,548 music entries' sizes/dates unchanged (not a full byte check), safe eject. PB56 is the rollback; PB55 is the last user-accepted build. Do not rerun the repair or install.
 - **Next:** after PB57 is installed, test Hold on → off while playing in the car, then copy `.rockbox/logs` before browsing more. `restarted` lines with continued audio confirm the fix. `hold switch` lines without restarts and still-silent audio point to a different mechanism (pause or control wait).
 
 ## Previous: PB56 experimental checkpoint

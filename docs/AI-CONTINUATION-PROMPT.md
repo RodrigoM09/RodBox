@@ -1,6 +1,6 @@
 # RodBox continuation prompt — PB57
 
-Read [HANDOFF.md](HANDOFF.md), [PB57](PB57-STREAM-RECOVERY.md) and [`checkpoints/pb57.json`](../checkpoints/pb57.json). PB57 restarts a fault-stopped Lexus USB audio stream; the hold-switch trigger is inferred. PB57 is built and reviewed, but the device still runs PB56 until the FAT preflight blocker is repaired with separate approval and the guarded installer is rerun. After installation, the user tests Hold on/off in the car; preserve `.rockbox/logs` immediately and look for `hold switch` and `restarted` lines.
+Read [HANDOFF.md](HANDOFF.md), [PB57](PB57-STREAM-RECOVERY.md) and [`checkpoints/pb57.json`](../checkpoints/pb57.json). PB57 restarts a fault-stopped Lexus USB audio stream; the hold-switch trigger is inferred. PB57 is installed and read-back verified (after an approved volume-only FAT repair); PB56 is the rollback. After installation, the user tests Hold on/off in the car; preserve `.rockbox/logs` immediately and look for `hold switch` and `restarted` lines.
 
 ## Earlier prompt — PB56
 

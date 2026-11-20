@@ -2,7 +2,7 @@
 
 ## PB57 — keep Lexus USB audio playing after the hold switch
 
-The reported failure: moving Hold on and off in the car stopped audio until a replug. One failed isochronous packet stopped the USB audio pump, and only a host rate/interface command restarted it. PB57 restarts a fault-stopped stream from the USB thread while the car keeps the stream enabled, with bounded backoff, and logs hold-switch changes and restarts. The new production-code regression fails on PB56 and passes on PB57. 82 suites, 41 USB scripts, the native build and independent review passed. The first install attempt stopped at the read-only FAT preflight (one damaged art-cache thumbnail) before writing anything; PB56 stays installed. The hold-switch trigger is inferred, not captured. See [PB57](PB57-STREAM-RECOVERY.md).
+The reported failure: moving Hold on and off in the car stopped audio until a replug. One failed isochronous packet stopped the USB audio pump, and only a host rate/interface command restarted it. PB57 restarts a fault-stopped stream from the USB thread while the car keeps the stream enabled, with bounded backoff, and logs hold-switch changes and restarts. The new production-code regression fails on PB56 and passes on PB57. 82 suites, 41 USB scripts, the native build and independent review passed. The first install attempt stopped at the read-only FAT preflight (one damaged art-cache thumbnail) before writing anything. After an approved volume-only repair, PB57 was installed, read back and safely ejected. In-car acceptance is pending. The hold-switch trigger is inferred, not captured. See [PB57](PB57-STREAM-RECOVERY.md).
 
 ## PB56 — experimental audio/reliability checkpoint
 

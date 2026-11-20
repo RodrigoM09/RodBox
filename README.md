@@ -19,7 +19,7 @@ The target used was **ipod6g / S5L8702 / 64 MB RAM**, on a seventh-generation Cl
 
 ## Current status
 
-**PB57 experimental checkpoint** (`community`, `checkpoint/pb57`): restarts the Lexus USB audio stream after a single failed packet, the inferred cause of audio stopping after the hold switch was moved until a replug. Built; 82 suites, 41 USB scripts and independent review passed. **Not yet installed:** the install preflight stopped on one damaged art-cache file before writing anything, and PB56 remains on the player. See [PB57](docs/PB57-STREAM-RECOVERY.md).
+**PB57 experimental checkpoint** (`community`, `checkpoint/pb57`): restarts the Lexus USB audio stream after a single failed packet, the inferred cause of audio stopping after the hold switch was moved until a replug. Built; 82 suites, 41 USB scripts and independent review passed. Installed and read-back verified after an approved volume-only FAT repair. In-car acceptance is pending. See [PB57](docs/PB57-STREAM-RECOVERY.md).
 
 **PB56 experimental checkpoint** (`community`, `checkpoint/pb56`): built, independently reviewed, installed, and read-back verified on the test iPod. The native build, 81 cumulative host suites, and a separate run of all 40 USB scripts passed. PB56 headphone/aux, Lexus, and battery acceptance remain pending. PB55 remains the last user-accepted rollback. See [PB56](docs/PB56-AUDIO-TEST.md) and the [handoff](docs/HANDOFF.md).
 

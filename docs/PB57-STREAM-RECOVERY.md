@@ -2,7 +2,7 @@
 
 Version: `rodbox-pb57-hold-stream-261120`. Base: PB56 (`checkpoint/pb56`, `9d832fa`).
 
-**Status (2026-11-20):** built, tested and independently reviewed. **Not yet installed.** The guarded installer stopped at its read-only FAT preflight before writing anything (exit 206: one damaged album-art cache thumbnail and an off-by-one free-cluster count). PB56 remains on the player. Installation waits on a separately approved volume-only repair and a clean re-check. In-car acceptance is pending.
+**Status (2026-11-20):** installed and read-back verified on the test iPod. The first install attempt stopped at the read-only FAT preflight before writing anything (exit 206: one damaged album-art cache thumbnail and an off-by-one free-cluster count). With the user's approval, only that volume was repaired with `diskutil repairVolume`. The thumbnail is now empty; the firmware refuses it and **Update Art Cache** can rebuild it. Protected files, firmware and music sizes/dates were unchanged, and the check after the repair was clean. The guarded installer then replaced only the core and version file, read back all 42 firmware files, ran clean FAT checks before and after, and safely ejected. **In-car acceptance is pending.**
 
 ## Reported problem
 

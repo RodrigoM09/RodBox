@@ -1,35 +1,35 @@
 {
   "README.md": {
-    "bytes": 8407,
-    "sha256": "3c62d535255c503ed97349862fe469efd05b70bc3674d5065b0bc9b7874938fe"
+    "bytes": 8372,
+    "sha256": "eb2aaf9cec85d48d4aebc508a49e738de197252d63a42b85cabf22f6fc784ac5"
   },
   "checkpoints/pb57.json": {
-    "bytes": 2029,
-    "sha256": "6543c6a114892642d778f39fe9047ceca137c9b50b31ad6270e1eba1028e1bd3"
+    "bytes": 3112,
+    "sha256": "dd186fa47540c3abbbfdc2d4a5af61477c7fdff8c24450b7855133110a7e38df"
   },
   "docs/AI-CONTINUATION-PROMPT.md": {
-    "bytes": 6210,
-    "sha256": "9ea300cf75c71946acc56342bb3302a27960b01d4aec7426584f9ac409ab6ba1"
+    "bytes": 6155,
+    "sha256": "83f67ef47598ee0485db6faa47261e4e221afb56c9c4e6f7dfba7cdf1233eddd"
   },
   "docs/HANDOFF.md": {
-    "bytes": 43166,
-    "sha256": "dc7515702d1d813788b294c4b40a36c1e023fe8364e1aa22ec660a099afee81d"
+    "bytes": 43538,
+    "sha256": "b596050a0c0d648958d2abd5643f35024bd423bc49e88951e0e0e7b8c7844fa5"
   },
   "docs/HISTORY.md": {
-    "bytes": 21326,
-    "sha256": "a2a44ff921fb1db7920f0f163023a5719ca7b663040b30e34e4357d898439d08"
+    "bytes": 21422,
+    "sha256": "3b0f4f8df90dfc81f80beded93c68db6d1ac3ca0cedb30dccd7f1b3a11bf31e2"
   },
   "docs/PB57-STREAM-RECOVERY.md": {
-    "bytes": 5663,
-    "sha256": "a44e9e371ea853ee12fcc1173fbe676c411cba0725baf051f5e0f3b12810fdb2"
+    "bytes": 5989,
+    "sha256": "25baf7d7f57ec2894799574961822505346387188a36b1f5ff03834f30984446"
   },
   "docs/TESTING.md": {
-    "bytes": 22424,
-    "sha256": "49779b4ecd6e2644b76a20ff9c96d60164a954a627e6675556793f04bad44624"
+    "bytes": 22521,
+    "sha256": "8e8f72ebbbfb7c0e8027e73a81645558ad4c690d0cf2212dd3f5eaee8fa36d40"
   },
   "docs/VERIFICATION.json": {
-    "bytes": 25382,
-    "sha256": "42575d0c16cfe993ca7d28730e6be251463f0d44871fa98fdea529f965eeff2e"
+    "bytes": 26505,
+    "sha256": "8797d81bed3bc1bf774658b80214204e402d5e8d6604b09cc63e20a2acc2b32e"
   },
   "firmware-source/apps-ipod/system/usb_log_file.c": {
     "bytes": 35931,
