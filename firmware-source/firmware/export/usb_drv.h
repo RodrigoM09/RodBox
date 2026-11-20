@@ -277,6 +277,11 @@ int usb_drv_batch_stop(void);
  * queue was refilled (always 0 where only one packet is queued), and
  * packets the controller finished with an error */
 void usb_drv_batch_take_counts(uint32_t *ran_empty, uint32_t *failed);
+#ifdef USB_BATCH_NON_NATIVE
+/* a failed or short packet, not a stop, has the stream stopped; only an
+ * explicit usb_drv_batch_start() from thread context restarts it */
+bool usb_drv_batch_faulted(void);
+#endif
 
 /* USB_STRING_INITIALIZER(u"Example String") */
 #define USB_STRING_INITIALIZER(S) { \

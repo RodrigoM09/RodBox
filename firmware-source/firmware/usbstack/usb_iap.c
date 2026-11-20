@@ -366,6 +366,25 @@ static void log_audio_counts(void) {
     counts_elapsed = elapsed;
 }
 
+/* Each hold switch change in the USB log, with what playback and the stream
+ * are doing, so a car session shows what moving it did. Notifying the
+ * accessory stays below, where libiap's subscriptions decide. */
+static int8_t logged_hold_switch_state;
+
+static void log_hold_switch(void) {
+#ifdef HAS_BUTTON_HOLD
+    const int8_t hold = button_hold() ? 1 : 0;
+    if(hold == logged_hold_switch_state) {
+        return;
+    }
+    logged_hold_switch_state = hold;
+    usb_log(USB_LOG_IAP2_EVENT, USB_LOG_IAP_HOLD, 0, hold,
+            (audio_status() & 3) | (stream.alt == 1 ? 1u << 8 : 0) |
+            (iap_audio_stream_faulted() ? 1u << 9 : 0) |
+            ((uint32_t)pcm_current_sink() & 0xf) << 12);
+#endif
+}
+
 static int tick_callback(struct timeout* tmo) {
     (void)tmo;
     usb_signal_class_notify(USB_DRIVER_IAP, Notify_Tick);
@@ -446,6 +465,7 @@ static int usb_iap_init_connection(void) {
     last_charge_state      = -1;
     last_minute            = -1;
     last_hold_switch_state = -1;
+    logged_hold_switch_state = -1;
 
     iap_debug_reset_timestamp();
     usb_iap2_connect();
@@ -766,6 +786,10 @@ static void usb_iap_notify_event(intptr_t data) {
             return;
         }
         log_audio_counts();
+        /* Ahead of anything below that returns early: a stream a failed
+         * packet stopped is restarted even while a control waits. */
+        iap_audio_recover_stream();
+        log_hold_switch();
         struct IAPContext* ctx = _iap_acquire_ctx(true);
         iap_remote_buttons_tick(ctx);
         iap_platform_seek_tick(ctx);

@@ -40,6 +40,10 @@ void iap_audio_attrs_ack(bool success);
 void iap_audio_accessory_heard(void);
 /* USB thread: TrackNewAudioAttributes again if a track has started since. */
 void iap_audio_tick(void);
+/* USB thread: restart a stream a failed packet stopped while the host still
+ * has it enabled */
+void iap_audio_recover_stream(void);
+bool iap_audio_stream_faulted(void);
 /* The rate the iAP sink is configured for. */
 unsigned long iap_audio_sampr(void);
 

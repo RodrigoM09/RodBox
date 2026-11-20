@@ -1,6 +1,15 @@
 # RodBox project handoff
 
-## Current: PB56 experimental checkpoint
+## Current: PB57 stream-recovery checkpoint (not yet installed)
+
+- **Problem:** in the Lexus, moving Hold on and then off stopped music until the cable was replugged.
+- **Cause (inferred):** a single failed/short isochronous packet stops the non-native USB audio pump in IRQ context (a deliberate PB36 policy). Only a host `SET_CUR`/`SET_INTERFACE` restarted it, and a car that keeps polling never sends either. No retained log captured a hold toggle in the car; the only PB56 car session streamed cleanly.
+- **Fix:** `usb_drv_batch_faulted()` plus `iap_audio_recover_stream()` on the USB thread. While alternate 1 is still enabled, it makes the same explicit restart a host `SET_CUR` makes, with backoff of 3 immediate attempts, then 1/s, then 1/10 s. The USB log now records `hold switch on/off …` and `iap: stream stopped by a failed packet, restarted (attempt N)`. Controller/PCM/descriptors/codecs are unchanged.
+- **Verification:** RED on PB56/GREEN on PB57 production-code test; 82 suites; 41 USB scripts; native build; independent review passed (non-blocking follow-ups in `checkpoints/pb57.json`). Core SHA-256 `eaa44c10…aaa1f9`.
+- **Device:** the first install attempt stopped at the read-only FAT preflight before any write. Exit 206: one album-art cache thumbnail with a broken cluster chain, and the FSInfo free count off by one. PB56 remains installed. Repair is a separate approval: volume-only `repairVolume`, then a clean re-check, then the guarded installer. Do not rerun blindly; the blocked attempt is archived privately.
+- **Next:** after PB57 is installed, test Hold on → off while playing in the car, then copy `.rockbox/logs` before browsing more. `restarted` lines with continued audio confirm the fix. `hold switch` lines without restarts and still-silent audio point to a different mechanism (pause or control wait).
+
+## Previous: PB56 experimental checkpoint
 
 - **Source:** `community`, `checkpoint/pb56`; locked `main` is not part of this publication. Read the [PB56 notes](PB56-AUDIO-TEST.md), [verification](VERIFICATION.json), and [checkpoint](../checkpoints/pb56.json). PB55 is the last user-accepted rollback.
 - **Device:** `rodbox-pb56-audio-test-261117` was installed on 2026-11-19. The first preflight stopped before writes on one FAT orphan. A separate approved volume-only repair and clean check preceded installation. All 42 firmware files were verified; only core/info changed. Existing music inventory, sizes, and timestamps matched. Installation and subsequent library work ended with safe eject. Device/rollback evidence is private.

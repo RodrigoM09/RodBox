@@ -614,6 +614,12 @@ static bool batch_stopped;
 static usb_drv_batch_get_more batch_get_more;
 static volatile uint32_t batch_failed;
 static size_t batch_pending_length;
+/* Set when a failed or short packet stopped a running stream, and cleared by
+ * every explicit start or stop. The IRQ only ever stops; the owner restarts
+ * from its own thread (usb_drv_batch_faulted()), so a single missed packet
+ * does not leave a host that still has the stream enabled hearing silence
+ * until the cable is pulled. */
+static volatile bool batch_fault;
 
 int usb_drv_batch_init(int ep, usb_drv_batch_get_more get_more)
 {
@@ -624,6 +630,7 @@ int usb_drv_batch_init(int ep, usb_drv_batch_get_more get_more)
     batch_ep = ep;
     batch_get_more = get_more;
     batch_stopped  = true;
+    batch_fault    = false;
     batch_pending_length = 0;
     batch_failed = 0;
     return 0;
@@ -654,6 +661,7 @@ static int batch_get_and_send(void)
     if(ret != 0) {
         batch_failed++;
         batch_stopped = true;
+        batch_fault = true;
         batch_pending_length = 0;
     }
     return ret;
@@ -669,6 +677,7 @@ int usb_drv_batch_start(void)
     /* An explicit restart after failure gets a fresh bounded priming
      * budget. Never reset an already running stream. */
     usb_drv_reset_endpoint(EP_NUM(batch_ep), true);
+    batch_fault = false;
     batch_stopped = false;
     return batch_get_and_send();
 }
@@ -679,6 +688,7 @@ int usb_drv_batch_stop(void)
      * A flag alone leaves the endpoint busy across alt 0 -> alt 1. */
     int irq = disable_irq_save();
     batch_stopped = true;
+    batch_fault = false;
     batch_pending_length = 0;
     restore_irq(irq);
     if(batch_ep)
@@ -696,11 +706,19 @@ static void batch_xfer_complete(int status, int length) {
     if(status != 0 || length < 0 || (size_t)length != batch_pending_length) {
         batch_failed++;
         batch_stopped = true;
+        batch_fault = true;
         batch_pending_length = 0;
         return;
     }
     batch_pending_length = 0;
     batch_get_and_send();
+}
+
+/* True while a failed or short packet, not a stop, has the stream stopped.
+ * Read from the owner's thread; usb_drv_batch_start() is the only restart. */
+bool usb_drv_batch_faulted(void)
+{
+    return batch_ep && batch_stopped && batch_fault;
 }
 
 void usb_drv_batch_take_counts(uint32_t *ran_empty, uint32_t *failed)

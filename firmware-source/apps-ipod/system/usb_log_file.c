@@ -221,6 +221,19 @@ static void usb_log_format_iap2_event(const struct usb_log_entry *e, char *p,
             snprintf(p, size, "iap2: a car, so connecting again without the "
                      "sound card");
             break;
+        case USB_LOG_IAP_STREAM_RESTART:
+            snprintf(p, size, "iap: stream stopped by a failed packet, "
+                     "restarted (attempt %lu)%s", c,
+                     d ? ", START FAILED" : "");
+            break;
+        case USB_LOG_IAP_HOLD:
+            snprintf(p, size, "hold switch %s: playback %s, stream alt %lu%s, "
+                     "sink %lu", c ? "on" : "off",
+                     !(d & 1) ? "stopped" : (d & 2) ? "paused" : "playing",
+                     (d >> 8) & 1, (d >> 9) & 1 ? ", STOPPED BY A FAILED PACKET"
+                                               : "",
+                     (d >> 12) & 0xf);
+            break;
         case USB_LOG_IAP2_COVER:
         {
             static const char * const from[] =

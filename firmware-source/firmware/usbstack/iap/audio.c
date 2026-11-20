@@ -515,6 +515,61 @@ bool iap_audio_disable(void) {
     return true;
 }
 
+#ifdef USB_BATCH_NON_NATIVE
+/* The USB interrupt stops the stream on a failed or short packet and never
+ * retries there (see batch_xfer_complete()). The host normally restarts it
+ * with SET_CUR or SET_INTERFACE; a car that keeps its interface enabled and
+ * simply goes on asking for packets never does, so one missed packet left it
+ * silent until the cable was pulled. Restart it from the USB thread, with
+ * the same explicit start a host's SET_CUR makes: the endpoint is reset and
+ * primed again, and the next packet is new PCM -- nothing is sent twice.
+ * The first restarts are immediate, then once a second, then every ten
+ * seconds, so a host that has really stopped reading costs a millisecond of
+ * track now and then, not a runaway. */
+#define RESTART_FAST       3
+#define RESTART_SLOW       60
+#define RESTART_HEALTHY    (2 * HZ)
+static unsigned int restart_attempts;
+static long         restart_tick;   /* the last restart */
+static long         restart_after;  /* no restart before this */
+
+void iap_audio_recover_stream(void) {
+    if(!enabled) {
+        restart_attempts = 0;
+        return;
+    }
+    if(!usb_drv_batch_faulted()) {
+        if(restart_attempts && TIME_AFTER(current_tick, restart_tick + RESTART_HEALTHY)) {
+            restart_attempts = 0;
+        }
+        return;
+    }
+    if(restart_attempts && TIME_BEFORE(current_tick, restart_after)) {
+        return;
+    }
+    const int rc = usb_drv_batch_start();
+    restart_attempts += 1;
+    restart_tick  = current_tick;
+    restart_after = current_tick + (restart_attempts < RESTART_FAST ? 0
+                                    : restart_attempts < RESTART_SLOW ? HZ
+                                                                      : 10 * HZ);
+    if(restart_attempts <= RESTART_FAST || !(restart_attempts & (restart_attempts - 1))) {
+        usb_log(USB_LOG_IAP2_EVENT, USB_LOG_IAP_STREAM_RESTART, 0, restart_attempts, rc != 0);
+    }
+}
+
+bool iap_audio_stream_faulted(void) {
+    return usb_drv_batch_faulted();
+}
+#else
+void iap_audio_recover_stream(void) {
+}
+
+bool iap_audio_stream_faulted(void) {
+    return false;
+}
+#endif
+
 unsigned long iap_audio_sampr(void) {
     return RATE(iap_pcm_sink.configured_freq);
 }

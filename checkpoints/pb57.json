@@ -1,0 +1,47 @@
+{
+  "checkpoint": "pb57",
+  "version": "rodbox-pb57-hold-stream-261120",
+  "target": "ipod6g / S5L8702 / 64 MB",
+  "status": "experimental-built-tested-reviewed-not-installed",
+  "base_commit": "9d832fabe1d1deb53465afb6cb6ae8c723b87557",
+  "problem": "Lexus USB audio stopped after the hold switch was moved on and off; only a replug restored it.",
+  "mechanism": "Inferred, not captured: one failed/short isochronous packet stops the non-native batch pump in IRQ context, and only a host SET_CUR/SET_INTERFACE restarted it, which a car that keeps polling never sends.",
+  "fix": "USB-thread restart of a fault-stopped stream while the host keeps alternate 1 enabled, with bounded backoff; hold-switch and restart diagnostics in the USB log.",
+  "native_build": "passed",
+  "cumulative_host_suites_passed": 82,
+  "usb_test_scripts_passed": 41,
+  "regression": {
+    "test": "tests/usb/test_pb57_stream_recovery.py",
+    "fails_on_pb56": true,
+    "passes_on_pb57": true,
+    "asan_ubsan": true
+  },
+  "firmware_source_hashes_stable_during_build": 12065,
+  "core_sha256": "eaa44c10001d7f805738d2bb89ce48d67036d8153f4998a5a4486e190eaaa1f9",
+  "firmware_files": 42,
+  "codecs_unchanged_vs_pb56": 40,
+  "build_warning_count": 5,
+  "independent_review_passed": true,
+  "review_nonblocking_followups": 8,
+  "installed": false,
+  "installation_attempt": {
+    "date": "2026-11-20",
+    "result": "stopped at read-only preflight before any write",
+    "reason": "FAT check exit 206: one album-art cache thumbnail with a broken cluster chain and FSInfo free count off by one",
+    "files_written": 0,
+    "repairs_performed": false,
+    "pb56_still_installed": true,
+    "next": "separately approved volume-only repair, clean re-check, then the guarded installer"
+  },
+  "hardware_acceptance": "pending in-car hold-switch test",
+  "rollback": {
+    "checkpoint": "pb56",
+    "installed": true,
+    "last_user_accepted": "pb55"
+  },
+  "publication": {
+    "branch": "community",
+    "tag": "checkpoint/pb57",
+    "source_only": true
+  }
+}

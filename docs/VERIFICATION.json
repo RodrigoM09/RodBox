@@ -28,7 +28,7 @@
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
   "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
   "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
-  "current_checkpoint": "pb56",
+  "current_checkpoint": "pb57",
   "current_validation": {
     "host_suites_at_pb28_build": 47,
     "pb28_publication_focused_regression": "passed",
@@ -72,7 +72,7 @@
     "pb56_installation": "experimental; installed, read-back verified, and safely ejected",
     "pb56_hardware_acceptance": "pending PB56 headphone/aux, Lexus, and battery testing"
   },
-  "latest_checkpoint": "pb56",
+  "latest_checkpoint": "pb57",
   "pb40_publication": {
     "source_hashes_verified": true,
     "focused_suites_passed": 10,
@@ -530,5 +530,36 @@
       "artist_display_confirmation": "pending after on-device art cache update",
       "both_operations_clean_filesystem_and_safe_eject": true
     }
+  },
+  "pb57": {
+    "checkpoint": "pb57",
+    "version": "rodbox-pb57-hold-stream-261120",
+    "target": "ipod6g / S5L8702 / 64 MB",
+    "status": "experimental-built-tested-reviewed-not-installed",
+    "base_commit": "9d832fabe1d1deb53465afb6cb6ae8c723b87557",
+    "native_build": "passed",
+    "cumulative_host_suites_passed": 82,
+    "usb_test_scripts_passed": 41,
+    "regression": {
+      "test": "tests/usb/test_pb57_stream_recovery.py",
+      "fails_on_pb56": true,
+      "passes_on_pb57": true,
+      "asan_ubsan": true
+    },
+    "core_sha256": "eaa44c10001d7f805738d2bb89ce48d67036d8153f4998a5a4486e190eaaa1f9",
+    "firmware_files": 42,
+    "codecs_unchanged_vs_pb56": 40,
+    "independent_review_passed": true,
+    "installed": false,
+    "installation_attempt": {
+      "date": "2026-11-20",
+      "result": "stopped at read-only preflight before any write",
+      "reason": "FAT check exit 206: one album-art cache thumbnail with a broken cluster chain and FSInfo free count off by one",
+      "files_written": 0,
+      "repairs_performed": false,
+      "pb56_still_installed": true,
+      "next": "separately approved volume-only repair, clean re-check, then the guarded installer"
+    },
+    "hardware_acceptance": "pending in-car hold-switch test"
   }
 }

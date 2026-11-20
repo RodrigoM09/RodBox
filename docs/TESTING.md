@@ -1,5 +1,9 @@
 # Verification and its limits
 
+## PB57 stream recovery checkpoint
+
+`tests/usb/test_pb57_stream_recovery.py` compiles the production non-native batch pump and the production iAP sink recovery under ASan/UBSan. Against PB56 sources, one failed packet leaves an enabled stream stopped for a simulated minute (RED). PB57 restarts it on the next tick, bounds a silent host to 65 restarts in 120 s (one packet of PCM each), and treats stop/disable/exhausted as non-faults (GREEN). The full suite passed 82 of 82, including all 41 USB scripts. The native build passed with the five existing warnings, none in changed files. Independent review passed with non-blocking follow-ups (iAP2 not covered; bus-reset window; no progress watchdog). Host tests do not reproduce the hold switch, interrupt latency or the Lexus. In-car acceptance is pending, and the install itself is waiting on a separately approved FAT repair. See [PB57](PB57-STREAM-RECOVERY.md).
+
 ## PB56 experimental checkpoint
 
 Fresh immutable PB55 baseline: 75 cumulative suites passed. PB56: 81 cumulative suites and 40 explicitly rerun USB scripts passed; targeted production-code RED/GREEN evidence includes rate fallback, codec/mixer lifecycle, tone headroom, finite-event fairness and supported nonpositive DAC gain with readback. Resampler vectors characterize an unchanged limitation; `--require-bandlimit` deliberately fails and is not a fixed-feature acceptance result. Native build passes with five warnings in unchanged source/toolchain areas. Independent code review passed; package verification and physical acceptance remain separate gates. See [PB56 details](PB56-AUDIO-TEST.md).

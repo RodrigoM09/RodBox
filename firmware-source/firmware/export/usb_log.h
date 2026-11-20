@@ -234,6 +234,14 @@ static inline void usb_log_iap_error_args(int unused, ...)
                                      * track's position moved, ms */
 #define USB_LOG_IAP2_AUDIO_USB   18 /* c = times the USB queue ran empty,
                                      * d = packets that failed */
+#define USB_LOG_IAP_STREAM_RESTART 19 /* USB iAP: a stream a failed packet
+                                       * stopped, still enabled by the host,
+                                       * restarted: c = attempt since it last
+                                       * ran, d = usb_drv_batch_start() */
+#define USB_LOG_IAP_HOLD         20 /* USB iAP: the hold switch: c = 1 on,
+                                     * d = audio_status() | stream alternate
+                                     * << 8 | stream faulted << 9 | sink
+                                     * << 12 */
 
 #define USB_LOG_IAP_ART_REPORTED 0 /* told the accessory whether it has art */
 #define USB_LOG_IAP_ART_SENT     1 /* the accessory asked, and it is sent */

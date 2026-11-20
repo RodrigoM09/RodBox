@@ -1,0 +1,66 @@
+{
+  "README.md": {
+    "bytes": 8407,
+    "sha256": "3c62d535255c503ed97349862fe469efd05b70bc3674d5065b0bc9b7874938fe"
+  },
+  "checkpoints/pb57.json": {
+    "bytes": 2029,
+    "sha256": "6543c6a114892642d778f39fe9047ceca137c9b50b31ad6270e1eba1028e1bd3"
+  },
+  "docs/AI-CONTINUATION-PROMPT.md": {
+    "bytes": 6210,
+    "sha256": "9ea300cf75c71946acc56342bb3302a27960b01d4aec7426584f9ac409ab6ba1"
+  },
+  "docs/HANDOFF.md": {
+    "bytes": 43166,
+    "sha256": "dc7515702d1d813788b294c4b40a36c1e023fe8364e1aa22ec660a099afee81d"
+  },
+  "docs/HISTORY.md": {
+    "bytes": 21326,
+    "sha256": "a2a44ff921fb1db7920f0f163023a5719ca7b663040b30e34e4357d898439d08"
+  },
+  "docs/PB57-STREAM-RECOVERY.md": {
+    "bytes": 5663,
+    "sha256": "a44e9e371ea853ee12fcc1173fbe676c411cba0725baf051f5e0f3b12810fdb2"
+  },
+  "docs/TESTING.md": {
+    "bytes": 22424,
+    "sha256": "49779b4ecd6e2644b76a20ff9c96d60164a954a627e6675556793f04bad44624"
+  },
+  "docs/VERIFICATION.json": {
+    "bytes": 25382,
+    "sha256": "42575d0c16cfe993ca7d28730e6be251463f0d44871fa98fdea529f965eeff2e"
+  },
+  "firmware-source/apps-ipod/system/usb_log_file.c": {
+    "bytes": 35931,
+    "sha256": "9dcaff72ee5d2c1653387f1a373a6a4c0d8a5182d072dc0efc0475559c63be0c"
+  },
+  "firmware-source/firmware/export/usb_drv.h": {
+    "bytes": 12815,
+    "sha256": "2f60568810a82ea2d7fe245edf4539d58d85fe7c75c7007c850f6301d77aea49"
+  },
+  "firmware-source/firmware/export/usb_log.h": {
+    "bytes": 16762,
+    "sha256": "32b37a90690d210eb6716077155c26eaab2040b7d2b56cfab83105d877d58ce6"
+  },
+  "firmware-source/firmware/usbstack/iap/audio.c": {
+    "bytes": 23231,
+    "sha256": "89c636aad74011077949c7e7156d25fe7a563d9a8afca62f6f53e295078962ef"
+  },
+  "firmware-source/firmware/usbstack/iap/audio.h": {
+    "bytes": 2505,
+    "sha256": "f0ee6adff488f7e45b91c41ff0bdb0962e4de5157555de49f916d9c698160be1"
+  },
+  "firmware-source/firmware/usbstack/usb_core.c": {
+    "bytes": 59188,
+    "sha256": "9dc2c616e84f999b960d18988c2a57340e281f17897ae761d5e596fc54194038"
+  },
+  "firmware-source/firmware/usbstack/usb_iap.c": {
+    "bytes": 31035,
+    "sha256": "43f5cc788eb6607ea9fc4a8daad39a544b9bece123838ea36cc3d2ae96b1159f"
+  },
+  "tests/usb/test_pb57_stream_recovery.py": {
+    "bytes": 7170,
+    "sha256": "c53528a5e42083779443bbb4a60de44bdc3c218421ba61ccc1d97519b6a235e6"
+  }
+}
