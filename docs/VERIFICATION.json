@@ -19,7 +19,8 @@
     "pb52": "metadata/artwork refresh unresolved per follow-up user report",
     "pb53": "audio/timer work; metadata/artwork refresh unresolved per follow-up user report",
     "pb54": "skip-refresh issue persists; natural song completion not retested",
-    "pb55": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found"
+    "pb55": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found",
+    "pb56": "pending PB56 headphone/aux, Lexus, and battery testing"
   },
   "host_benchmark_is_device_speed": false,
   "private_backups_included": false,
@@ -27,11 +28,11 @@
   "public_export_tests": "All 15 companion tests, 17 USB-write checks, 11 endpoint checks, 21 guard cases and 50000 differential cases passed from the exported repository.",
   "public_export_changes": "Only portable test paths, result-output handling, publication ignores and documentation were adjusted after the source export; firmware source remains unchanged.",
   "initial_export_record": "The original export counts below are historical; current checkpoint validation is recorded separately.",
-  "current_checkpoint": "pb55",
+  "current_checkpoint": "pb56",
   "current_validation": {
     "host_suites_at_pb28_build": 47,
     "pb28_publication_focused_regression": "passed",
-    "native_build": "PB55 core/codecs passed",
+    "native_build": "PB56 core and codecs passed",
     "pb27_full_restore_and_postrepair_checksum": "passed",
     "pb28_first_restart_reconnect": "firmware/artwork/filesystem passed; no orphan clusters",
     "long_term_storage_reliability": "unresolved",
@@ -63,13 +64,15 @@
       "Prior shutdown cause unresolved",
       "PB31 analysis hardware acceptance pending"
     ],
-    "usb_test_scripts_passed": 37,
+    "usb_test_scripts_passed": 40,
     "pb54_installation": "installed/read-back verified/safely ejected",
     "pb54_hardware_acceptance": "skip-refresh issue persists; natural song completion not retested",
     "pb55_installation": "installed/read-back verified/safely ejected",
-    "pb55_hardware_acceptance": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found"
+    "pb55_hardware_acceptance": "user confirms metadata/artwork refresh and natural song completion passed; separate content corruption found",
+    "pb56_installation": "experimental; installed, read-back verified, and safely ejected",
+    "pb56_hardware_acceptance": "pending PB56 headphone/aux, Lexus, and battery testing"
   },
-  "latest_checkpoint": "pb55",
+  "latest_checkpoint": "pb56",
   "pb40_publication": {
     "source_hashes_verified": true,
     "focused_suites_passed": 10,
@@ -397,5 +400,135 @@
     "filesystem_before_after": "passed",
     "safely_ejected": true,
     "new_firmware_built_or_installed": false
+  },
+  "pb56": {
+    "checkpoint": "pb56",
+    "version": "rodbox-pb56-audio-test-261117",
+    "target": "ipod6g / S5L8702 / 64 MB",
+    "status": "experimental-installed-and-readback-verified",
+    "base_commit": "2a21f02582e127abcc21f83a4db594ec586188f4",
+    "native_build": "passed",
+    "cumulative_host_suites_passed": 81,
+    "usb_test_scripts_passed": 40,
+    "initial_source_files_verified": 12299,
+    "firmware_source_hashes_stable_during_build": 12042,
+    "core_sha256": "1d0fe01a846e946bf5479405bba3bac0fdd592237eeafa1c39b7a986f96da813",
+    "independent_review_passed": true,
+    "installed": false,
+    "hardware_acceptance": "pending PB56 headphone/aux, Lexus, and battery testing",
+    "scope": [
+      {
+        "id": "rate-fallback",
+        "status": "included",
+        "reason": "A production-code RED reproduced stale SET_CUR poisoning the half-second fallback; flag assignment now occurs only after a matching rate is accepted. ACK/timeout/refusal/packet gates pass.",
+        "tests": [
+          "tests/usb/test_pb56_digital_rate_fallback.py"
+        ]
+      },
+      {
+        "id": "codec-lifecycle",
+        "status": "included",
+        "reason": "Production mixer/PCM/codec harness reproduced voice/beep silence and active-voice interruption. Remove music-only codec PDN/wake calls; normal audio init/close owns power. Deliberately defer shared idle savings and warm-wake retiming rather than perform I2C in an IRQ. Idle power/battery cost needs hardware measurement.",
+        "tests": [
+          "tests/audio/test_pb56_analog_lifecycle.py"
+        ]
+      },
+      {
+        "id": "downsampling",
+        "status": "tests-only",
+        "reason": "Actual portable production C vectors reproduce insufficient alias rejection; native-rate identity and mono/stereo chunk continuity pass. No new bandlimited filter is enabled or implemented: ARM cost, stopband/passband and device battery acceptance remain unvalidated. Optional --require-bandlimit intentionally still fails.",
+        "tests": [
+          "tests/audio/test_resample_bandlimit.py",
+          "tests/audio/resample_vectors.c"
+        ]
+      },
+      {
+        "id": "tone-headroom",
+        "status": "included",
+        "reason": "Production sound-policy RED/GREEN demonstrates full tone attenuation retained near volume ceiling on native stereo CS42L55. Neutral/mute/balance/unity-lineout/volume limits and other-codec/simulator/mono guards pass. Boosted playback may be quieter near maximum volume.",
+        "tests": [
+          "tests/audio/test_pb56_analog_headroom.py --matrix"
+        ]
+      },
+      {
+        "id": "established-stream-recovery",
+        "status": "deferred",
+        "reason": "Existing stopped-on-failure policy prevents runaway consumption and replay of potentially delivered PCM. Automatic restart requires validated delivery/ownership state and USB-thread fault injection, not arbitrary IRQ retries. Existing batch-failure/startup-recovery tests pass unchanged."
+      },
+      {
+        "id": "sink-rate-buffer-handover",
+        "status": "deferred",
+        "reason": "Potential queued old-rate PCM is not yet reproduced in an integrated sink-handover harness. No speculative flush/discard or PCM/mixer rate-lifecycle change is included."
+      },
+      {
+        "id": "generic-dac-feedback",
+        "status": "deferred",
+        "reason": "UAC1 feedback and full-speed DAC behind high-speed hub limitations remain. No validated feedback association/clock-drift implementation or physical compatible DAC/hub test is available for this candidate; Lexus iAP is a separate path."
+      },
+      {
+        "id": "generic-dac-unity-gain",
+        "status": "included",
+        "reason": "Actual UAC1/UAC2 initialization RED/GREEN replaces unconditional maximum with supported unity-or-lower gain aligned to MIN/RES, reads back SET_CUR, and leaves unknown/failed/malformed/multi-range controls unchanged. Does not certify physical loudness or guarantee safe behavior of arbitrary DAC firmware.",
+        "tests": [
+          "tests/usb/test_pb56_dac_unity_gain.py"
+        ]
+      },
+      {
+        "id": "finite-notification-fairness",
+        "status": "included",
+        "reason": "Actual asynchronous HID RED/GREEN now delivers finite play/power/shuffle/repeat/stopped/extended-state events before recurring PCM clocks, preserving queue/UID/caps order and subscription gating. Captured Lexus fixture continues to pass.",
+        "tests": [
+          "tests/usb/test_pb56_notification_fairness.py",
+          "tests/usb/test_iap_lexus_uid_subscription.py"
+        ]
+      }
+    ],
+    "firmware_files_verified": 42,
+    "codecs_unchanged": 40,
+    "review_limits": "Independent reviewer read code/tests only; parent ran build and tests. Physical audio/battery acceptance pending.",
+    "selected_source_snapshots": 18,
+    "publication": {
+      "branch": "community",
+      "tag": "checkpoint/pb56",
+      "source_only": true
+    },
+    "host_suites_rerun_for_publication": 81,
+    "build_warning_count": 5,
+    "rollback": {
+      "checkpoint": "pb55",
+      "accepted_on_hardware": true,
+      "private_package_preserved": true
+    },
+    "installation": {
+      "date": "2026-11-19",
+      "firmware_files_verified": 42,
+      "only_replaced": [
+        "rockbox-info.txt",
+        "rockbox.ipod"
+      ],
+      "protected_backup_files_verified": 1363,
+      "clean_pre_post_fat_checks": true,
+      "safely_ejected": true,
+      "music_files_written_during_install": false,
+      "music_inventory_size_mtime_matched": 2216,
+      "full_music_byte_check_repeated": false,
+      "separate_approved_fat_volume_repair": true,
+      "orphan_preserved": false,
+      "partition_map_repair": false,
+      "formatting": false
+    },
+    "library_follow_up": {
+      "separate_from_firmware_install": true,
+      "validated_tracks_added": 291,
+      "album_images_added": 18,
+      "relocated_duplicates_skipped": 530,
+      "tracks_skipped_by_audio_validation": 132,
+      "transfer_hash_verified_files": 309,
+      "artist_portrait_sidecars_verified": 23,
+      "artists_with_added_portraits": 11,
+      "artist_cache_modified_by_host": false,
+      "artist_display_confirmation": "pending after on-device art cache update",
+      "both_operations_clean_filesystem_and_safe_eject": true
+    }
   }
 }

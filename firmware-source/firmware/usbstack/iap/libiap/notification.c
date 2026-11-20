@@ -193,12 +193,6 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
     send_notify_4(IAPPlayStatusChangeNotificationTrackCapsChangedPayload,
                   IAPStatusChangeNotificationType_TrackCapsChanged,
                   payload->caps = swap_32(ctx->notification_data.track_caps));
-    send_notify_3(IAPIPodStateTrackTimePositionMSecPayload,
-                  IAPIPodStateType_TrackTimePositionMSec,
-                  payload->position_ms = swap_32(ctx->notification_data.track_time_position_ms));
-    send_notify_3(IAPIPodStateTrackTimePositionSecPayload,
-                  IAPIPodStateType_TrackTimePositionSec,
-                  payload->position_s = swap_16(ctx->notification_data.track_time_position_ms / 1000));
     send_notify_3(IAPIPodStatePlayStatusPayload,
                   IAPIPodStateType_PlayStatus,
                   payload->status = ctx->notification_data.play_status);
@@ -221,12 +215,19 @@ IAPBool _iap_flush_notification(struct IAPContext* ctx) {
                   payload->minute = ctx->notification_data.time_setting.minute);
     send_notify_4(IAPPlayStatusChangeNotificationPlaybackStoppedPayload,
                   IAPStatusChangeNotificationType_PlaybackStopped, );
-    send_notify_4(IAPPlayStatusChangeNotificationTrackTimeOffsetMSecPayload,
-                  IAPStatusChangeNotificationType_TrackTimeOffsetMSec,
-                  payload->offset_ms = swap_32(ctx->notification_data.track_time_position_ms));
     send_notify_4(IAPPlayStatusChangeNotificationPlaybackStatusExtendedPayload,
                   IAPStatusChangeNotificationType_PlaybackStatusExtended,
                   payload->state = play_status_to_extended(ctx->notification_data.play_status));
+    /* All finite state changes must drain before recurring PCM clocks. */
+    send_notify_3(IAPIPodStateTrackTimePositionMSecPayload,
+                  IAPIPodStateType_TrackTimePositionMSec,
+                  payload->position_ms = swap_32(ctx->notification_data.track_time_position_ms));
+    send_notify_3(IAPIPodStateTrackTimePositionSecPayload,
+                  IAPIPodStateType_TrackTimePositionSec,
+                  payload->position_s = swap_16(ctx->notification_data.track_time_position_ms / 1000));
+    send_notify_4(IAPPlayStatusChangeNotificationTrackTimeOffsetMSecPayload,
+                  IAPStatusChangeNotificationType_TrackTimeOffsetMSec,
+                  payload->offset_ms = swap_32(ctx->notification_data.track_time_position_ms));
     send_notify_4(IAPPlayStatusChangeNotificationTrackTimeOffsetSecPayload,
                   IAPStatusChangeNotificationType_TrackTimeOffsetSec,
                   payload->offset_s = swap_32(ctx->notification_data.track_time_position_ms / 1000));

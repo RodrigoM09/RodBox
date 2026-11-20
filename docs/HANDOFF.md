@@ -1,6 +1,17 @@
-# RodBox project handoff — 2026-11-15
+# RodBox project handoff
 
-## Latest approved cleanup
+## Current: PB56 experimental checkpoint
+
+- **Source:** `community`, `checkpoint/pb56`; locked `main` is not part of this publication. Read the [PB56 notes](PB56-AUDIO-TEST.md), [verification](VERIFICATION.json), and [checkpoint](../checkpoints/pb56.json). PB55 is the last user-accepted rollback.
+- **Device:** `rodbox-pb56-audio-test-261117` was installed on 2026-11-19. The first preflight stopped before writes on one FAT orphan. A separate approved volume-only repair and clean check preceded installation. All 42 firmware files were verified; only core/info changed. Existing music inventory, sizes, and timestamps matched. Installation and subsequent library work ended with safe eject. Device/rollback evidence is private.
+- **Library:** A separate additive transfer validated and copied 291 tracks plus 18 album images, skipped 530 verified relocated duplicates and 132 source tracks that failed validation, and left existing files and the database intact. The Artists list needed portraits, not album covers. A separate additive pass verified 23 `.artist/folder.jpg` sidecars across 11 artists without modifying the database or cache. Artwork display after a cache update is not yet confirmed.
+- **Next:** On the player, use **Settings → Library → Maintenance → Update Database** if new tracks are missing, then **Update Art Cache** for portraits. Check the Artists list. Test PB56 at low volume with headphones/aux and then test Lexus audio, skips, natural completion, and metadata/artwork changes. Log physical results separately; no battery or sound-quality acceptance is recorded.
+
+Keep raw logs, device identifiers, music, downloaded pictures, personalized metadata, and backups private. Do not rerun completed operations. This handoff does not authorize device access, repair, installation, or a `main` promotion.
+
+## Historical PB55/media handoff
+
+## Historical PB55-only cleanup (superseded)
 
 Following explicit user approval, only the 27 verified-damaged audio files were deleted from the device. The one validated track and two cover images were hash-verified unchanged; all 2,216 remaining inventory entries retained sizes/timestamps. All 42 PB55 firmware files are unchanged. Byte-matched damaged source copies were preserved for recovery, not represented as healthy replacements. Pre/post filesystem checks passed and the device was safely ejected. The library database was not edited; run Update Now on the device to remove stale entries. No PB56 was built or installed. Current private evidence is Prince-corrupt-deletion-verification.json in projects/rodbox-pb56-artifacts. Do not retry the already-completed deletion or restore the known-bad originals.
 

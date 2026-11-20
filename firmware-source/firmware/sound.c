@@ -258,13 +258,21 @@ static void set_prescaled_volume(void)
         prescale = 0;  /* no need to prescale if we don't boost
                           bass, treble or eq band */
 
-    /* Gain up the analog volume to compensate the prescale gain reduction,
-     * but if this would push the volume over the top, reduce prescaling
-     * instead (might cause clipping). */
+    /* Gain up the analog volume to compensate the prescale gain reduction. */
     const int maxvol = sound_value_to_cb(SOUND_VOLUME, sound_max(SOUND_VOLUME));
 
+#if defined(HAVE_CS42L55) && !defined(SIMULATOR) \
+    && !defined(AUDIOHW_HAVE_MONO_VOLUME)
+    /* Keep the complete tone attenuation even at maximum headphone volume.
+     * Cap only the compensating analog gain, not the headroom upstream of it.
+     * Boosted playback can therefore be quieter near the volume ceiling.
+     * Neutral playback and the unity lineout gain are unchanged. */
+    volume = MIN(volume, maxvol - prescale);
+#else
+    /* Preserve the established policy for other codecs/configurations. */
     if (volume + prescale > maxvol)
         prescale = maxvol - volume;
+#endif
 
     audiohw_set_prescaler(prescale);
 

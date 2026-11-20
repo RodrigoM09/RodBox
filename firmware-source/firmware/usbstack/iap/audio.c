@@ -579,8 +579,6 @@ bool iap_audio_set_sampr(uint32_t sampr) {
 
     usb_log(USB_LOG_IAP_RATE, set_freq >= 0 && freq != set_freq, 0, sampr,
             set_freq >= 0 ? RATE(set_freq) : 0);
-    host_set_rate = true;
-
     if(set_freq >= 0 && freq != set_freq) {
         /* Accessories should only set the frequency we requested via
          * TrackNewAudioAttributes, but in some cases, USB control requests may arrive late,
@@ -590,6 +588,8 @@ bool iap_audio_set_sampr(uint32_t sampr) {
         return true;
     }
 
+    /* An ignored stale request must not suppress the announcement fallback. */
+    host_set_rate = true;
     cur_freq = freq;
 
 #ifdef USB_BATCH_NON_NATIVE

@@ -1,6 +1,12 @@
 # Verification and its limits
 
-The checkpoint-specific installation and pending notes below describe evidence at their original stages. For current acceptance, see [PB55](PB55-LEXUS-UID.md); PB35 findings are historical.
+## PB56 experimental checkpoint
+
+Fresh immutable PB55 baseline: 75 cumulative suites passed. PB56: 81 cumulative suites and 40 explicitly rerun USB scripts passed; targeted production-code RED/GREEN evidence includes rate fallback, codec/mixer lifecycle, tone headroom, finite-event fairness and supported nonpositive DAC gain with readback. Resampler vectors characterize an unchanged limitation; `--require-bandlimit` deliberately fails and is not a fixed-feature acceptance result. Native build passes with five warnings in unchanged source/toolchain areas. Independent code review passed; package verification and physical acceptance remain separate gates. See [PB56 details](PB56-AUDIO-TEST.md).
+
+Verified on the test iPod: firmware-only install after a separately approved FAT repair, clean pre/post checks, all 42 firmware files read back, protected state preserved, and safe eject. Music sizes and timestamps matched; a full music-byte checksum was not repeated. Separately, new tracks and artwork were hash-verified after the additive library transfer and portrait install. These checks do not confirm on-device portrait display, playback behavior, noise, or battery life. See [PB56](PB56-AUDIO-TEST.md) for physical test steps and [PB55](PB55-LEXUS-UID.md) for the last user-accepted rollback.
+
+Checkpoint-specific notes below describe evidence at the original stages; older PB35–PB55 findings are historical.
 
 ## Focused tests
 

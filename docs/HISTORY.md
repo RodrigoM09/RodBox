@@ -1,5 +1,9 @@
 # Source checkpoint history
 
+## PB56 — experimental audio/reliability checkpoint
+
+PB56 adds test-supported rate-fallback, shared-codec lifecycle, tone-headroom, finite-event fairness and generic-DAC gain changes. 81 cumulative suites, 40 USB scripts, the native core/codecs build, and independent review passed. The test iPod installation was read-back verified and safely ejected. DSP/feedback/automatic recovery/sink-buffer work remains deferred or characterization-only. No PB56 physical fidelity or in-car acceptance is claimed. The later music transfer and artist-portrait install were separate library operations, not firmware features. See [PB56](PB56-AUDIO-TEST.md).
+
 All publication commits are new sanitized exports, not fabricated original commits. Published PB checkpoints have their own commit/tag; PB53 was an interim local build recorded retrospectively with an exact source delta, not a fabricated historical tag. Raw private backups remain offline.
 
 | Checkpoint | What changed | Evidence quality |

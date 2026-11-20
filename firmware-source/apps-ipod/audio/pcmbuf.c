@@ -846,11 +846,6 @@ void pcmbuf_play_start(void)
             .sampr_changed = pcmbuf_sampr_callback,
         };
         mixer_channel_play_data(PCM_MIXER_CHAN_PLAYBACK, &cbs, NULL, 0);
-#if defined(HAVE_CS42L55)
-        /* Power up codec DAC after I2S/MCLK is running —
-         * CS42L55 needs MCLK to properly exit PDN_CODEC */
-        audiohw_idle_powerup();
-#endif
     }
 }
 
@@ -862,10 +857,9 @@ void pcmbuf_play_stop(void)
     /* Reset channel */
     mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
 
-#if defined(HAVE_CS42L55)
-    /* Power down codec DAC after I2S/DMA has stopped */
-    audiohw_idle_powerdown();
-#endif
+    /* Music does not own the shared DAC: voice/beep may still be active or
+     * start independently. Keep codec power under normal audio init/close.
+     * A shared idle optimization needs deferred (non-IRQ) power ownership. */
 
     /* Reset buffer */
     init_buffer_state();

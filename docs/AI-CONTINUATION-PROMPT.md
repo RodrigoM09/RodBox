@@ -1,4 +1,10 @@
-# RodBox continuation prompt
+# RodBox continuation prompt — PB56
+
+Read [HANDOFF.md](HANDOFF.md), [PB56](PB56-AUDIO-TEST.md), and [`checkpoints/pb56.json`](../checkpoints/pb56.json). Verify live repository/device state rather than relying on older milestones. PB56 is the experimental source checkpoint on `community` and the readback-verified firmware on the test player. PB55 is the last user-accepted rollback; do not modify locked `main`.
+
+Priority: confirm Artists list portraits after **Update Art Cache**, and gather PB56 headphone/aux and Lexus acceptance observations. Preserve music, original firmware packages, database, and artwork. Do not repeat the completed transfer, sidecar install, or FAT repair. An audio file skipped during validation requires a verified healthy source, not a firmware workaround. Source publication and any device operation require their own authorization. Keep personal evidence local.
+
+## Historical continuation prompts (reference only)
 
 **Latest cleanup:** the user subsequently approved deletion of the 27 verified-corrupt device files; deletion/read-back/filesystem checks and safe eject passed. The valid track, covers, remaining music and PB55 firmware were preserved. Do not rerun deletion. Device Update Now remains a manual database-refresh step; a different healthy source is needed to restore the removed tracks.
 
