@@ -34,7 +34,7 @@
     "next": "separately approved volume-only repair, clean re-check, then the guarded installer",
     "superseded_by": "installation"
   },
-  "hardware_acceptance": "pending: in-car Hold on/off while playing, then preserve logs",
+  "hardware_acceptance": "user reports normal in-car behaviour; one mid-stream failure was auto-recovered; the hold toggle is not log-confirmed",
   "rollback": {
     "checkpoint": "pb56",
     "private_package_preserved": true,
@@ -71,5 +71,25 @@
     },
     "partition_map_repair": false,
     "formatting": false
+  },
+  "in_car_observation": {
+    "date": "2026-11-20",
+    "source": "user report plus device logs",
+    "user_report": "everything seemed to work fine",
+    "car_sessions_on_pb57": 2,
+    "mid_stream_iso_failure_recovered": {
+      "session": 1,
+      "at_s": 87.15,
+      "restart_after_ms": 86,
+      "host_command_needed": false,
+      "stream_then_ran_until_unplug_s": 2911
+    },
+    "session2": "streamed steadily (~899 KB per 5 s, no silence, no failed packets) until unplug at 503 s; the unplug fault triggered one harmless restart attempt 41 ms before the disconnect",
+    "hold_switch_lines_retained": 0,
+    "hold_trigger_confirmed": false,
+    "note": "Database enumeration rotated usb.log, so the connection-time and any early hold-switch lines were lost; the audio log does not carry hold lines.",
+    "firmware_files_match_pb57": 42,
+    "filesystem_check_after_car": "clean (exit 0)",
+    "logs_preserved_privately": true
   }
 }

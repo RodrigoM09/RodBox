@@ -45,3 +45,14 @@ The full suite passed 82 of 82, including all 41 USB scripts, with existing batc
 - Host tests do not reproduce the hold switch, interrupt latency or the Lexus. Physical acceptance is the user's in-car test.
 - If the failure persists, PB57's log will show it. Look for `hold switch` lines followed either by `restarted` lines (recovery ran) or by nothing (a different mechanism, such as a paused player or an iAP control wait). Preserve logs before more browsing rotates them.
 - Recovery restores the stream the car is already polling. It cannot recover a car that stopped polling or switched source; that case is ended by the car's own `SET_INTERFACE`/disconnect.
+
+## First in-car result (2026-11-20)
+
+The user reports that everything worked. The logs show two PB57 car sessions:
+
+- **Session 1:** at 87 s the stream hit a mid-stream isochronous failure with no host rate/interface command after it, the exact case that silenced PB56 until a replug. PB57 re-primed the stream 86 ms later, and it played until unplug at about 48 minutes.
+- **Session 2:** streamed steadily until unplug. Removing the cable caused one harmless restart attempt just before the disconnect.
+
+After the sessions, all 42 firmware files matched PB57 and a read-only FAT check was clean.
+
+The hold-switch log lines did not survive: database traffic rotated `usb.log` past the connection, and the audio log does not carry them. So the 87 s failure is consistent with a Hold toggle, but that is not proven. Next time, connect to the Mac soon after a Hold test.

@@ -1,6 +1,8 @@
 # RodBox project handoff
 
-## Current: PB57 stream-recovery checkpoint (installed; in-car test pending)
+## Current: PB57 stream-recovery checkpoint (installed; first car test good)
+
+- **2026-11-20 car result:** the user reports normal behaviour. Session 1 shows one mid-stream ISO failure at 87 s, recovered by PB57 in 86 ms with no host command; it then played about 48 minutes. Session 2 was clean. After the sessions, all 42 firmware files matched and the FAT check was clean. Hold-switch lines were rotated out of `usb.log`, so the Hold trigger is still not log-confirmed. Logs are preserved privately in `rodbox-pb57-artifacts/PB57-evidence/after-car-*`.
 
 - **Problem:** in the Lexus, moving Hold on and then off stopped music until the cable was replugged.
 - **Cause (inferred):** a single failed/short isochronous packet stops the non-native USB audio pump in IRQ context (a deliberate PB36 policy). Only a host `SET_CUR`/`SET_INTERFACE` restarted it, and a car that keeps polling never sends either. No retained log captured a hold toggle in the car; the only PB56 car session streamed cleanly.
